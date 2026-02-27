@@ -1,0 +1,8 @@
+{
+  "name": "Darwin's Taller",
+  "description": "A comprehensive repair shop management system with priority tracking, dashboard analytics, and AI-powered client support.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
