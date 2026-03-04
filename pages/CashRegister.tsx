@@ -4,16 +4,17 @@ import { useOrders } from '../contexts/OrderContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useCash } from '../contexts/CashContext';
 import { UserRole, Payment, PaymentMethod, OrderStatus, RepairOrder, DebtLog, CashClosing, OrderType } from '../types';
-import { DollarSign, Filter, Calendar, User, Search, Wallet, CreditCard, Banknote, Building, AlertTriangle, Printer, CheckCircle2, Users, ChevronRight, Phone, ExternalLink, X, FileText, Smartphone, PlusCircle, Loader2, Lock, History, ClipboardCheck, ArrowUpRight, ArrowDownLeft, Edit2, CheckSquare, RotateCcw, Eye, ScrollText, UserCheck, RefreshCw, MapPin, CalendarDays, MousePointerClick, Info } from 'lucide-react';
+import { DollarSign, Filter, Calendar, User, Search, Wallet, CreditCard, Banknote, Building, AlertTriangle, Printer, CheckCircle2, Users, ChevronRight, Phone, ExternalLink, X, FileText, Smartphone, PlusCircle, Loader2, Lock, History, ClipboardCheck, ArrowUpRight, ArrowDownLeft, Edit2, CheckSquare, RotateCcw, Eye, ScrollText, UserCheck, RefreshCw, MapPin, CalendarDays, MousePointerClick, Info, XCircle, Trash2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { printCashCount } from '../services/invoiceService';
 import { DbFixModal } from '../components/DbFixModal';
 import { fetchGlobalPayments, FlatPayment } from '../services/analytics';
+import { supabase } from '../services/supabase';
 
 const CashRegisterComponent: React.FC = () => {
   const navigate = useNavigate();
   const { orders, addPayments, showNotification, performCashClosing, editPayment } = useOrders();
-  const { getCashierDebtLogs, payCashierDebt, getCashClosings } = useCash();
+  const { getCashierDebtLogs, payCashierDebt, getCashClosings, deleteCashClosing, updateCashClosing, forceClearPendingPayments, getClosingDetails, editClosedPayment } = useCash();
   const { users, currentUser } = useAuth();
   
   // View State
@@ -37,9 +38,11 @@ const CashRegisterComponent: React.FC = () => {
   // Reconciliation States
   const [actualCash, setActualCash] = useState('');
   const [isClosing, setIsClosing] = useState(false);
+  const [isSuccessAnim, setIsSuccessAnim] = useState(false);
   const [closingBranch, setClosingBranch] = useState<string>('');
   
   const [selectedPaymentIds, setSelectedPaymentIds] = useState<string[]>([]);
+  const [animatingIds, setAnimatingIds] = useState<string[]>([]); // Para animación de salida
 
   // History State
   const [historyClosings, setHistoryClosings] = useState<CashClosing[]>([]);
@@ -55,7 +58,11 @@ const CashRegisterComponent: React.FC = () => {
 
   const [showDbFixModal, setShowDbFixModal] = useState(false);
 
-  // Helper to ensure we always have a unique ID even if payment_id is missing
+  const [selectedClosing, setSelectedClosing] = useState<CashClosing | null>(null);
+  const [closingDetails, setClosingDetails] = useState<any[]>([]);
+  const [isLoadingDetails, setIsLoadingDetails] = useState(false);
+
+  // Helper para extraer el ID usando el campo correcto que viene de la BD ('id' o 'payment_id')
   const getPaymentId = (p: FlatPayment) => p.payment_id || (p as any).id || `${p.order_id}-${p.date}-${p.amount}`;
 
   // Permissions
@@ -70,14 +77,39 @@ const CashRegisterComponent: React.FC = () => {
 
   // --- 1. FETCH FROM SERVER ---
   const loadPaymentsFromServer = async () => {
+      if (!supabase) return;
       setIsSyncing(true);
       
       // Default: Last 48 hours to catch everything recent
       const end = Date.now();
       const start = end - (48 * 60 * 60 * 1000); 
 
+      // 1. Fetch RPC data (Standard)
       const payments = await fetchGlobalPayments(start, end, null, null);
-      setRawGlobalPayments(payments);
+      
+      // 2. SAFETY NET: Fetch IDs of closed payments directly from table
+      // This ensures that even if RPC returns stale data or missing closing_id, we filter them out.
+      const { data: closedData } = await supabase
+        .from('order_payments')
+        .select('id')
+        .not('closing_id', 'is', null)
+        .gte('created_at', start); // created_at is bigint in DB for this app context? Or timestamptz?
+        // Based on get_payments_flat, it compares with bigint. So we pass number.
+        // Wait, supabase client usually expects ISO string for timestamptz or number for bigint.
+        // Let's assume bigint as per SQL.
+
+      const closedSet = new Set(closedData?.map((x: any) => x.id) || []);
+      
+      // 3. Merge knowledge: If ID is in closedSet, mark it as closed locally
+      const processedPayments = payments.map(p => {
+          const pId = getPaymentId(p);
+          if (closedSet.has(pId)) {
+              return { ...p, closing_id: 'confirmed-closed' };
+          }
+          return p;
+      });
+
+      setRawGlobalPayments(processedPayments);
       
       setIsSyncing(false);
   };
@@ -103,13 +135,21 @@ const CashRegisterComponent: React.FC = () => {
       setSelectedPaymentIds([]); 
   }, [selectedUsers]);
 
+  const loadHistory = async () => {
+      setLoadingHistory(true);
+      try {
+          const data = await getCashClosings(100);
+          setHistoryClosings(data);
+      } catch (error) {
+          console.error("Error loading history:", error);
+      } finally {
+          setLoadingHistory(false);
+      }
+  };
+
   useEffect(() => {
       if (activeTab === 'HISTORY' && !historySearchTerm) {
-          setLoadingHistory(true);
-          getCashClosings(100).then(data => {
-              setHistoryClosings(data);
-              setLoadingHistory(false);
-          });
+          loadHistory();
       }
   }, [activeTab]);
 
@@ -140,18 +180,29 @@ const CashRegisterComponent: React.FC = () => {
       return names.join(', ');
   };
 
-  // --- FILTER PAYMENTS FROM SERVER DATA ---
-  const currentShiftPayments = useMemo(() => {
-      // Use rawGlobalPayments instead of orders context
+  // LISTA COMPLETA PARA "TURNO ACTUAL" (Incluye Abiertos y Cerrados)
+  const allDailyPayments = useMemo(() => {
       return rawGlobalPayments
-          .filter(p => selectedUsers.includes(p.cashier_id))
-          .sort((a, b) => b.date - a.date);
+          .filter(p => selectedUsers.includes((p as any).cashier_id))
+          .sort((a, b) => {
+              const timeA = (a as any).created_at || a.date || 0;
+              const timeB = (b as any).created_at || b.date || 0;
+              return timeB - timeA;
+          });
   }, [rawGlobalPayments, selectedUsers]);
+
+  // LISTA FILTRADA PARA "CIERRE" (Solo Abiertos)
+  const reconcilablePayments = useMemo(() => {
+      return allDailyPayments.filter(p => !(p as any).closing_id);
+  }, [allDailyPayments]);
+
+  // Backward compatibility alias (to be removed after refactor)
+  const currentShiftPayments = reconcilablePayments;
 
   const totalsByBranch = useMemo(() => {
       const groups: Record<string, { cash: number, transfer: number, card: number, credit: number, refunds: number, total: number, count: number }> = {};
       
-      currentShiftPayments.forEach(p => {
+      allDailyPayments.forEach(p => {
           const branch = p.order_branch || 'T4';
           if (!groups[branch]) groups[branch] = { cash: 0, transfer: 0, card: 0, credit: 0, refunds: 0, total: 0, count: 0 };
           
@@ -170,7 +221,7 @@ const CashRegisterComponent: React.FC = () => {
       });
       
       return groups;
-  }, [currentShiftPayments]);
+  }, [allDailyPayments]);
 
   useEffect(() => {
       const availableBranches = Object.keys(totalsByBranch);
@@ -218,6 +269,7 @@ const CashRegisterComponent: React.FC = () => {
   }, [currentShiftPayments, closingBranch, selectedPaymentIds]);
 
   const handleCloseShift = async () => {
+      // 1. VALIDACIONES INICIALES
       if (!currentUser) { showNotification('error', 'Sesión inválida'); return; }
       if (selectedUsers.length === 0) { showNotification('error', 'Selecciona al menos un cajero'); return; }
       if (!closingBranch) { showNotification('error', 'Selecciona una sucursal'); return; }
@@ -234,44 +286,167 @@ const CashRegisterComponent: React.FC = () => {
       if (!confirm(`¿CERRAR CAJA DE ${closingBranch}?\n\nSistema (Efectivo): $${expectedCash.toLocaleString()}\nReal (Conteo): $${actual.toLocaleString()}\nDiferencia: $${diff.toLocaleString()}`)) return;
 
       setIsClosing(true);
+      let errorSource = 'DESCONOCIDO';
+
       try {
-          let paymentIds: string[] = [];
+          // 2. PREPARACIÓN DE DATOS
+          errorSource = 'PREPARACIÓN_DATOS';
+          let rawIds: string[] = [];
           
           if (selectedPaymentIds.length > 0) {
-              paymentIds = selectedPaymentIds;
+              rawIds = selectedPaymentIds;
           } else {
-              paymentIds = currentShiftPayments
-                  .filter(p => (p.order_branch || 'T4') === closingBranch)
-                  .map(p => p.payment_id);
+              rawIds = currentShiftPayments
+                  .filter(p => ((p as any).branch || p.order_branch || 'T4') === closingBranch)
+                  .map(p => getPaymentId(p)); // USA LA FUNCION CORRECTA AQUI
+          }
+
+          // Filtro seguro para asegurar que pasamos IDs válidos (UUIDs)
+          const paymentIds = rawIds.filter(id => id && typeof id === 'string' && id.length > 20);
+          
+          if (paymentIds.length === 0) {
+              throw new Error("No se encontraron pagos con IDs válidos para consolidar. Verifique los datos.");
           }
               
           const combinedIds = selectedUsers.join(',');
           
+          // 3. EJECUCIÓN DEL CIERRE (BACKEND)
+          errorSource = 'EJECUCIÓN_RPC';
           await performCashClosing(combinedIds, expectedCash, actual, currentUser.id, paymentIds);
           
+          // 4. ANIMACIÓN DE SALIDA (UI)
+          errorSource = 'ANIMACIÓN_UI';
+          setAnimatingIds(paymentIds); // Activar animación de salida para estos IDs
+          
+          // Esperar a que termine la animación visual (ej. 500ms)
+          await new Promise(resolve => setTimeout(resolve, 500));
+
+          // ACTUALIZACIÓN OPTIMISTA: Ahora sí, removerlos de la lista
+          setRawGlobalPayments(prev => prev.map(p => {
+              const pId = getPaymentId(p);
+              if (paymentIds.includes(pId)) {
+                  return { ...p, closing_id: 'temp-closed' } as any; 
+              }
+              return p;
+          }));
+
           setActualCash('');
           setSelectedPaymentIds([]); 
-          showNotification('success', `Cierre realizado correctamente`);
+          setAnimatingIds([]); // Limpiar animación
           
-          // Refresh Data from server
-          loadPaymentsFromServer();
-          setActiveTab('HISTORY'); 
+          // 5. REFRESCO DE DATOS
+          errorSource = 'REFRESCO_DATOS';
+          await loadPaymentsFromServer();
+          
+          // 6. ÉXITO FINAL
+          setIsSuccessAnim(true);
+          setTimeout(() => {
+              setIsSuccessAnim(false);
+          }, 3000);
 
       } catch (error: any) {
           const errMsg = error.message || '';
+          console.error(`Error en fase ${errorSource}:`, error);
+
           if (errMsg.includes('cash_closings') || error.code === '42P01') {
              setShowDbFixModal(true); 
           } else {
-             showNotification('error', `Error al cerrar caja: ${errMsg}`);
+             // Mostrar error detallado con la fuente
+             showNotification('error', `Error (${errorSource}): ${errMsg}`);
           }
       } finally {
           setIsClosing(false);
       }
   };
 
+  const handleDeleteClosing = async (closingId: string) => {
+      if (!confirm("¿Estás seguro de ELIMINAR este cierre? Esto reabrirá todos los pagos asociados para que puedan ser editados o cerrados nuevamente.")) return;
+      
+      try {
+          await deleteCashClosing(closingId);
+          showNotification('success', 'Cierre eliminado y pagos reabiertos');
+          loadHistory(); // Recargar lista
+          loadPaymentsFromServer(); // Recargar pagos abiertos
+      } catch (error: any) {
+          showNotification('error', 'Error al eliminar cierre: ' + error.message);
+      }
+  };
+
+  const handleUpdateClosing = async (closing: CashClosing) => {
+      const newActualStr = prompt("Ingrese el nuevo monto REAL en caja:", closing.actualTotal.toString());
+      if (newActualStr === null) return;
+      
+      const newActual = parseFloat(newActualStr);
+      if (isNaN(newActual)) { alert("Monto inválido"); return; }
+
+      try {
+          await updateCashClosing(closing.id, newActual, closing.notes || '');
+          showNotification('success', 'Cierre actualizado');
+          loadHistory();
+      } catch (error: any) {
+          showNotification('error', 'Error al actualizar: ' + error.message);
+      }
+  };
+
+  const handleForceClear = async () => {
+      if (!currentUser) return;
+      if (selectedUsers.length === 0) {
+          alert("Seleccione al menos un cajero para limpiar.");
+          return;
+      }
+      
+      const names = getSelectedUserNames();
+      if (!confirm(`¿LIMPIEZA FORZADA DE PENDIENTES?\n\nEsto marcará TODOS los pagos pendientes de ${names} como 'Cerrados' en un registro de limpieza manual.\n\nÚselo solo si la consolidación normal falla o desea limpiar la vista.`)) return;
+
+      try {
+          setIsSyncing(true);
+          await forceClearPendingPayments(selectedUsers, currentUser.id);
+          showNotification('success', 'Pagos limpiados correctamente');
+          await loadPaymentsFromServer();
+      } catch (error: any) {
+          showNotification('error', 'Error al limpiar: ' + error.message);
+      } finally {
+          setIsSyncing(false);
+      }
+  };
+
+  const handleViewClosingDetails = async (closing: CashClosing) => {
+      setSelectedClosing(closing);
+      setIsLoadingDetails(true);
+      try {
+          const details = await getClosingDetails(closing.id);
+          setClosingDetails(details);
+      } catch (error: any) {
+          showNotification('error', 'Error al cargar detalles: ' + error.message);
+      } finally {
+          setIsLoadingDetails(false);
+      }
+  };
+
+  const handleEditClosedPayment = async (paymentId: string, currentAmount: number) => {
+      const newAmountStr = prompt("Ingrese el nuevo monto para este pago:", currentAmount.toString());
+      if (newAmountStr === null) return;
+      
+      const newAmount = parseFloat(newAmountStr);
+      if (isNaN(newAmount)) { alert("Monto inválido"); return; }
+      
+      try {
+          await editClosedPayment(paymentId, newAmount, currentUser?.id || 'admin');
+          showNotification('success', 'Pago editado y cierre recalculado');
+          // Reload details and history
+          if (selectedClosing) {
+              const details = await getClosingDetails(selectedClosing.id);
+              setClosingDetails(details);
+              loadHistory();
+          }
+      } catch (error: any) {
+          showNotification('error', 'Error al editar pago: ' + error.message);
+      }
+  };
+
   const handlePrintShift = (branch: string) => {
       const cashierName = getSelectedUserNames() + ` (${branch})`;
-      const branchPayments = currentShiftPayments.filter(p => (p.order_branch || 'T4') === branch);
+      const branchPayments = allDailyPayments.filter(p => (p.order_branch || 'T4') === branch);
       const branchTotals = totalsByBranch[branch];
       
       // Map back to format expected by print function
@@ -341,6 +516,18 @@ const CashRegisterComponent: React.FC = () => {
   return (
     <div className="p-6 max-w-7xl mx-auto pb-20 relative">
         
+        {isSuccessAnim && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/80 backdrop-blur-sm animate-in fade-in duration-300">
+                <div className="bg-white p-10 rounded-3xl shadow-2xl flex flex-col items-center animate-in zoom-in duration-500 border border-green-100">
+                    <div className="w-24 h-24 bg-green-100 rounded-full flex items-center justify-center mb-6">
+                        <CheckCircle2 className="w-12 h-12 text-green-600" />
+                    </div>
+                    <h2 className="text-3xl font-black text-slate-800 mb-2">¡Cierre Exitoso!</h2>
+                    <p className="text-slate-500 font-medium text-center max-w-xs">Los cobros han sido consolidados correctamente en la base de datos.</p>
+                </div>
+            </div>
+        )}
+
         {showDbFixModal && <DbFixModal onClose={() => setShowDbFixModal(false)} />}
 
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
@@ -379,6 +566,17 @@ const CashRegisterComponent: React.FC = () => {
                     <RefreshCw className={`w-3 h-3 ${isSyncing ? 'animate-spin' : ''}`} /> 
                     {isSyncing ? 'Buscando Pagos...' : 'Refrescar Datos'}
                 </button>
+                {canAdminister && (
+                    <button 
+                        onClick={handleForceClear} 
+                        disabled={isSyncing || selectedUsers.length === 0} 
+                        className="text-xs font-bold text-red-600 bg-red-50 hover:bg-red-100 px-3 py-2 rounded-lg flex items-center gap-1 transition-colors"
+                        title="Marca todos los pagos abiertos como cerrados manualmente"
+                    >
+                        <Trash2 className="w-3 h-3" /> 
+                        Limpiar Pendientes
+                    </button>
+                )}
             </div>
         </div>
         )}
@@ -426,22 +624,23 @@ const CashRegisterComponent: React.FC = () => {
 
                 <div className="lg:col-span-2 bg-white rounded-2xl shadow-sm border border-slate-200 flex flex-col h-[600px]">
                     <div className="p-4 border-b border-slate-100 flex justify-between items-center">
-                        <h3 className="font-bold text-slate-700">Movimientos Detectados ({currentShiftPayments.length})</h3>
+                        <h3 className="font-bold text-slate-700">Movimientos Detectados ({allDailyPayments.length})</h3>
                         <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full font-bold">Datos Servidor</span>
                     </div>
                     <div className="overflow-y-auto flex-1 p-2">
-                        {currentShiftPayments.length === 0 ? (
+                        {allDailyPayments.length === 0 ? (
                             <div className="h-full flex flex-col items-center justify-center text-slate-400">
                                 <Search className="w-12 h-12 mb-2 opacity-20" />
                                 <p>Caja limpia. Todo conciliado o sin datos.</p>
                             </div>
                         ) : (
                             <div className="space-y-2">
-                                {currentShiftPayments.map((p, idx) => {
+                                {allDailyPayments.map((p, idx) => {
                                     const isRefund = p.amount < 0 || p.is_refund;
                                     const methodTranslated = p.method === 'CASH' ? 'Efectivo' : p.method === 'TRANSFER' ? 'Transferencia' : p.method === 'CARD' ? 'Tarjeta' : p.method;
                                     const dateObj = new Date(Number(p.date));
                                     const dateStr = isNaN(dateObj.getTime()) ? new Date(p.date).toLocaleDateString() : dateObj.toLocaleDateString();
+                                    const isClosed = !!(p as any).closing_id && (p as any).closing_id !== 'temp-closed';
                                     
                                     return (
                                     <div 
@@ -450,9 +649,11 @@ const CashRegisterComponent: React.FC = () => {
                                         onClick={() => setSelectedPaymentDetails(p)}
                                     >
                                         <div className="flex items-center gap-3">
-                                            <div className={`p-2 rounded-full ${isRefund ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'}`}>
-                                                <DollarSign className="w-4 h-4" />
+                                            {/* STATUS INDICATOR */}
+                                            <div className={`w-8 h-8 rounded-full flex items-center justify-center border ${isClosed ? 'bg-green-100 border-green-200 text-green-600' : 'bg-red-50 border-red-200 text-red-500'}`}>
+                                                {isClosed ? <CheckCircle2 className="w-5 h-5" /> : <XCircle className="w-5 h-5" />}
                                             </div>
+
                                             <div>
                                                 <div className="flex items-center gap-2 mb-1">
                                                     <span className="text-[10px] font-bold text-slate-500 bg-slate-200 px-1.5 py-0.5 rounded flex items-center gap-1">
@@ -499,12 +700,13 @@ const CashRegisterComponent: React.FC = () => {
                             .map((p, idx) => {
                                 const pId = getPaymentId(p);
                                 const isChecked = selectedPaymentIds.includes(pId);
+                                const isAnimating = animatingIds.includes(pId);
                                 const methodTranslated = p.method === 'CASH' ? 'Efectivo' : p.method === 'TRANSFER' ? 'Transferencia' : p.method === 'CARD' ? 'Tarjeta' : p.method;
                                 return (
                                 <div 
                                     key={pId} 
                                     onClick={() => togglePaymentSelection(pId)}
-                                    className={`p-3 rounded-xl border flex gap-3 items-center cursor-pointer transition-all ${isChecked ? 'bg-blue-50 border-blue-200' : 'bg-white border-slate-200 opacity-60 hover:opacity-100'}`}
+                                    className={`p-3 rounded-xl border flex gap-3 items-center cursor-pointer transition-all duration-500 ${isAnimating ? 'opacity-0 translate-x-full' : ''} ${isChecked ? 'bg-blue-50 border-blue-200' : 'bg-white border-slate-200 opacity-60 hover:opacity-100'}`}
                                 >
                                     <div className={`w-5 h-5 rounded border flex items-center justify-center ${isChecked ? 'bg-blue-600 border-blue-600 text-white' : 'border-slate-300'}`}>
                                         {isChecked && <CheckSquare className="w-3.5 h-3.5" />}
@@ -585,10 +787,37 @@ const CashRegisterComponent: React.FC = () => {
                         const date = new Date(closing.timestamp);
                         const isPerfect = closing.difference === 0;
                         return (
-                            <div key={closing.id} className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 cursor-pointer hover:shadow-md transition">
+                            <div 
+                                key={closing.id} 
+                                className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 cursor-pointer hover:shadow-md transition group"
+                                onClick={() => handleViewClosingDetails(closing)}
+                            >
                                 <div className="flex justify-between items-start mb-2 pl-2">
-                                    <div className="text-xs text-slate-500 font-bold uppercase">{date.toLocaleDateString()} • {date.toLocaleTimeString()}</div>
-                                    <div className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${isPerfect ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>{isPerfect ? 'Cuadrado' : 'Diferencia'}</div>
+                                    <div className="text-xs text-slate-500 font-bold uppercase flex items-center gap-2">
+                                        {date.toLocaleDateString()} • {date.toLocaleTimeString()}
+                                        {closing.updated_at && <span className="bg-orange-100 text-orange-600 px-1.5 py-0.5 rounded text-[9px] font-black">EDITADO</span>}
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <div className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${isPerfect ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>{isPerfect ? 'Cuadrado' : 'Diferencia'}</div>
+                                        {canAdminister && (
+                                            <>
+                                                <button 
+                                                    onClick={(e) => { e.stopPropagation(); handleUpdateClosing(closing); }}
+                                                    className="p-1 text-slate-400 hover:text-blue-500 hover:bg-blue-50 rounded transition"
+                                                    title="Editar Monto Real"
+                                                >
+                                                    <Edit2 className="w-4 h-4" />
+                                                </button>
+                                                <button 
+                                                    onClick={(e) => { e.stopPropagation(); handleDeleteClosing(closing.id); }}
+                                                    className="p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition"
+                                                    title="Eliminar Cierre (Reabrir Pagos)"
+                                                >
+                                                    <Trash2 className="w-4 h-4" />
+                                                </button>
+                                            </>
+                                        )}
+                                    </div>
                                 </div>
                                 <div className="pl-2">
                                     <div className="text-2xl font-black text-slate-800 mb-1">${closing.systemTotal.toLocaleString()}</div>
@@ -661,6 +890,119 @@ const CashRegisterComponent: React.FC = () => {
                 </div>
             </div>
         )}
+
+        {/* Closing Details Modal */}
+        {selectedClosing && (
+            <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+                <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col">
+                    <div className="p-6 border-b border-slate-100 flex justify-between items-center">
+                        <div>
+                            <h2 className="text-xl font-bold text-slate-800">Detalle de Cierre</h2>
+                            <p className="text-sm text-slate-500">ID: {selectedClosing.id}</p>
+                        </div>
+                        <button onClick={() => setSelectedClosing(null)} className="p-2 hover:bg-slate-100 rounded-full">
+                            <X className="w-6 h-6 text-slate-400" />
+                        </button>
+                    </div>
+                    
+                    <div className="flex-1 overflow-y-auto p-6">
+                        {isLoadingDetails ? (
+                            <div className="flex justify-center py-10"><Loader2 className="w-8 h-8 animate-spin text-blue-500" /></div>
+                        ) : (
+                            <div className="space-y-6">
+                                {/* Summary Cards */}
+                                <div className="grid grid-cols-3 gap-4">
+                                    <div className="bg-slate-50 p-4 rounded-xl">
+                                        <p className="text-xs font-bold text-slate-500 uppercase">Sistema</p>
+                                        <p className="text-2xl font-black text-slate-800">${selectedClosing.systemTotal.toLocaleString()}</p>
+                                    </div>
+                                    <div className="bg-blue-50 p-4 rounded-xl">
+                                        <p className="text-xs font-bold text-blue-600 uppercase">Real (Conteo)</p>
+                                        <p className="text-2xl font-black text-blue-700">${selectedClosing.actualTotal.toLocaleString()}</p>
+                                    </div>
+                                    <div className={`p-4 rounded-xl ${selectedClosing.difference === 0 ? 'bg-green-50' : 'bg-red-50'}`}>
+                                        <p className={`text-xs font-bold uppercase ${selectedClosing.difference === 0 ? 'text-green-600' : 'text-red-600'}`}>Diferencia</p>
+                                        <p className={`text-2xl font-black ${selectedClosing.difference === 0 ? 'text-green-700' : 'text-red-700'}`}>${selectedClosing.difference.toLocaleString()}</p>
+                                    </div>
+                                </div>
+
+                                {selectedClosing.notes && (
+                                    <div className="bg-yellow-50 p-4 rounded-xl border border-yellow-100">
+                                        <p className="text-xs font-bold text-yellow-600 uppercase mb-1">Notas del Cierre</p>
+                                        <p className="text-slate-700 font-medium">{selectedClosing.notes}</p>
+                                    </div>
+                                )}
+                                {selectedClosing.updated_at && (
+                                    <div className="text-xs text-slate-400 text-right italic">
+                                        Última actualización: {new Date(selectedClosing.updated_at).toLocaleString()}
+                                    </div>
+                                )}
+
+                                {/* Payments Table */}
+                                <div>
+                                    <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
+                                        <FileText className="w-5 h-5 text-blue-500" />
+                                        Pagos Consolidados ({closingDetails.length})
+                                    </h3>
+                                    <div className="border border-slate-200 rounded-xl overflow-hidden">
+                                        <table className="w-full text-sm text-left">
+                                            <thead className="bg-slate-50 text-slate-500 font-bold uppercase text-xs">
+                                                <tr>
+                                                    <th className="p-3">Fecha/Hora</th>
+                                                    <th className="p-3">Orden</th>
+                                                    <th className="p-3">Método</th>
+                                                    <th className="p-3">Cajero</th>
+                                                    <th className="p-3 text-right">Monto</th>
+                                                    <th className="p-3 text-center">Acciones</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-slate-100">
+                                                {closingDetails.map((p: any) => (
+                                                    <tr key={p.payment_id} className="hover:bg-slate-50">
+                                                        <td className="p-3">
+                                                            <div className="font-medium text-slate-800">{new Date(p.created_at).toLocaleDateString()}</div>
+                                                            <div className="text-xs text-slate-400">{new Date(p.created_at).toLocaleTimeString()}</div>
+                                                        </td>
+                                                        <td className="p-3">
+                                                            <div className="font-bold text-slate-700">#{p.order_readable_id}</div>
+                                                            <div className="text-xs text-slate-500">{p.order_model}</div>
+                                                        </td>
+                                                        <td className="p-3">
+                                                            <span className="px-2 py-1 bg-slate-100 rounded text-xs font-bold text-slate-600">{p.method}</span>
+                                                        </td>
+                                                        <td className="p-3 text-slate-600">{p.cashier_name}</td>
+                                                        <td className="p-3 text-right">
+                                                            <div className="font-bold text-slate-800">${p.amount.toLocaleString()}</div>
+                                                            {p.is_edited && (
+                                                                <div className="text-[10px] text-orange-500 font-bold flex items-center justify-end gap-1">
+                                                                    <Edit2 className="w-3 h-3" /> EDITADO
+                                                                </div>
+                                                            )}
+                                                        </td>
+                                                        <td className="p-3 text-center">
+                                                            {canAdminister && (
+                                                                <button 
+                                                                    onClick={() => handleEditClosedPayment(p.payment_id, p.amount)}
+                                                                    className="p-2 hover:bg-blue-50 text-slate-400 hover:text-blue-600 rounded-lg transition"
+                                                                    title="Editar Monto"
+                                                                >
+                                                                    <Edit2 className="w-4 h-4" />
+                                                                </button>
+                                                            )}
+                                                        </td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            </div>
+        )}
+
         {selectedPaymentDetails && (
             <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in zoom-in duration-200" onClick={() => setSelectedPaymentDetails(null)}>
                 <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden" onClick={e => e.stopPropagation()}>

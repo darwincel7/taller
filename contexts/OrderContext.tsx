@@ -4,7 +4,7 @@ import { supabase } from '../services/supabase';
 import { 
   RepairOrder, AppNotification, 
   OrderStatus, LogType, Payment, 
-  DashboardStats, ReturnRequest, OrderType, ExternalRepairRequest, CashClosing, PointRequest
+  DashboardStats, ReturnRequest, OrderType, ExternalRepairRequest, CashClosing, PointRequest, Expense
 } from '../types';
 
 interface OrderContextType {
@@ -62,6 +62,10 @@ interface OrderContextType {
   resolveExternalRepair: (orderId: string, approve: boolean, userName: string) => Promise<void>;
   receiveFromExternal: (orderId: string, notes: string, userName: string) => Promise<void>;
   recordOrderLog: (id: string, actionType: string, message: string, metadata?: any, logType?: LogType, userName?: string) => Promise<void>;
+  
+  // Parts Requests
+  addPartRequest: (orderId: string, partName: string, userName: string) => Promise<void>;
+  resolvePartRequest: (orderId: string, requestId: string, status: 'FOUND' | 'NOT_FOUND', details?: { source?: string, price?: number, notes?: string }, userName?: string) => Promise<void>;
 }
 
 const OrderContext = createContext<OrderContextType | undefined>(undefined);
@@ -348,6 +352,25 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         else if (newLen < oldLen) logsToCreate.push({ action: 'EXPENSE_REMOVED', msg: `🗑️ Gasto Eliminado`, meta: { count: newLen }, type: 'WARNING' });
     }
 
+    // E) Notes Updated (Only log diff)
+    if (updates.technicianNotes && updates.technicianNotes !== currentOrder.technicianNotes) {
+        const oldNote = currentOrder.technicianNotes || '';
+        const newNote = updates.technicianNotes;
+        let diff = '';
+
+        if (newNote.startsWith(oldNote)) {
+            // It's an append
+            diff = newNote.slice(oldNote.length).trim();
+        } else {
+            // It's a rewrite or edit in the middle
+            diff = `Nota modificada: ${newNote}`;
+        }
+
+        if (diff) {
+            logsToCreate.push({ action: 'NOTE_UPDATED', msg: diff, meta: null, type: 'INFO' });
+        }
+    }
+
     // D) Explicit Audit Reason
     if (auditReason) {
         logsToCreate.push({ action: 'AUDIT_LOG', msg: auditReason, meta: null, type: 'WARNING' });
@@ -582,8 +605,18 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       await recordOrderLog(orderId, 'RETURN_REQUESTED', `↩️ SOLICITUD DEVOLUCIÓN: ${reason}`, { reason, fee }, 'WARNING', requesterName); 
   };
 
-  const sendTechMessage = async (orderId: string, message: string, senderName: string) => { await updateOrderDetails(orderId, { techMessage: { message, sender: senderName, timestamp: Date.now(), pending: true } }); };
-  const resolveTechMessage = async (orderId: string) => { const order = orders.find(o => o.id === orderId); if (order?.techMessage) await updateOrderDetails(orderId, { techMessage: { ...order.techMessage, pending: false } }); };
+  const sendTechMessage = async (orderId: string, message: string, senderName: string) => { 
+      await updateOrderDetails(orderId, { techMessage: { message, sender: senderName, timestamp: Date.now(), pending: true } }); 
+      await recordOrderLog(orderId, 'TECH_MESSAGE_SENT', `📨 MENSAJE A TÉCNICO: "${message}"`, { sender: senderName, message }, 'INFO', senderName);
+  };
+
+  const resolveTechMessage = async (orderId: string) => { 
+      const order = orders.find(o => o.id === orderId); 
+      if (order?.techMessage) {
+          await updateOrderDetails(orderId, { techMessage: { ...order.techMessage, pending: false } }); 
+          await recordOrderLog(orderId, 'TECH_MESSAGE_READ', `👁️ MENSAJE LEÍDO por Técnico`, { originalMessage: order.techMessage.message, sender: order.techMessage.sender }, 'INFO', 'Técnico');
+      }
+  };
   
   const updateOrderFinancials = async (id: string, updates: Partial<RepairOrder>) => { await updateOrderDetails(id, updates); };
 
@@ -627,6 +660,64 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       await recordOrderLog(orderId, 'EXTERNAL_REPAIR_RETURNED', `📍 RETORNO DE TALLER EXTERNO. Nota: ${notes}`, { notes }, 'INFO', userName);
   };
 
+  const addPartRequest = async (orderId: string, partName: string, userName: string) => {
+      const order = orders.find(o => o.id === orderId);
+      if (!order) return;
+
+      const newRequest: any = {
+          id: `req-${Date.now()}`,
+          orderId: order.id,
+          partName,
+          requestedBy: userName,
+          requestedAt: Date.now(),
+          status: 'PENDING',
+          orderReadableId: order.readable_id?.toString() || order.id.slice(0, 6),
+          orderModel: order.deviceModel,
+          orderType: order.orderType
+      };
+
+      const updatedRequests = [...(order.partRequests || []), newRequest];
+      await updateOrderDetails(orderId, { partRequests: updatedRequests });
+      await recordOrderLog(orderId, 'PART_REQUESTED', `🧩 PIEZA SOLICITADA: ${partName}`, { partName }, 'WARNING', userName);
+  };
+
+  const resolvePartRequest = async (orderId: string, requestId: string, status: 'FOUND' | 'NOT_FOUND', details: { source?: string, price?: number, notes?: string } = {}, userName: string = 'Sistema') => {
+      const order = orders.find(o => o.id === orderId);
+      if (!order || !order.partRequests) return;
+
+      const request = order.partRequests.find(r => r.id === requestId);
+      if (!request) return;
+
+      // Update Request Status
+      const updatedRequests = order.partRequests.map(r => 
+          r.id === requestId 
+          ? { ...r, status, foundAt: Date.now(), foundBy: userName, ...details } 
+          : r
+      );
+
+      const updates: Partial<RepairOrder> = { partRequests: updatedRequests };
+
+      // If FOUND, add Expense automatically
+      if (status === 'FOUND' && details.price && details.price > 0) {
+          const newExpense: Expense = {
+              id: `exp-${Date.now()}`,
+              description: `Pieza: ${request.partName} (${details.source || 'N/A'})`,
+              amount: details.price,
+              date: Date.now()
+          };
+          updates.expenses = [...(order.expenses || []), newExpense];
+      }
+
+      await updateOrderDetails(orderId, updates);
+
+      // Log History
+      if (status === 'FOUND') {
+          await recordOrderLog(orderId, 'PART_FOUND', `✅ PIEZA ENCONTRADA: ${request.partName}`, { ...details }, 'SUCCESS', userName);
+      } else {
+          await recordOrderLog(orderId, 'PART_NOT_FOUND', `❌ PIEZA NO ENCONTRADA: ${request.partName}`, { ...details }, 'DANGER', userName);
+      }
+  };
+
   return (
     <OrderContext.Provider value={{ 
         orders, notifications, isConnected, hasPendingSync,
@@ -638,7 +729,8 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         initiateTransfer, confirmTransfer, assignOrder, requestAssignment, resolveAssignmentRequest, requestReturn, sendTechMessage, resolveTechMessage, updateOrderFinancials, createWarrantyOrder,
         validateOrder, debatePoints,
         requestExternalRepair, resolveExternalRepair, receiveFromExternal,
-        recordOrderLog
+        recordOrderLog,
+        addPartRequest, resolvePartRequest
     }}>
       {children}
     </OrderContext.Provider>

@@ -62,7 +62,8 @@ export interface CashClosing {
   systemTotal: number;
   actualTotal: number;
   difference: number;
-  note?: string;
+  notes?: string;
+  updated_at?: string;
 }
 
 export interface DebtLog {
@@ -119,6 +120,23 @@ export interface PointRequest {
     approvedBy?: string;
     splitProposal?: PointSplit;
     requestedAt?: number;
+}
+
+export interface PartRequest {
+    id: string;
+    orderId: string;
+    partName: string;
+    requestedBy: string;
+    requestedAt: number;
+    status: 'PENDING' | 'FOUND' | 'NOT_FOUND';
+    foundAt?: number;
+    foundBy?: string;
+    source?: string;
+    price?: number;
+    notes?: string;
+    orderReadableId?: string; // Snapshot for easier display
+    orderModel?: string;      // Snapshot
+    orderType?: OrderType;    // Snapshot
 }
 
 export interface UserPermissions {
@@ -328,6 +346,7 @@ export interface RepairOrder {
   proposedEstimate?: string;
   proposalType?: 'MONETARY' | 'ACTION';
   returnRequest?: ReturnRequest;
+  partRequests?: PartRequest[];
 
   externalRepair?: ExternalRepairRequest;
 

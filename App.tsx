@@ -15,6 +15,7 @@ import { Inventory } from './pages/Inventory';
 import { KnowledgeBase } from './pages/KnowledgeBase';
 import { CashRegister } from './pages/CashRegister';
 import { WorkshopAudit } from './pages/WorkshopAudit';
+import { PartsPanel } from './pages/PartsPanel';
 import { MobileVideoUpload } from './pages/MobileVideoUpload';
 import { OrderProvider } from './contexts/OrderContext';
 import { InventoryProvider } from './contexts/InventoryContext'; 
@@ -61,6 +62,7 @@ const App: React.FC = () => {
                 <Route path="/team" element={<ProtectedRoute><TeamManagement /></ProtectedRoute>} />
                 <Route path="/activity" element={<ProtectedRoute><ActivityLog /></ProtectedRoute>} />
                 <Route path="/inventory" element={<ProtectedRoute><Inventory /></ProtectedRoute>} />
+                <Route path="/parts" element={<ProtectedRoute><PartsPanel /></ProtectedRoute>} />
                 <Route path="/wiki" element={<ProtectedRoute><KnowledgeBase /></ProtectedRoute>} />
                 <Route path="/cash" element={<ProtectedRoute><CashRegister /></ProtectedRoute>} />
                 <Route path="/audit" element={<ProtectedRoute><WorkshopAudit /></ProtectedRoute>} />

@@ -22,6 +22,7 @@ interface ControlPanelProps {
   onAcceptAssignment?: () => void;
   onRejectAssignment?: () => void;
   onClaim?: () => void;
+  onRequestPart?: () => void;
 }
 
 export const ControlPanel: React.FC<ControlPanelProps> = ({
@@ -42,7 +43,8 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   onReceiveExternal,
   onAcceptAssignment,
   onRejectAssignment,
-  onClaim
+  onClaim,
+  onRequestPart
 }) => {
 
   // --- LÓGICA ESPECIAL: TALLER EXTERNO ---
@@ -125,6 +127,10 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
             <UserIcon className="w-4 h-4"/> <span className="text-[9px] uppercase">PASAR</span>
           </button>
           
+          <button type="button" onClick={onRequestPart} className="col-span-2 py-3 bg-orange-50 text-orange-600 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-orange-100 transition border border-orange-100 cursor-pointer active:scale-95">
+            <Sparkles className="w-4 h-4"/> <span className="text-[9px] uppercase">PEDIR PIEZA / REPUESTO</span>
+          </button>
+
           {/* NOTIFY TECH BUTTON (Only if assigned) */}
           {order.assignedTo && (
              <button type="button" onClick={onNotifyTech} className="col-span-2 py-3 bg-blue-50 text-blue-600 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-blue-100 transition border border-blue-100 cursor-pointer active:scale-95">

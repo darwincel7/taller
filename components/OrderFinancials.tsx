@@ -3,6 +3,7 @@ import { Expense, RepairOrder, OrderType, InventoryPart } from '../types';
 import { DollarSign, Trash2, Plus, Package, TrendingUp, Edit2, X, Save as SaveIcon, Scissors, Check } from 'lucide-react';
 import { useOrders } from '../contexts/OrderContext';
 import { useInventory } from '../contexts/InventoryContext';
+import { useAuth } from '../contexts/AuthContext';
 
 interface OrderFinancialsProps {
   order: RepairOrder;
@@ -34,8 +35,9 @@ export const OrderFinancials: React.FC<OrderFinancialsProps> = ({
   canEdit,
   onPermissionError
 }) => {
-  const { updateOrderDetails, showNotification } = useOrders();
+  const { updateOrderDetails, showNotification, recordOrderLog } = useOrders();
   const { inventory, updateInventoryPart } = useInventory();
+  const { currentUser } = useAuth();
   
   // State for adding/editing
   const [expenseDesc, setExpenseDesc] = useState('');
@@ -154,7 +156,33 @@ export const OrderFinancials: React.FC<OrderFinancialsProps> = ({
       }
       const pCost = parseFloat(purchaseCostInput) || 0;
       const tPrice = parseFloat(targetPriceInput) || 0;
+      
+      const oldPCost = order.purchaseCost || 0;
+      const oldTPrice = order.targetPrice || 0;
+      
       await updateOrderDetails(order.id, { purchaseCost: pCost, targetPrice: tPrice });
+      
+      if (pCost !== oldPCost) {
+          await recordOrderLog(
+              order.id, 
+              'COST_UPDATED', 
+              `📉 COSTO COMPRA ACTUALIZADO: $${oldPCost} ➔ $${pCost}`, 
+              { oldPCost, newPCost: pCost }, 
+              'INFO', 
+              currentUser?.name
+          );
+      }
+      
+      if (tPrice !== oldTPrice) {
+          await recordOrderLog(
+              order.id, 
+              'TARGET_PRICE_UPDATED', 
+              `📈 PRECIO VENTA OBJETIVO ACTUALIZADO: $${oldTPrice} ➔ $${tPrice}`, 
+              { oldTPrice, newTPrice: tPrice }, 
+              'INFO', 
+              currentUser?.name
+          );
+      }
   };
 
   const handleClientPriceBlur = () => {
@@ -239,29 +267,29 @@ export const OrderFinancials: React.FC<OrderFinancialsProps> = ({
         )}
         
         {/* --- EXPENSE LIST --- */}
-        <div className="mb-2">
-            <p className="text-[10px] font-bold text-slate-400 uppercase mb-2 flex items-center gap-1"><Package className="w-3 h-3"/> HISTORIAL</p>
+        <div className="flex-1 overflow-y-auto min-h-0 mb-2 pr-1 custom-scrollbar">
+            <p className="text-[10px] font-bold text-slate-400 uppercase mb-1 flex items-center gap-1 sticky top-0 bg-white z-10 py-1"><Package className="w-3 h-3"/> HISTORIAL</p>
             
-            <div className="space-y-2">
+            <div className="space-y-1">
                 {expensesList.length === 0 ? (
-                    <div className="p-3 text-center text-slate-300 text-xs italic bg-slate-50 rounded border border-slate-100">
+                    <div className="p-2 text-center text-slate-300 text-[10px] italic bg-slate-50 rounded border border-slate-100">
                         Sin gastos registrados.
                     </div>
                 ) : (
                     expensesList.map(exp => (
-                        <div key={exp.id} className="flex justify-between items-center p-2 hover:bg-slate-50 rounded border border-transparent hover:border-slate-100 transition group">
-                            <div className="flex items-start gap-2">
-                                <div className="bg-slate-100 p-1.5 rounded text-slate-400">
+                        <div key={exp.id} className="flex justify-between items-center p-1 hover:bg-slate-50 rounded border border-transparent hover:border-slate-100 transition group">
+                            <div className="flex items-start gap-1.5">
+                                <div className="bg-slate-100 p-1 rounded text-slate-400">
                                     <Package className="w-3 h-3" />
                                 </div>
                                 <div>
-                                    <p className="text-xs font-bold text-slate-700 leading-tight">{exp.description}</p>
-                                    <p className="text-[10px] text-slate-400">{new Date(exp.date).toLocaleDateString()}</p>
+                                    <p className="text-[11px] font-bold text-slate-700 leading-tight">{exp.description}</p>
+                                    <p className="text-[9px] text-slate-400">{new Date(exp.date).toLocaleDateString()}</p>
                                 </div>
                             </div>
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-1">
                                 {canViewAccounting && (
-                                    <span className="font-bold text-red-600 bg-red-50 px-2 py-1 rounded text-xs border border-red-100">
+                                    <span className="font-bold text-red-600 bg-red-50 px-1.5 py-0.5 rounded text-[10px] border border-red-100">
                                         -${exp.amount.toLocaleString()}
                                     </span>
                                 )}

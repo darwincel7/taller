@@ -134,6 +134,10 @@ const LayoutComponent: React.FC<LayoutProps> = ({ children }) => {
             <Package className="w-4 h-4" />
             Inventario
           </Link>
+          <Link to="/parts" className={getNavLinkClass('/parts')}>
+            <ShoppingBag className="w-4 h-4" />
+            Panel de Piezas
+          </Link>
           <Link to="/wiki" className={getNavLinkClass('/wiki')}>
             <Book className="w-4 h-4" />
             Wiki Técnica

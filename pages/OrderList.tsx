@@ -703,6 +703,22 @@ export const OrderList: React.FC = () => {
                                           <button onClick={(e) => { e.stopPropagation(); handleBudgetResponse(order, false); }} className="flex-1 py-3 bg-red-50 text-red-600 font-bold rounded-xl hover:bg-red-100 transition text-[10px]">RECHAZAR</button>
                                           <button onClick={(e) => { e.stopPropagation(); handleBudgetResponse(order, true); }} className="flex-[2] py-3 bg-green-600 text-white font-bold rounded-xl shadow-lg hover:bg-green-700 transition text-[10px]">APROBAR</button>
                                       </div>
+                                  ) : order.alertType === 'TRANSFER' ? (
+                                      <div className="flex gap-2">
+                                          <button onClick={async (e) => { 
+                                              e.stopPropagation(); 
+                                              if(confirm('¿Rechazar traslado?')) { 
+                                                  await updateOrderDetails(order.id, { transferStatus: 'NONE', transferTarget: null }); 
+                                                  await addOrderLog(order.id, 'TRANSFER_REJECTED', `🚫 TRASLADO RECHAZADO por ${currentUser?.name}.`, currentUser?.name || 'Sistema', 'DANGER'); 
+                                              } 
+                                          }} className="flex-1 py-3 bg-red-50 text-red-600 font-bold rounded-xl hover:bg-red-100 transition text-[10px]">RECHAZAR</button>
+                                          <button onClick={async (e) => { 
+                                              e.stopPropagation(); 
+                                              if(confirm('¿Recibir equipo ahora?')) { 
+                                                  await confirmTransfer(order.id, currentUser?.name || 'Sistema'); 
+                                              } 
+                                          }} className="flex-[2] py-3 bg-blue-600 text-white font-bold rounded-xl shadow-lg hover:bg-blue-700 transition text-[10px]">RECIBIR</button>
+                                      </div>
                                   ) : (
                                       <button onClick={(e) => { e.stopPropagation(); setManagingAlert({ order, type: order.alertType }); }} className={`w-full py-4 rounded-2xl font-black text-xs text-white shadow-lg flex items-center justify-center gap-2 transition ${config.bg} hover:opacity-90 active:scale-95`}>{config.action}</button>
                                   )}

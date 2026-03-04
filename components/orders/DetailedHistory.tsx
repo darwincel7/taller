@@ -57,43 +57,26 @@ export const DetailedHistory: React.FC<DetailedHistoryProps> = ({ history }) => 
               {/* Dot */}
               <div className={`absolute -left-[5px] top-1 w-2.5 h-2.5 rounded-full ring-4 ring-white ${dotColor} transition-colors`}></div>
               
-              <div className="mb-1 flex justify-between items-start">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className={`text-[10px] font-black uppercase px-1.5 py-0.5 rounded ${bgClass} border ${borderClass}`}>
-                      {log.action_type?.replace(/_/g, ' ') || 'LOG'}
-                    </span>
-                    <span className="text-[10px] text-slate-400 font-bold uppercase">
-                      {new Date(log.date).toLocaleString()}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1 text-[10px] text-slate-500 font-medium mt-0.5">
-                    <User className="w-3 h-3" /> {log.technician} 
-                    {log.actor_role && <span className="opacity-70">({log.actor_role})</span>}
-                    {log.actor_branch && <span className="opacity-70">• {log.actor_branch}</span>}
-                  </div>
+              <div className="mb-0.5 flex justify-between items-center">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded ${bgClass} border ${borderClass}`}>
+                    {log.action_type?.replace(/_/g, ' ') || 'LOG'}
+                  </span>
+                  <span className="text-[9px] text-slate-400 font-bold uppercase flex items-center gap-1">
+                    {new Date(log.date).toLocaleDateString()} {new Date(log.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    <span className="text-slate-300">•</span>
+                    <User className="w-3 h-3 inline-block" /> {log.technician}
+                  </span>
                 </div>
               </div>
 
-              <div className={`text-xs p-3 rounded-lg border mt-1 ${borderClass} ${bgClass} relative`}>
-                <div className="flex gap-2">
-                   <div className="mt-0.5 opacity-70">
-                      {getIconForAction(log.action_type)}
-                   </div>
-                   <div className="flex-1">
-                      <p className="font-medium">{log.note}</p>
-                      {log.metadata && Object.keys(log.metadata).length > 0 && (
-                        <div className="mt-2 pt-2 border-t border-black/5 text-[10px] font-mono opacity-80 grid grid-cols-2 gap-1">
-                          {Object.entries(log.metadata).map(([key, value]) => (
-                            <div key={key} className="flex gap-1">
-                              <span className="font-bold opacity-70">{key}:</span>
-                              <span className="truncate">{String(value)}</span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                   </div>
-                </div>
+              <div className={`text-[11px] px-2 py-1.5 rounded-md border ${borderClass} ${bgClass} relative flex items-start gap-2`}>
+                 <div className="opacity-70 mt-0.5 shrink-0">
+                    {getIconForAction(log.action_type)}
+                 </div>
+                 <div className="flex-1 font-medium break-words leading-tight">
+                    {log.note}
+                 </div>
               </div>
             </div>
           );

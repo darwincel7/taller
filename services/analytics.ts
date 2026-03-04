@@ -5,9 +5,11 @@ import { DashboardStats, PaymentMethod, OrderStatus } from '../types';
 // Extended interface for flattened payments from RPC
 export interface FlatPayment {
     payment_id: string;
+    id?: string; // Optional, from RPC
     amount: number;
     method: PaymentMethod;
     date: number;
+    created_at?: number; // From RPC
     cashier_id: string;
     cashier_name: string;
     is_refund: boolean;
@@ -17,6 +19,7 @@ export interface FlatPayment {
     order_model: string;
     order_customer: string;
     order_branch: string;
+    closing_id?: string | null; // Added closing_id
 }
 
 /**
@@ -45,7 +48,19 @@ export const fetchGlobalPayments = async (
             return [];
         }
 
-        return data as FlatPayment[];
+        // MAP RPC RESULT TO FlatPayment INTERFACE
+        // The RPC returns: payment_id, order_id, amount, method, cashier_id, cashier_name, is_refund, created_at, closing_id, branch
+        return (data || []).map((p: any) => ({
+            ...p,
+            payment_id: p.payment_id, // Explicitly use the text ID from RPC
+            date: p.created_at, // Map created_at to date
+            order_branch: p.branch, // Map branch to order_branch
+            // Ensure other fields are present or defaulted
+            notes: '',
+            order_readable_id: p.order_readable_id || 0,
+            order_model: p.order_model || '',
+            order_customer: ''
+        })) as FlatPayment[];
     } catch (e) {
         console.error("Exception fetching payments:", e);
         return [];

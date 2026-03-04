@@ -4,14 +4,14 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useOrders } from '../contexts/OrderContext';
 import { useAuth } from '../contexts/AuthContext';
 import { 
-  RepairOrder, OrderStatus, UserRole, PriorityLevel, OrderType, Expense, PointSplit
+  RepairOrder, OrderStatus, UserRole, PriorityLevel, OrderType, Expense, PointSplit, LogType
 } from '../types';
 import { 
   ArrowLeft, Printer, MessageCircle, AlertTriangle, 
   CheckCircle2, XCircle, Wrench, User, Calendar, 
   Smartphone, Lock, Share2, Save, Trash2, Reply, ShieldAlert,
   ThumbsUp, UserCheck, MapPin, Truck, History, ArrowRightLeft, DollarSign, Wallet, FileText,
-  Maximize2, X, AlertCircle, HandCoins, Crown, Split, Ban, ArrowRight, Users, Check, Hand, BellRing, Minus, Plus, Trophy, Tag, Send, Loader2, Sparkles, Zap, Phone, MessageSquare
+  Maximize2, X, AlertCircle, HandCoins, Crown, Split, Ban, ArrowRight, Users, Check, Hand, BellRing, Minus, Plus, Trophy, Tag, Send, Loader2, Sparkles, Zap, Phone, MessageSquare, ShieldCheck, ShoppingBag, Package
 } from 'lucide-react';
 import { StatusTimeline } from '../components/StatusTimeline';
 import { OrderFinancials } from '../components/OrderFinancials';
@@ -369,6 +369,42 @@ const ExternalRepairModal = ({ onClose, onConfirm }: any) => (
     </div>
 );
 
+const RequestPartModal = ({ onClose, onConfirm }: any) => {
+    const [partName, setPartName] = useState('');
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" onClick={onClose}>
+            <div className="bg-white rounded-2xl p-6 max-w-sm w-full shadow-2xl animate-in zoom-in-95" onClick={e=>e.stopPropagation()}>
+                <div className="flex items-center gap-3 mb-4 text-slate-800">
+                    <div className="bg-blue-50 p-2 rounded-lg text-blue-600"><ShoppingBag className="w-6 h-6"/></div>
+                    <h3 className="font-black text-xl">Solicitar Pieza</h3>
+                </div>
+                
+                <div className="mb-4">
+                    <label className="text-xs font-bold text-slate-400 uppercase mb-1 block">Nombre de la Pieza / Repuesto</label>
+                    <input 
+                        autoFocus
+                        className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-medium outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400 text-slate-800"
+                        placeholder="Ej: Pantalla iPhone 11, Batería..."
+                        value={partName}
+                        onChange={e => setPartName(e.target.value)}
+                    />
+                </div>
+
+                <div className="flex gap-2">
+                    <button onClick={onClose} className="flex-1 py-3 text-slate-500 font-bold hover:bg-slate-50 rounded-xl transition">Cancelar</button>
+                    <button 
+                        onClick={() => onConfirm(partName)}
+                        disabled={!partName.trim()}
+                        className="flex-[2] bg-blue-600 text-white py-3 rounded-xl font-bold shadow-lg shadow-blue-200 hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                        Solicitar
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+};
+
 export const OrderDetails: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -376,7 +412,8 @@ export const OrderDetails: React.FC = () => {
     orders, updateOrderDetails, updateOrderStatus, addOrderLog, showNotification, 
     addPayments, resolveReturn, deleteOrder, initiateTransfer, assignOrder, requestExternalRepair,
     resolveAssignmentRequest, validateOrder, confirmTransfer, resolveExternalRepair, receiveFromExternal,
-    fetchOrderById, sendTechMessage, resolveTechMessage, debatePoints, recordOrderLog, requestAssignment
+    fetchOrderById, sendTechMessage, resolveTechMessage, debatePoints, recordOrderLog, requestAssignment,
+    addPartRequest
   } = useOrders();
   
   const { currentUser, users } = useAuth();
@@ -391,6 +428,7 @@ export const OrderDetails: React.FC = () => {
   const [showPointsModal, setShowPointsModal] = useState(false); 
   const [showAssignModal, setShowAssignModal] = useState(false);
   const [showExternalModal, setShowExternalModal] = useState(false);
+  const [showPartRequestModal, setShowPartRequestModal] = useState(false);
   const [isDepositMode, setIsDepositMode] = useState(false);
   const [showConfirmApproval, setShowConfirmApproval] = useState(false); 
   const [showTechMsgModal, setShowTechMsgModal] = useState(false);
@@ -413,6 +451,7 @@ export const OrderDetails: React.FC = () => {
               customerPhone: order.customer.phone,
               deviceModel: order.deviceModel,
               deviceIssue: order.deviceIssue,
+              deviceCondition: order.deviceCondition,
               priority: order.priority,
               deadline: order.deadline ? new Date(order.deadline - (new Date().getTimezoneOffset() * 60000)).toISOString().slice(0, 16) : '',
               imei: order.imei,
@@ -448,6 +487,18 @@ export const OrderDetails: React.FC = () => {
   const canApprovePoints = isAdmin || isMonitor;
 
   // --- RESTORED HANDLERS ---
+
+  // Check for Pending Requests (Blocking)
+  const hasPendingRequests = useMemo(() => {
+      if (!order) return false;
+      return (
+          (order.pointRequest && order.pointRequest.status === 'PENDING') ||
+          (order.returnRequest && order.returnRequest.status === 'PENDING') ||
+          (order.externalRepair && order.externalRepair.status === 'PENDING') ||
+          order.status === OrderStatus.WAITING_APPROVAL ||
+          order.approvalAckPending
+      );
+  }, [order]);
 
   const handleStatusChange = async (newStatus: OrderStatus) => {
       if (newStatus === OrderStatus.REPAIRED) {
@@ -531,8 +582,34 @@ export const OrderDetails: React.FC = () => {
       const newExpenses = expenses.map(e => e.id === eid ? { ...e, description: desc, amount } : e);
       await updateOrderDetails(order.id, { expenses: newExpenses }); 
   };
-  const handleUpdatePrice = async () => { 
-      await updateOrderDetails(order.id, { finalPrice: parseFloat(finalPriceInput) }); 
+  const handleUpdatePrice = async (reason?: string) => { 
+      const newPrice = parseFloat(finalPriceInput);
+      const oldPrice = order.finalPrice > 0 ? order.finalPrice : order.estimatedCost;
+      
+      await updateOrderDetails(order.id, { finalPrice: newPrice }); 
+      
+      if (newPrice !== oldPrice) {
+          await recordOrderLog(
+              order.id, 
+              'PRICE_UPDATED', 
+              `💰 PRECIO ACTUALIZADO: $${oldPrice} ➔ $${newPrice}. Razón: ${reason || 'Ajuste manual'}`, 
+              { oldPrice, newPrice, reason }, 
+              'WARNING', 
+              currentUser?.name
+          );
+      }
+  };
+
+  const handlePartRequest = async (partName: string) => {
+      if (!order || !currentUser) return;
+      try {
+          await addPartRequest(order.id, partName, currentUser.name);
+          setShowPartRequestModal(false);
+          showNotification('success', 'Pieza solicitada correctamente');
+      } catch (error) {
+          console.error("Error requesting part:", error);
+          showNotification('error', 'Error al solicitar la pieza. Intente nuevamente.');
+      }
   };
 
   const handleRequestReturn = async (reason: string, fee: number) => {
@@ -694,6 +771,10 @@ export const OrderDetails: React.FC = () => {
   };
 
   const handleTransfer = async () => {
+      if (hasPendingRequests) {
+          alert("🚫 ACCIÓN BLOQUEADA\n\nNo se puede transferir la orden porque tiene solicitudes pendientes (Puntos, Devolución, Presupuesto, etc). Resuélvelas primero.");
+          return;
+      }
       const target = order.currentBranch === 'T1' ? 'T4' : 'T1';
       if(confirm(`¿Iniciar traslado hacia ${target}? El equipo quedará en tránsito.`)) {
           await initiateTransfer(order.id, target, currentUser?.name || 'Sistema');
@@ -804,6 +885,7 @@ export const OrderDetails: React.FC = () => {
           customer: { ...order.customer, name: editForm.customerName, phone: editForm.customerPhone },
           deviceModel: editForm.deviceModel,
           deviceIssue: editForm.deviceIssue,
+          deviceCondition: editForm.deviceCondition,
           priority: editForm.priority,
           imei: editForm.imei,
           deviceStorage: editForm.deviceStorage,
@@ -821,6 +903,18 @@ export const OrderDetails: React.FC = () => {
               // Auto-log handled in updateOrderDetails
           }
       }
+
+      // LOG CHANGE OF PHONE
+      if (editForm.customerPhone !== order.customer.phone) {
+          await recordOrderLog(
+              order.id, 
+              'PHONE_UPDATED', 
+              `📞 TELÉFONO ACTUALIZADO: ${order.customer.phone} ➔ ${editForm.customerPhone}`, 
+              { oldPhone: order.customer.phone, newPhone: editForm.customerPhone }, 
+              'INFO', 
+              currentUser?.name
+          );
+      }
       
       await updateOrderDetails(order.id, updates);
       setIsEditing(false);
@@ -828,6 +922,10 @@ export const OrderDetails: React.FC = () => {
   };
 
   const handleDeposit = () => {
+      if (hasPendingRequests) {
+          alert("🚫 ACCIÓN BLOQUEADA\n\nNo se puede procesar pagos/abonos porque la orden tiene solicitudes pendientes. Resuélvelas primero.");
+          return;
+      }
       setIsDepositMode(true);
       setShowDeliveryModal(true);
   };
@@ -856,6 +954,14 @@ export const OrderDetails: React.FC = () => {
       await updateOrderDetails(order.id, { status: OrderStatus.DIAGNOSIS, assignedTo: null });
       await addOrderLog(order.id, OrderStatus.DIAGNOSIS, `${logMsg}: Orden reactivada por ${currentUser.name}.`, currentUser.name, 'WARNING');
       showNotification('success', 'Orden reactivada en Taller');
+  };
+
+  const handleDeliverCheck = () => {
+      if (hasPendingRequests) {
+          alert("🚫 ACCIÓN BLOQUEADA\n\nNo se puede entregar/facturar la orden porque tiene solicitudes pendientes. Resuélvelas primero.");
+          return;
+      }
+      setShowDeliveryModal(true);
   };
 
   return (
@@ -1014,7 +1120,7 @@ export const OrderDetails: React.FC = () => {
                     currentUser={currentUser}
                     canDeliver={canDeliver}
                     onReturn={() => setShowReturnModal(true)}
-                    onDeliver={() => setShowDeliveryModal(true)}
+                    onDeliver={handleDeliverCheck}
                     onAssign={() => setShowAssignModal(true)}
                     onTransfer={handleTransfer}
                     onDeposit={handleDeposit}
@@ -1027,6 +1133,7 @@ export const OrderDetails: React.FC = () => {
                     onAcceptAssignment={() => handleAssignmentResponse(true)}
                     onRejectAssignment={() => handleAssignmentResponse(false)}
                     onClaim={handleClaimOrder}
+                    onRequestPart={() => setShowPartRequestModal(true)}
                 />
             </div>
 
@@ -1034,80 +1141,169 @@ export const OrderDetails: React.FC = () => {
             <div className="lg:col-span-9 space-y-6">
                 
                 {/* -2. TRANSFER ALERT BANNER (NEW) */}
-                {order.transferStatus === 'PENDING' && order.transferTarget === (currentUser?.branch || 'T4') && (
-                    <div className="bg-blue-600 text-white p-6 rounded-3xl shadow-xl shadow-blue-200 mb-6 flex flex-col md:flex-row justify-between items-center gap-6 animate-in slide-in-from-top-4 border-4 border-white/20 relative overflow-hidden">
-                        <div className="absolute top-0 right-0 p-8 opacity-10 rotate-12">
-                            <ArrowRightLeft className="w-48 h-48 text-white" />
+                {order.transferStatus === 'PENDING' && (currentUser?.role === UserRole.ADMIN || order.transferTarget === (currentUser?.branch || 'T4')) && (
+                    <div className="bg-blue-600 text-white p-4 rounded-2xl shadow-lg shadow-blue-200 mb-4 flex flex-col md:flex-row justify-between items-center gap-4 animate-in slide-in-from-top-4 border-2 border-white/20 relative overflow-hidden">
+                        <div className="absolute top-0 right-0 p-4 opacity-10 rotate-12">
+                            <ArrowRightLeft className="w-32 h-32 text-white" />
                         </div>
-                        <div className="relative z-10 flex items-center gap-6">
-                            <div className="bg-white/20 p-4 rounded-2xl shadow-inner backdrop-blur-sm animate-pulse">
-                                <ArrowRightLeft className="w-10 h-10 text-white" />
+                        <div className="relative z-10 flex items-center gap-4">
+                            <div className="bg-white/20 p-3 rounded-xl shadow-inner backdrop-blur-sm animate-pulse">
+                                <ArrowRightLeft className="w-6 h-6 text-white" />
                             </div>
                             <div>
-                                <div className="flex items-center gap-2 mb-1">
-                                    <span className="bg-white text-blue-600 px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest shadow-sm">Acción Requerida</span>
-                                    <span className="text-blue-100 text-xs font-bold uppercase tracking-wider opacity-80">Traslado Entrante</span>
+                                <div className="flex items-center gap-2 mb-0.5">
+                                    <span className="bg-white text-blue-600 px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-widest shadow-sm">Acción Requerida</span>
+                                    <span className="text-blue-100 text-[10px] font-bold uppercase tracking-wider opacity-80">Traslado Entrante</span>
                                 </div>
-                                <h3 className="text-3xl font-black text-white tracking-tight leading-none mb-2">
+                                <h3 className="text-xl font-black text-white tracking-tight leading-none mb-1">
                                     Recibir Equipo
                                 </h3>
-                                <p className="text-blue-100 font-medium text-sm max-w-md leading-snug opacity-90">
+                                <p className="text-blue-100 font-medium text-xs max-w-md leading-snug opacity-90">
                                     Este equipo viene trasladado desde otra sucursal. Confirma la recepción.
                                 </p>
                             </div>
                         </div>
-                        <div className="relative z-10 flex gap-3 w-full md:w-auto">
+                        <div className="relative z-10 flex gap-2 w-full md:w-auto">
                             <button 
                                 onClick={handleTransferReject} 
-                                className="flex-1 md:flex-none px-6 py-4 bg-white/10 border-2 border-white/20 text-white rounded-2xl font-black text-xs uppercase hover:bg-white/20 transition active:scale-95 flex flex-col items-center justify-center gap-1"
+                                className="flex-1 md:flex-none px-4 py-2 bg-white/10 border border-white/20 text-white rounded-xl font-black text-[10px] uppercase hover:bg-white/20 transition active:scale-95 flex flex-col items-center justify-center gap-0.5"
                             >
-                                <XCircle className="w-5 h-5 opacity-80"/> Rechazar
+                                <XCircle className="w-4 h-4 opacity-80"/> Rechazar
                             </button>
                             <button 
                                 onClick={handleTransferReceive} 
-                                className="flex-[2] md:flex-none px-8 py-4 bg-white text-blue-600 rounded-2xl font-black text-sm uppercase shadow-lg hover:bg-blue-50 transition active:scale-95 flex flex-col items-center justify-center gap-1 hover:shadow-xl hover:-translate-y-1 transform duration-200"
+                                className="flex-[2] md:flex-none px-5 py-2.5 bg-white text-blue-600 rounded-xl font-black text-xs uppercase shadow-md hover:bg-blue-50 transition active:scale-95 flex flex-col items-center justify-center gap-0.5 hover:shadow-lg hover:-translate-y-0.5 transform duration-200"
                             >
-                                <CheckCircle2 className="w-6 h-6 text-blue-600"/> Recibir Ahora
+                                <CheckCircle2 className="w-4 h-4 text-blue-600"/> Recibir Ahora
                             </button>
                         </div>
                     </div>
                 )}
 
-                {/* -1.5. EXTERNAL REPAIR REQUEST BANNER */}
-                {order.externalRepair?.status === 'PENDING' && (
-                    <div className="bg-purple-600 text-white p-6 rounded-3xl shadow-xl shadow-purple-200 mb-6 flex flex-col md:flex-row justify-between items-center gap-6 animate-in slide-in-from-top-4 border-4 border-white/20 relative overflow-hidden">
-                        <div className="absolute top-0 right-0 p-8 opacity-10 rotate-12">
-                            <Truck className="w-48 h-48 text-white" />
+                {/* -1.9. PENDING PART REQUEST BANNER */}
+                {order.partRequests?.some(req => req.status === 'PENDING') && (
+                    <div className="bg-amber-500 text-white p-4 rounded-2xl shadow-lg shadow-amber-200 mb-4 flex flex-col md:flex-row justify-between items-center gap-4 animate-in slide-in-from-top-4 border-2 border-white/20 relative overflow-hidden">
+                        <div className="absolute top-0 right-0 p-4 opacity-10 rotate-12">
+                            <Package className="w-32 h-32 text-white" />
                         </div>
-                        <div className="relative z-10 flex items-center gap-6">
-                            <div className="bg-white/20 p-4 rounded-2xl shadow-inner backdrop-blur-sm animate-pulse">
-                                <Truck className="w-10 h-10 text-white" />
+                        <div className="relative z-10 flex items-center gap-4">
+                            <div className="bg-white/20 p-3 rounded-xl shadow-inner backdrop-blur-sm animate-pulse">
+                                <Package className="w-6 h-6 text-white" />
                             </div>
                             <div>
-                                <div className="flex items-center gap-2 mb-1">
-                                    <span className="bg-white text-purple-600 px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest shadow-sm">Acción Requerida</span>
-                                    <span className="text-purple-100 text-xs font-bold uppercase tracking-wider opacity-80">Solicitud Externa</span>
+                                <h3 className="text-xl font-black text-white tracking-tight leading-none mb-1">
+                                    Orden Detenida
+                                </h3>
+                                <p className="text-amber-100 font-medium text-xs max-w-md leading-snug opacity-90">
+                                    Esperando que la pieza difícil de encontrar sea conseguida.
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* -1.8. TECH MESSAGE BANNER (MOVED TO TOP) */}
+                {order.techMessage && order.techMessage.pending && (currentUser?.id === order.assignedTo) && (
+                    <div className="bg-blue-600 text-white p-4 rounded-2xl shadow-lg shadow-blue-200 mb-4 flex flex-col md:flex-row justify-between items-center gap-4 animate-in slide-in-from-top-4 border-2 border-white/20 relative overflow-hidden">
+                        <div className="absolute top-0 right-0 p-4 opacity-10 rotate-12">
+                            <MessageSquare className="w-32 h-32 text-white" />
+                        </div>
+                        <div className="relative z-10 flex items-center gap-4">
+                            <div className="bg-white/20 p-3 rounded-xl shadow-inner backdrop-blur-sm animate-pulse">
+                                <MessageSquare className="w-6 h-6 text-white" />
+                            </div>
+                            <div>
+                                <div className="flex items-center gap-2 mb-0.5">
+                                    <span className="bg-white text-blue-600 px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-widest shadow-sm">Mensaje Nuevo</span>
+                                    <span className="text-blue-100 text-[10px] font-bold uppercase tracking-wider opacity-80">De: {order.techMessage.sender}</span>
                                 </div>
-                                <h3 className="text-3xl font-black text-white tracking-tight leading-none mb-2">
+                                <h3 className="text-lg font-black text-white tracking-tight leading-none mb-1">
+                                    "{order.techMessage.message}"
+                                </h3>
+                                <p className="text-blue-100 font-medium text-xs max-w-md leading-snug opacity-90 font-mono">
+                                    {new Date(order.techMessage.timestamp).toLocaleString()}
+                                </p>
+                            </div>
+                        </div>
+                        <button 
+                            onClick={handleReadMessage} 
+                            className="relative z-10 px-5 py-2.5 bg-white text-blue-600 rounded-xl font-black text-xs uppercase shadow-md hover:bg-blue-50 transition active:scale-95 flex flex-col items-center justify-center gap-0.5 hover:shadow-lg hover:-translate-y-0.5 transform duration-200 whitespace-nowrap"
+                        >
+                            <CheckCircle2 className="w-4 h-4 text-blue-600"/> MARCAR LEÍDO
+                        </button>
+                    </div>
+                )}
+
+                {/* -1.7. VALIDATION REQUIRED BANNER (NEW) */}
+                {order.isValidated === false && currentUser?.role !== UserRole.TECHNICIAN && (
+                    <div className="bg-purple-600 text-white p-4 rounded-2xl shadow-lg shadow-purple-200 mb-4 flex flex-col md:flex-row justify-between items-center gap-4 animate-in slide-in-from-top-4 border-2 border-white/20 relative overflow-hidden">
+                        <div className="absolute top-0 right-0 p-4 opacity-10 rotate-12">
+                            <ShieldCheck className="w-32 h-32 text-white" />
+                        </div>
+                        <div className="relative z-10 flex items-center gap-4">
+                            <div className="bg-white/20 p-3 rounded-xl shadow-inner backdrop-blur-sm animate-pulse">
+                                <ShieldCheck className="w-6 h-6 text-white" />
+                            </div>
+                            <div>
+                                <div className="flex items-center gap-2 mb-0.5">
+                                    <span className="bg-white text-purple-600 px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-widest shadow-sm">Acción Requerida</span>
+                                    <span className="text-purple-100 text-[10px] font-bold uppercase tracking-wider opacity-80">Ingreso No Validado</span>
+                                </div>
+                                <h3 className="text-xl font-black text-white tracking-tight leading-none mb-1">
+                                    Validar Orden
+                                </h3>
+                                <p className="text-purple-100 font-medium text-xs max-w-md leading-snug opacity-90">
+                                    Esta orden fue ingresada recientemente. Verifica los datos y valida el ingreso.
+                                </p>
+                            </div>
+                        </div>
+                        <button 
+                            onClick={async () => {
+                                await validateOrder(order.id, currentUser?.name || 'Admin');
+                                showNotification('success', 'Orden validada correctamente');
+                            }} 
+                            className="relative z-10 px-5 py-2.5 bg-white text-purple-600 rounded-xl font-black text-xs uppercase shadow-md hover:bg-purple-50 transition active:scale-95 flex flex-col items-center justify-center gap-0.5 hover:shadow-lg hover:-translate-y-0.5 transform duration-200 whitespace-nowrap"
+                        >
+                            <CheckCircle2 className="w-4 h-4 text-purple-600"/> VALIDAR AHORA
+                        </button>
+                    </div>
+                )}
+
+                {/* -1.5. EXTERNAL REPAIR REQUEST BANNER */}
+                {order.externalRepair?.status === 'PENDING' && (
+                    <div className="bg-purple-600 text-white p-4 rounded-2xl shadow-lg shadow-purple-200 mb-4 flex flex-col md:flex-row justify-between items-center gap-4 animate-in slide-in-from-top-4 border-2 border-white/20 relative overflow-hidden">
+                        <div className="absolute top-0 right-0 p-4 opacity-10 rotate-12">
+                            <Truck className="w-32 h-32 text-white" />
+                        </div>
+                        <div className="relative z-10 flex items-center gap-4">
+                            <div className="bg-white/20 p-3 rounded-xl shadow-inner backdrop-blur-sm animate-pulse">
+                                <Truck className="w-6 h-6 text-white" />
+                            </div>
+                            <div>
+                                <div className="flex items-center gap-2 mb-0.5">
+                                    <span className="bg-white text-purple-600 px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-widest shadow-sm">Acción Requerida</span>
+                                    <span className="text-purple-100 text-[10px] font-bold uppercase tracking-wider opacity-80">Solicitud Externa</span>
+                                </div>
+                                <h3 className="text-xl font-black text-white tracking-tight leading-none mb-1">
                                     Envío a Taller
                                 </h3>
-                                <p className="text-purple-100 font-medium text-sm max-w-md leading-snug opacity-90">
+                                <p className="text-purple-100 font-medium text-xs max-w-md leading-snug opacity-90">
                                     Solicitud de envío a <b>{order.externalRepair.targetWorkshop}</b>. Razón: {order.externalRepair.reason}
                                 </p>
                             </div>
                         </div>
-                        <div className="relative z-10 flex gap-3 w-full md:w-auto">
+                        <div className="relative z-10 flex gap-2 w-full md:w-auto">
                             <button 
                                 onClick={() => handleExternalResponse(false)} 
-                                className="flex-1 md:flex-none px-6 py-4 bg-white/10 border-2 border-white/20 text-white rounded-2xl font-black text-xs uppercase hover:bg-white/20 transition active:scale-95 flex flex-col items-center justify-center gap-1"
+                                className="flex-1 md:flex-none px-4 py-2 bg-white/10 border border-white/20 text-white rounded-xl font-black text-[10px] uppercase hover:bg-white/20 transition active:scale-95 flex flex-col items-center justify-center gap-0.5"
                             >
-                                <XCircle className="w-5 h-5 opacity-80"/> Rechazar
+                                <XCircle className="w-4 h-4 opacity-80"/> Rechazar
                             </button>
                             <button 
                                 onClick={() => handleExternalResponse(true)} 
-                                className="flex-[2] md:flex-none px-8 py-4 bg-white text-purple-600 rounded-2xl font-black text-sm uppercase shadow-lg hover:bg-purple-50 transition active:scale-95 flex flex-col items-center justify-center gap-1 hover:shadow-xl hover:-translate-y-1 transform duration-200"
+                                className="flex-[2] md:flex-none px-5 py-2.5 bg-white text-purple-600 rounded-xl font-black text-xs uppercase shadow-md hover:bg-purple-50 transition active:scale-95 flex flex-col items-center justify-center gap-0.5 hover:shadow-lg hover:-translate-y-0.5 transform duration-200"
                             >
-                                <CheckCircle2 className="w-6 h-6 text-purple-600"/> Aprobar Envío
+                                <CheckCircle2 className="w-4 h-4 text-purple-600"/> Aprobar Envío
                             </button>
                         </div>
                     </div>
@@ -1115,40 +1311,40 @@ export const OrderDetails: React.FC = () => {
 
                 {/* -1.4. RETURN REQUEST BANNER */}
                 {order.returnRequest?.status === 'PENDING' && (
-                    <div className="bg-red-600 text-white p-6 rounded-3xl shadow-xl shadow-red-200 mb-6 flex flex-col md:flex-row justify-between items-center gap-6 animate-in slide-in-from-top-4 border-4 border-white/20 relative overflow-hidden">
-                        <div className="absolute top-0 right-0 p-8 opacity-10 rotate-12">
-                            <Reply className="w-48 h-48 text-white" />
+                    <div className="bg-red-600 text-white p-4 rounded-2xl shadow-lg shadow-red-200 mb-4 flex flex-col md:flex-row justify-between items-center gap-4 animate-in slide-in-from-top-4 border-2 border-white/20 relative overflow-hidden">
+                        <div className="absolute top-0 right-0 p-4 opacity-10 rotate-12">
+                            <Reply className="w-32 h-32 text-white" />
                         </div>
-                        <div className="relative z-10 flex items-center gap-6">
-                            <div className="bg-white/20 p-4 rounded-2xl shadow-inner backdrop-blur-sm animate-pulse">
-                                <Reply className="w-10 h-10 text-white" />
+                        <div className="relative z-10 flex items-center gap-4">
+                            <div className="bg-white/20 p-3 rounded-xl shadow-inner backdrop-blur-sm animate-pulse">
+                                <Reply className="w-6 h-6 text-white" />
                             </div>
                             <div>
-                                <div className="flex items-center gap-2 mb-1">
-                                    <span className="bg-white text-red-600 px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest shadow-sm">Acción Requerida</span>
-                                    <span className="text-red-100 text-xs font-bold uppercase tracking-wider opacity-80">Devolución Pendiente</span>
+                                <div className="flex items-center gap-2 mb-0.5">
+                                    <span className="bg-white text-red-600 px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-widest shadow-sm">Acción Requerida</span>
+                                    <span className="text-red-100 text-[10px] font-bold uppercase tracking-wider opacity-80">Devolución Pendiente</span>
                                 </div>
-                                <h3 className="text-3xl font-black text-white tracking-tight leading-none mb-2">
+                                <h3 className="text-xl font-black text-white tracking-tight leading-none mb-1">
                                     Solicitud de Devolución
                                 </h3>
-                                <p className="text-red-100 font-medium text-sm max-w-md leading-snug opacity-90">
+                                <p className="text-red-100 font-medium text-xs max-w-md leading-snug opacity-90">
                                     Razón: {order.returnRequest.reason}. 
                                     {order.returnRequest.diagnosticFee > 0 && <span className="block mt-1 bg-black/20 px-2 py-1 rounded w-fit">Costo Chequeo: ${order.returnRequest.diagnosticFee}</span>}
                                 </p>
                             </div>
                         </div>
-                        <div className="relative z-10 flex gap-3 w-full md:w-auto">
+                        <div className="relative z-10 flex gap-2 w-full md:w-auto">
                             <button 
                                 onClick={() => handleReturnResponse(false)} 
-                                className="flex-1 md:flex-none px-6 py-4 bg-white/10 border-2 border-white/20 text-white rounded-2xl font-black text-xs uppercase hover:bg-white/20 transition active:scale-95 flex flex-col items-center justify-center gap-1"
+                                className="flex-1 md:flex-none px-4 py-2 bg-white/10 border border-white/20 text-white rounded-xl font-black text-[10px] uppercase hover:bg-white/20 transition active:scale-95 flex flex-col items-center justify-center gap-0.5"
                             >
-                                <XCircle className="w-5 h-5 opacity-80"/> Rechazar
+                                <XCircle className="w-4 h-4 opacity-80"/> Rechazar
                             </button>
                             <button 
                                 onClick={() => handleReturnResponse(true)} 
-                                className="flex-[2] md:flex-none px-8 py-4 bg-white text-red-600 rounded-2xl font-black text-sm uppercase shadow-lg hover:bg-red-50 transition active:scale-95 flex flex-col items-center justify-center gap-1 hover:shadow-xl hover:-translate-y-1 transform duration-200"
+                                className="flex-[2] md:flex-none px-5 py-2.5 bg-white text-red-600 rounded-xl font-black text-xs uppercase shadow-md hover:bg-red-50 transition active:scale-95 flex flex-col items-center justify-center gap-0.5 hover:shadow-lg hover:-translate-y-0.5 transform duration-200"
                             >
-                                <CheckCircle2 className="w-6 h-6 text-red-600"/> Aprobar Devolución
+                                <CheckCircle2 className="w-4 h-4 text-red-600"/> Aprobar Devolución
                             </button>
                         </div>
                     </div>
@@ -1156,39 +1352,39 @@ export const OrderDetails: React.FC = () => {
 
                 {/* -1. PENDING ASSIGNMENT BANNER (NEW) */}
                 {order.pending_assignment_to === currentUser?.id && (
-                    <div className="bg-indigo-600 text-white p-6 rounded-3xl shadow-xl shadow-indigo-200 mb-6 flex flex-col md:flex-row justify-between items-center gap-6 animate-in slide-in-from-top-4 border-4 border-white/20 relative overflow-hidden">
-                        <div className="absolute top-0 right-0 p-8 opacity-10 rotate-12">
-                            <User className="w-48 h-48 text-white" />
+                    <div className="bg-indigo-600 text-white p-4 rounded-2xl shadow-lg shadow-indigo-200 mb-4 flex flex-col md:flex-row justify-between items-center gap-4 animate-in slide-in-from-top-4 border-2 border-white/20 relative overflow-hidden">
+                        <div className="absolute top-0 right-0 p-4 opacity-10 rotate-12">
+                            <User className="w-32 h-32 text-white" />
                         </div>
-                        <div className="relative z-10 flex items-center gap-6">
-                            <div className="bg-white/20 p-4 rounded-2xl shadow-inner backdrop-blur-sm animate-pulse">
-                                <User className="w-10 h-10 text-white" />
+                        <div className="relative z-10 flex items-center gap-4">
+                            <div className="bg-white/20 p-3 rounded-xl shadow-inner backdrop-blur-sm animate-pulse">
+                                <User className="w-6 h-6 text-white" />
                             </div>
                             <div>
-                                <div className="flex items-center gap-2 mb-1">
-                                    <span className="bg-white text-indigo-600 px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest shadow-sm">Acción Requerida</span>
-                                    <span className="text-indigo-100 text-xs font-bold uppercase tracking-wider opacity-80">Solicitud de Traspaso</span>
+                                <div className="flex items-center gap-2 mb-0.5">
+                                    <span className="bg-white text-indigo-600 px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-widest shadow-sm">Acción Requerida</span>
+                                    <span className="text-indigo-100 text-[10px] font-bold uppercase tracking-wider opacity-80">Solicitud de Traspaso</span>
                                 </div>
-                                <h3 className="text-3xl font-black text-white tracking-tight leading-none mb-2">
+                                <h3 className="text-xl font-black text-white tracking-tight leading-none mb-1">
                                     ¿Aceptas esta orden?
                                 </h3>
-                                <p className="text-indigo-100 font-medium text-sm max-w-md leading-snug opacity-90">
+                                <p className="text-indigo-100 font-medium text-xs max-w-md leading-snug opacity-90">
                                     Se te ha asignado esta reparación. Confirma para comenzar.
                                 </p>
                             </div>
                         </div>
-                        <div className="relative z-10 flex gap-3 w-full md:w-auto">
+                        <div className="relative z-10 flex gap-2 w-full md:w-auto">
                             <button 
                                 onClick={() => handleAssignmentResponse(false)} 
-                                className="flex-1 md:flex-none px-6 py-4 bg-white/10 border-2 border-white/20 text-white rounded-2xl font-black text-xs uppercase hover:bg-white/20 transition active:scale-95 flex flex-col items-center justify-center gap-1"
+                                className="flex-1 md:flex-none px-4 py-2 bg-white/10 border border-white/20 text-white rounded-xl font-black text-[10px] uppercase hover:bg-white/20 transition active:scale-95 flex flex-col items-center justify-center gap-0.5"
                             >
-                                <XCircle className="w-5 h-5 opacity-80"/> Rechazar
+                                <XCircle className="w-4 h-4 opacity-80"/> Rechazar
                             </button>
                             <button 
                                 onClick={() => handleAssignmentResponse(true)} 
-                                className="flex-[2] md:flex-none px-8 py-4 bg-white text-indigo-600 rounded-2xl font-black text-sm uppercase shadow-lg hover:bg-indigo-50 transition active:scale-95 flex flex-col items-center justify-center gap-1 hover:shadow-xl hover:-translate-y-1 transform duration-200"
+                                className="flex-[2] md:flex-none px-5 py-2.5 bg-white text-indigo-600 rounded-xl font-black text-xs uppercase shadow-md hover:bg-indigo-50 transition active:scale-95 flex flex-col items-center justify-center gap-0.5 hover:shadow-lg hover:-translate-y-0.5 transform duration-200"
                             >
-                                <CheckCircle2 className="w-6 h-6 text-indigo-600"/> Aceptar Orden
+                                <CheckCircle2 className="w-4 h-4 text-indigo-600"/> Aceptar Orden
                             </button>
                         </div>
                     </div>
@@ -1196,44 +1392,44 @@ export const OrderDetails: React.FC = () => {
 
                 {/* 0. BUDGET APPROVAL BANNER (NEW - HIGH PRIORITY) */}
                 {order.status === OrderStatus.WAITING_APPROVAL && currentUser?.role !== UserRole.TECHNICIAN && (
-                    <div className="bg-orange-500 text-white p-6 rounded-3xl shadow-xl shadow-orange-200 mb-6 flex flex-col md:flex-row justify-between items-center gap-6 animate-in slide-in-from-top-4 border-4 border-white/20 relative overflow-hidden">
-                        <div className="absolute top-0 right-0 p-8 opacity-10 rotate-12">
-                            <HandCoins className="w-48 h-48 text-white" />
+                    <div className="bg-orange-500 text-white p-4 rounded-2xl shadow-lg shadow-orange-200 mb-4 flex flex-col md:flex-row justify-between items-center gap-4 animate-in slide-in-from-top-4 border-2 border-white/20 relative overflow-hidden">
+                        <div className="absolute top-0 right-0 p-4 opacity-10 rotate-12">
+                            <HandCoins className="w-32 h-32 text-white" />
                         </div>
-                        <div className="relative z-10 flex items-center gap-6">
-                            <div className="bg-white/20 p-4 rounded-2xl shadow-inner backdrop-blur-sm animate-pulse">
-                                <HandCoins className="w-10 h-10 text-white" />
+                        <div className="relative z-10 flex items-center gap-4">
+                            <div className="bg-white/20 p-3 rounded-xl shadow-inner backdrop-blur-sm animate-pulse">
+                                <HandCoins className="w-6 h-6 text-white" />
                             </div>
                             <div>
-                                <div className="flex items-center gap-2 mb-1">
-                                    <span className="bg-white text-orange-600 px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest shadow-sm">Acción Requerida</span>
-                                    <span className="text-orange-100 text-xs font-bold uppercase tracking-wider opacity-80">Presupuesto Pendiente</span>
+                                <div className="flex items-center gap-2 mb-0.5">
+                                    <span className="bg-white text-orange-600 px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-widest shadow-sm">Acción Requerida</span>
+                                    <span className="text-orange-100 text-[10px] font-bold uppercase tracking-wider opacity-80">Presupuesto Pendiente</span>
                                 </div>
-                                <h3 className="text-3xl font-black text-white tracking-tight leading-none mb-2">
+                                <h3 className="text-xl font-black text-white tracking-tight leading-none mb-1">
                                     ${(order.proposedEstimate || order.estimatedCost).toLocaleString()}
                                 </h3>
-                                <p className="text-orange-100 font-medium text-sm max-w-md leading-snug opacity-90">
+                                <p className="text-orange-100 font-medium text-xs max-w-md leading-snug opacity-90">
                                     El técnico ha propuesto este monto. ¿El cliente aprueba la reparación?
                                 </p>
                                 {order.technicianNotes && order.technicianNotes.includes('[PROPUESTA]') && (
-                                    <div className="mt-3 bg-black/10 p-3 rounded-xl border border-white/10 text-xs italic text-orange-50">
+                                    <div className="mt-2 bg-black/10 p-2 rounded-lg border border-white/10 text-[10px] italic text-orange-50">
                                         "{order.technicianNotes.split('[PROPUESTA]:')[1]?.split('\n')[0] || 'Ver notas...'}"
                                     </div>
                                 )}
                             </div>
                         </div>
-                        <div className="relative z-10 flex gap-3 w-full md:w-auto">
+                        <div className="relative z-10 flex gap-2 w-full md:w-auto">
                             <button 
                                 onClick={() => handleBudgetResponse(false)} 
-                                className="flex-1 md:flex-none px-6 py-4 bg-white/10 border-2 border-white/20 text-white rounded-2xl font-black text-xs uppercase hover:bg-white/20 transition active:scale-95 flex flex-col items-center justify-center gap-1"
+                                className="flex-1 md:flex-none px-4 py-2 bg-white/10 border border-white/20 text-white rounded-xl font-black text-[10px] uppercase hover:bg-white/20 transition active:scale-95 flex flex-col items-center justify-center gap-0.5"
                             >
-                                <XCircle className="w-5 h-5 opacity-80"/> Rechazar
+                                <XCircle className="w-4 h-4 opacity-80"/> Rechazar
                             </button>
                             <button 
                                 onClick={() => handleBudgetResponse(true)} 
-                                className="flex-[2] md:flex-none px-8 py-4 bg-white text-orange-600 rounded-2xl font-black text-sm uppercase shadow-lg hover:bg-orange-50 transition active:scale-95 flex flex-col items-center justify-center gap-1 hover:shadow-xl hover:-translate-y-1 transform duration-200"
+                                className="flex-[2] md:flex-none px-5 py-2.5 bg-white text-orange-600 rounded-xl font-black text-xs uppercase shadow-md hover:bg-orange-50 transition active:scale-95 flex flex-col items-center justify-center gap-0.5 hover:shadow-lg hover:-translate-y-0.5 transform duration-200"
                             >
-                                <CheckCircle2 className="w-6 h-6 text-green-500"/> Aprobar Reparación
+                                <CheckCircle2 className="w-4 h-4 text-green-500"/> Aprobar Reparación
                             </button>
                         </div>
                     </div>
@@ -1241,27 +1437,27 @@ export const OrderDetails: React.FC = () => {
 
                 {/* 1. APPROVAL ACKNOWLEDGEMENT (NEW - TECHNICIAN ONLY) */}
                 {order.approvalAckPending && (currentUser?.role === UserRole.TECHNICIAN && order.assignedTo === currentUser.id) && (
-                    <div className="bg-green-600 text-white p-6 rounded-3xl shadow-xl shadow-green-200 mb-6 flex flex-col md:flex-row justify-between items-center gap-6 animate-in slide-in-from-top-4 border-4 border-white/20 relative overflow-hidden">
-                        <div className="absolute top-0 right-0 p-8 opacity-10 rotate-12">
-                            <CheckCircle2 className="w-48 h-48 text-white" />
+                    <div className="bg-green-600 text-white p-4 rounded-2xl shadow-lg shadow-green-200 mb-4 flex flex-col md:flex-row justify-between items-center gap-4 animate-in slide-in-from-top-4 border-2 border-white/20 relative overflow-hidden">
+                        <div className="absolute top-0 right-0 p-4 opacity-10 rotate-12">
+                            <CheckCircle2 className="w-32 h-32 text-white" />
                         </div>
-                        <div className="relative z-10 flex items-center gap-6">
-                            <div className="bg-white/20 p-4 rounded-2xl shadow-inner backdrop-blur-sm animate-pulse">
-                                <CheckCircle2 className="w-10 h-10 text-white" />
+                        <div className="relative z-10 flex items-center gap-4">
+                            <div className="bg-white/20 p-3 rounded-xl shadow-inner backdrop-blur-sm animate-pulse">
+                                <CheckCircle2 className="w-6 h-6 text-white" />
                             </div>
                             <div>
-                                <div className="flex items-center gap-2 mb-1">
-                                    <span className="bg-white text-green-600 px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-widest shadow-sm">Acción Requerida</span>
-                                    <span className="text-green-100 text-xs font-bold uppercase tracking-wider opacity-80">Cliente Aprobó</span>
+                                <div className="flex items-center gap-2 mb-0.5">
+                                    <span className="bg-white text-green-600 px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-widest shadow-sm">Acción Requerida</span>
+                                    <span className="text-green-100 text-[10px] font-bold uppercase tracking-wider opacity-80">Cliente Aprobó</span>
                                 </div>
-                                <h3 className="text-2xl font-black text-white tracking-tight leading-none mb-2">
+                                <h3 className="text-xl font-black text-white tracking-tight leading-none mb-1">
                                     ¡Luz Verde para Reparar!
                                 </h3>
-                                <p className="text-green-100 font-medium text-sm max-w-md leading-snug opacity-90 mb-2">
+                                <p className="text-green-100 font-medium text-xs max-w-md leading-snug opacity-90 mb-1">
                                     El cliente ha aceptado el presupuesto. Revisa las instrucciones antes de comenzar.
                                 </p>
                                 {order.customerNotes && (
-                                    <div className="bg-black/20 p-3 rounded-xl border border-white/10 text-xs italic text-green-50">
+                                    <div className="bg-black/20 p-2 rounded-lg border border-white/10 text-[10px] italic text-green-50">
                                         "Nota Cliente: {order.customerNotes}"
                                     </div>
                                 )}
@@ -1269,9 +1465,9 @@ export const OrderDetails: React.FC = () => {
                         </div>
                         <button 
                             onClick={handleAckApproval} 
-                            className="relative z-10 px-8 py-4 bg-white text-green-600 rounded-2xl font-black text-sm uppercase shadow-lg hover:bg-green-50 transition active:scale-95 flex flex-col items-center justify-center gap-1 hover:shadow-xl hover:-translate-y-1 transform duration-200 whitespace-nowrap"
+                            className="relative z-10 px-5 py-2.5 bg-white text-green-600 rounded-xl font-black text-xs uppercase shadow-md hover:bg-green-50 transition active:scale-95 flex flex-col items-center justify-center gap-0.5 hover:shadow-lg hover:-translate-y-0.5 transform duration-200 whitespace-nowrap"
                         >
-                            <CheckCircle2 className="w-6 h-6 text-green-600"/> CONFIRMAR LECTURA
+                            <CheckCircle2 className="w-4 h-4 text-green-600"/> CONFIRMAR LECTURA
                         </button>
                     </div>
                 )}
@@ -1299,34 +1495,6 @@ export const OrderDetails: React.FC = () => {
                     </div>
                 )}
 
-                {/* 2. TECH MESSAGE BANNER (NEW - HIGH VISIBILITY FOR TECHNICIAN) */}
-                {order.techMessage && order.techMessage.pending && (currentUser?.role === UserRole.TECHNICIAN && order.assignedTo === currentUser.id) && (
-                    <div className="bg-blue-600 text-white p-4 rounded-2xl shadow-lg mb-6 flex justify-between items-center animate-in slide-in-from-top-4 border-2 border-white/20">
-                        <div className="flex items-center gap-4">
-                            <div className="bg-white/20 p-3 rounded-full animate-bounce">
-                                <MessageSquare className="w-6 h-6 text-white" />
-                            </div>
-                            <div>
-                                <p className="text-xs font-bold uppercase opacity-80 mb-1 flex items-center gap-2">
-                                    Mensaje de {order.techMessage.sender} <span className="bg-red-500 text-white px-2 py-0.5 rounded text-[9px]">NUEVO</span>
-                                </p>
-                                <p className="font-bold text-lg leading-tight tracking-wide">
-                                    "{order.techMessage.message}"
-                                </p>
-                                <p className="text-[10px] opacity-60 mt-1 font-mono">
-                                    {new Date(order.techMessage.timestamp).toLocaleString()}
-                                </p>
-                            </div>
-                        </div>
-                        <button 
-                            onClick={handleReadMessage} 
-                            className="bg-white text-blue-600 px-6 py-3 rounded-xl font-black text-xs hover:bg-blue-50 transition shadow-md whitespace-nowrap active:scale-95"
-                        >
-                            MARCAR LEÍDO
-                        </button>
-                    </div>
-                )}
-
                 {/* 3. TIMELINE */}
                 <StageBar 
                     currentStatus={order.status} 
@@ -1342,26 +1510,42 @@ export const OrderDetails: React.FC = () => {
                 />
 
                 {/* 5. FINANCIALS & HISTORY */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 h-[500px]">
-                    <ExpensesAndParts 
-                        order={order}
-                        expenses={expenses}
-                        setExpenses={setExpenses}
-                        finalPriceInput={finalPriceInput}
-                        setFinalPriceInput={setFinalPriceInput}
-                        canViewAccounting={canViewAccounting}
-                        canEdit={canEditExpenses}
-                        onAddExpense={handleAddExpense}
-                        onRemoveExpense={handleRemoveExpense}
-                        onEditExpense={handleEditExpense}
-                        handleUpdatePrice={handleUpdatePrice}
-                    />
-                    <DetailedHistory 
-                        history={order.history}
-                    />
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
+                    <div className="h-[500px]">
+                        <ExpensesAndParts 
+                            order={order}
+                            expenses={expenses}
+                            setExpenses={setExpenses}
+                            finalPriceInput={finalPriceInput}
+                            setFinalPriceInput={setFinalPriceInput}
+                            canViewAccounting={canViewAccounting}
+                            canEdit={canEditExpenses}
+                            onAddExpense={handleAddExpense}
+                            onRemoveExpense={handleRemoveExpense}
+                            onEditExpense={handleEditExpense}
+                            handleUpdatePrice={handleUpdatePrice}
+                        />
+                    </div>
+                    <div className="h-[750px]">
+                        <DetailedHistory 
+                            history={order.history}
+                        />
+                    </div>
                 </div>
             </div>
         </div>
+        {showExternalModal && (
+            <ExternalRepairModal 
+                onClose={() => setShowExternalModal(false)}
+                onConfirm={handleExternal}
+            />
+        )}
+        {showPartRequestModal && (
+            <RequestPartModal 
+                onClose={() => setShowPartRequestModal(false)}
+                onConfirm={handlePartRequest}
+            />
+        )}
     </div>
   );
 };

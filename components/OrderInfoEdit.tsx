@@ -60,6 +60,10 @@ export const OrderInfoEdit: React.FC<OrderInfoEditProps> = ({ editForm, setEditF
             <label className="text-xs font-bold text-slate-500">Falla / Detalles</label>
             <textarea className="w-full p-2 border border-slate-300 rounded bg-white text-slate-900 font-medium" rows={2} value={editForm.deviceIssue} onChange={e => setEditForm({...editForm, deviceIssue: e.target.value})} />
         </div>
+        <div>
+            <label className="text-xs font-bold text-slate-500">Observaciones Visuales</label>
+            <textarea className="w-full p-2 border border-slate-300 rounded bg-white text-slate-900 font-medium" rows={2} value={editForm.deviceCondition} onChange={e => setEditForm({...editForm, deviceCondition: e.target.value})} />
+        </div>
         <div className="grid grid-cols-2 gap-2">
             <div>
                 <label className="text-xs font-bold text-slate-500">Contraseña</label>

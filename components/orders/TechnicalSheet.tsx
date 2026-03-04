@@ -99,6 +99,7 @@ export const TechnicalSheet: React.FC<TechnicalSheetProps> = ({
             </div>
             <div><p className="text-[10px] font-bold text-slate-400 uppercase">IMEI</p><p className="font-mono font-bold text-slate-700">{order.imei || 'N/A'}</p></div>
             <div><p className="text-[10px] font-bold text-slate-400 uppercase">FALLA</p><p className="font-medium text-slate-700 uppercase">{order.deviceIssue}</p></div>
+            <div><p className="text-[10px] font-bold text-slate-400 uppercase">OBSERVACIONES VISUALES</p><p className="font-medium text-slate-700 uppercase">{order.deviceCondition || 'Sin observaciones'}</p></div>
             <div><p className="text-[10px] font-bold text-slate-400 uppercase">CONTRASEÑA</p><p className="font-mono bg-slate-100 px-2 py-1 rounded w-fit text-slate-700 border border-slate-200">{order.devicePassword || 'Sin clave'}</p></div>
           </div>
         )}
