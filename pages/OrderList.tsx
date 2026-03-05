@@ -437,60 +437,74 @@ export const OrderList: React.FC = () => {
   };
 
   const handleConfirmApproval = async (amount: string, instructions: string) => {
-      if (!selectedOrderForApproval || !currentUser) return;
+      if (!selectedOrderForApproval || !currentUser || isProcessing) return;
+      setIsProcessing(true);
       try {
+          const currentNotes = selectedOrderForApproval.technicianNotes || '';
+          const updatedNotes = instructions.trim() ? `${currentNotes}\n\n[APROBACIÓN (${currentUser.name})]: ${instructions}` : currentNotes;
+
           await updateOrderDetails(selectedOrderForApproval.id, { 
               status: OrderStatus.IN_REPAIR, 
               finalPrice: parseFloat(amount), 
-              customerNotes: instructions 
+              approvalAckPending: true,
+              technicianNotes: updatedNotes
           });
           await addOrderLog(selectedOrderForApproval.id, OrderStatus.IN_REPAIR, '✅ Presupuesto APROBADO por cliente. Reparación iniciada.', currentUser.name, 'SUCCESS');
           setShowConfirmApproval(false);
           setSelectedOrderForApproval(null);
           setManagingAlert(null);
       } catch (e) {
+          console.error(e);
           alert('Error al aprobar presupuesto');
+      } finally {
+          setIsProcessing(false);
       }
   };
 
   const handlePointsResponse = async (order: RepairOrder, approve: boolean) => {
       // ... (Logic remains same)
-      if (!order || !order.pointRequest || !currentUser) return;
+      if (!order || !order.pointRequest || !currentUser || isProcessing) return;
+      setIsProcessing(true);
       setManagingAlert(null); 
-      if (approve) {
-          const updates: Partial<RepairOrder> = { 
-              pointsAwarded: order.pointRequest.requestedPoints, 
-              pointRequest: { ...order.pointRequest, status: 'APPROVED', approvedBy: currentUser.name },
-              status: OrderStatus.REPAIRED
-          };
-          if (order.pointRequest.splitProposal) updates.pointsSplit = order.pointRequest.splitProposal;
-          await updateOrderDetails(order.id, updates);
-          await addOrderLog(order.id, OrderStatus.REPAIRED, `✅ Puntos APROBADOS (${order.pointRequest.requestedPoints}) por ${currentUser.name}.`, currentUser.name, 'SUCCESS');
-      } else {
-          await updateOrderDetails(order.id, { pointsAwarded: 0, pointRequest: { ...order.pointRequest, status: 'REJECTED', approvedBy: currentUser.name } });
-          await addOrderLog(order.id, order.status, `❌ Solicitud de puntos RECHAZADA por ${currentUser.name}.`, currentUser.name, 'DANGER');
-      }
+      try {
+        if (approve) {
+            const updates: Partial<RepairOrder> = { 
+                pointsAwarded: order.pointRequest.requestedPoints, 
+                pointRequest: { ...order.pointRequest, status: 'APPROVED', approvedBy: currentUser.name },
+                status: OrderStatus.REPAIRED
+            };
+            if (order.pointRequest.splitProposal) updates.pointsSplit = order.pointRequest.splitProposal;
+            await updateOrderDetails(order.id, updates);
+            await addOrderLog(order.id, OrderStatus.REPAIRED, `✅ Puntos APROBADOS (${order.pointRequest.requestedPoints}) por ${currentUser.name}.`, currentUser.name, 'SUCCESS');
+        } else {
+            await updateOrderDetails(order.id, { pointsAwarded: 0, pointRequest: { ...order.pointRequest, status: 'REJECTED', approvedBy: currentUser.name } });
+            await addOrderLog(order.id, order.status, `❌ Solicitud de puntos RECHAZADA por ${currentUser.name}.`, currentUser.name, 'DANGER');
+        }
+      } catch(e) { console.error(e); } finally { setIsProcessing(false); }
   };
 
-  const handleQuickAction = async (action: string) => {
-    if (!managingAlert || !currentUser) return;
-    if (managingAlert.type === 'POINTS' || managingAlert.type === 'TECH_MESSAGE') {
-        navigate(`/orders/${managingAlert.order.id}`); // For messages, just go to order
+  const handleQuickAction = async (order: RepairOrder, type: string) => {
+    if (!currentUser) return;
+    if (type === 'POINTS' || type === 'TECH_MESSAGE') {
+        navigate(`/orders/${order.id}`); // For messages, just go to order
         return;
     }
-    if (managingAlert.type === 'BUDGET' || managingAlert.type === 'ASSIGNMENT_REQUEST' || managingAlert.type === 'RETURN_REQUEST') { 
-        navigate(`/orders/${managingAlert.order.id}`); 
+    if (type === 'BUDGET' || type === 'ASSIGNMENT_REQUEST' || type === 'RETURN_REQUEST') { 
+        navigate(`/orders/${order.id}`); 
         return; 
     }
+    
+    if (isProcessing) return;
+    setManagingAlert({ order, type });
     setIsProcessing(true);
-    const { order, type } = managingAlert;
+    
     try {
       if (type === 'TRANSFER') await confirmTransfer(order.id, currentUser.name);
       if (type === 'VALIDATE') await validateOrder(order.id, currentUser.name);
       if (type === 'APPROVED_ACK') await updateOrderDetails(order.id, { approvalAckPending: false });
       if (type === 'EXTERNAL_REQUEST') await resolveExternalRepair(order.id, true, currentUser.name);
       setManagingAlert(null);
-    } catch (e) { setShowDbFixModal(true); } finally { setIsProcessing(false); }
+    } catch (e) { setShowDbFixModal(true); } finally { setIsProcessing(false); setManagingAlert(null); }
   };
 
   const handlePreviewHover = (e: React.MouseEvent, order: RepairOrder) => {
@@ -693,10 +707,17 @@ export const OrderList: React.FC = () => {
                                   )}
                                   
                                   {order.alertType === 'POINTS' ? (
-                                      <div className="flex gap-2">
-                                          <button onClick={(e) => { e.stopPropagation(); handlePointsResponse(order, false); }} className="flex-1 py-3 bg-red-50 text-red-600 font-bold rounded-xl hover:bg-red-100 transition text-[10px]">RECHAZAR</button>
-                                          <button onClick={async (e) => { e.stopPropagation(); if(confirm('¿Iniciar debate de puntos con el técnico?')) { await debatePoints(order.id, currentUser.name); setManagingAlert(null); } }} className="flex-1 py-3 bg-yellow-50 text-yellow-600 font-bold rounded-xl hover:bg-yellow-100 transition text-[10px]">DEBATIR</button>
-                                          <button onClick={(e) => { e.stopPropagation(); handlePointsResponse(order, true); }} className="flex-1 py-3 bg-green-600 text-white font-bold rounded-xl shadow-lg hover:bg-green-700 transition text-[10px]">APROBAR</button>
+                                      <div className="flex flex-col gap-3">
+                                          {order.pointRequest?.reason && (
+                                              <div className="bg-yellow-50 p-2 rounded-lg border border-yellow-100 text-[10px] italic text-yellow-800">
+                                                  "{order.pointRequest.reason}"
+                                              </div>
+                                          )}
+                                          <div className="flex gap-2">
+                                              <button onClick={(e) => { e.stopPropagation(); handlePointsResponse(order, false); }} className="flex-1 py-3 bg-red-50 text-red-600 font-bold rounded-xl hover:bg-red-100 transition text-[10px]">RECHAZAR</button>
+                                              <button onClick={async (e) => { e.stopPropagation(); if(confirm('¿Iniciar debate de puntos con el técnico?')) { await debatePoints(order.id, currentUser.name); setManagingAlert(null); } }} className="flex-1 py-3 bg-yellow-50 text-yellow-600 font-bold rounded-xl hover:bg-yellow-100 transition text-[10px]">DEBATIR</button>
+                                              <button onClick={(e) => { e.stopPropagation(); handlePointsResponse(order, true); }} className="flex-1 py-3 bg-green-600 text-white font-bold rounded-xl shadow-lg hover:bg-green-700 transition text-[10px]">APROBAR</button>
+                                          </div>
                                       </div>
                                   ) : order.alertType === 'BUDGET' ? (
                                       <div className="flex gap-2">
@@ -720,7 +741,9 @@ export const OrderList: React.FC = () => {
                                           }} className="flex-[2] py-3 bg-blue-600 text-white font-bold rounded-xl shadow-lg hover:bg-blue-700 transition text-[10px]">RECIBIR</button>
                                       </div>
                                   ) : (
-                                      <button onClick={(e) => { e.stopPropagation(); setManagingAlert({ order, type: order.alertType }); }} className={`w-full py-4 rounded-2xl font-black text-xs text-white shadow-lg flex items-center justify-center gap-2 transition ${config.bg} hover:opacity-90 active:scale-95`}>{config.action}</button>
+                                      <button onClick={(e) => { e.stopPropagation(); handleQuickAction(order, order.alertType); }} className={`w-full py-4 rounded-2xl font-black text-xs text-white shadow-lg flex items-center justify-center gap-2 transition ${config.bg} hover:opacity-90 active:scale-95`}>
+                                          {isProcessing && managingAlert?.order.id === order.id ? <Loader2 className="w-4 h-4 animate-spin" /> : config.action}
+                                      </button>
                                   )}
                               </div>
                           </div>
@@ -735,7 +758,8 @@ export const OrderList: React.FC = () => {
           <ConfirmApprovalModal 
               defaultAmount={selectedOrderForApproval.proposedEstimate || selectedOrderForApproval.estimatedCost}
               onConfirm={handleConfirmApproval}
-              onCancel={() => { setShowConfirmApproval(false); setSelectedOrderForApproval(null); }}
+              onCancel={() => { if(!isProcessing) { setShowConfirmApproval(false); setSelectedOrderForApproval(null); } }}
+              isLoading={isProcessing}
           />
       )}
 
@@ -854,7 +878,7 @@ export const OrderList: React.FC = () => {
                       <div className="flex gap-3">
                           <button onClick={() => setManagingAlert(null)} className="flex-1 py-4 bg-slate-100 text-slate-600 rounded-2xl font-black text-xs uppercase hover:bg-slate-200 transition-all">Cerrar</button>
                           <button 
-                            onClick={() => handleQuickAction('APPROVE')} 
+                            onClick={() => handleQuickAction(managingAlert.order, managingAlert.type)} 
                             disabled={isProcessing} 
                             className={`flex-[2] py-4 text-white rounded-2xl font-black text-xs uppercase transition-all shadow-xl flex items-center justify-center gap-2 active:scale-95 bg-blue-600`}
                           >

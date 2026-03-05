@@ -30,6 +30,7 @@ export const fetchActionRequiredOrders = async (
             .select('*')
             .or(conditions.join(','))
             .neq('status', 'Cancelado')
+            .neq('status', OrderStatus.RETURNED) // Exclude delivered orders
             .order('createdAt', { ascending: true });
 
         if (error) throw error;
@@ -59,6 +60,19 @@ export const fetchActionRequiredOrders = async (
             
             const isMyBranch = order.currentBranch === branch;
             const isAdmin = userRole === UserRole.ADMIN;
+
+            // Strict Branch Check for Non-Admins (unless it's a transfer or assignment targeting them)
+            // This prevents cross-branch notifications for regular staff
+            if (!isAdmin && !isMyBranch) {
+                // Exceptions:
+                // 1. Incoming Transfer (handled below)
+                // 2. Assignment Request (handled below)
+                // If neither, skip immediately
+                const isIncomingTransfer = order.transferStatus === 'PENDING' && order.transferTarget === branch;
+                const isAssignmentRequest = order.pending_assignment_to === userId;
+                
+                if (!isIncomingTransfer && !isAssignmentRequest) return false;
+            }
 
             // Chequeo de cada tipo de alerta posible en la orden:
 

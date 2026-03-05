@@ -105,6 +105,14 @@ const LayoutComponent: React.FC<LayoutProps> = ({ children }) => {
               </Link>
           )}
 
+          <div className="pt-3 pb-1 text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest pl-2">Finanzas</div>
+          {canSeeCash && (
+            <Link to="/finance" className={getNavLinkClass('/finance')}>
+              <Activity className="w-4 h-4" />
+              Dashboard Financiero
+            </Link>
+          )}
+
           <div className="pt-3 pb-1 text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest pl-2">Operaciones</div>
           
           {/* HIDE INTAKE FOR TECHNICIANS */}

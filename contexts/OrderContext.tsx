@@ -1,6 +1,7 @@
 
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { supabase } from '../services/supabase';
+import { useAuth } from './AuthContext';
 import { 
   RepairOrder, AppNotification, 
   OrderStatus, LogType, Payment, 
@@ -74,6 +75,7 @@ const OrderContext = createContext<OrderContextType | undefined>(undefined);
 // Using 'neq' logic instead.
 
 export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
+  const { currentUser } = useAuth();
   const [orders, setOrders] = useState<RepairOrder[]>([]);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [isConnected, setIsConnected] = useState(true);
@@ -348,26 +350,44 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     if (updates.expenses) {
         const oldLen = currentOrder.expenses?.length || 0;
         const newLen = updates.expenses.length;
-        if (newLen > oldLen) logsToCreate.push({ action: 'EXPENSE_ADDED', msg: `💸 Gasto Agregado`, meta: { count: newLen }, type: 'EXPENSE' });
+        if (newLen > oldLen) {
+            logsToCreate.push({ action: 'EXPENSE_ADDED', msg: `💸 Gasto Agregado`, meta: { count: newLen }, type: 'EXPENSE' });
+            
+            // AUTOMATIC ACCOUNTING INJECTION
+            const oldIds = new Set((currentOrder.expenses || []).map(e => e.id));
+            const newExpenses = updates.expenses.filter(e => !oldIds.has(e.id));
+            
+            for (const exp of newExpenses) {
+                if (currentUser?.id) {
+                    // Fire and forget (or log error)
+                    supabase.rpc('add_pending_expense', {
+                        p_amount: exp.amount,
+                        p_description: exp.description || 'Gasto de Orden',
+                        p_order_id: id,
+                        p_user_id: currentUser.id
+                    }).then(({ error }) => {
+                        if (error) console.error("Failed to sync expense to accounting:", error);
+                    });
+                }
+            }
+        }
         else if (newLen < oldLen) logsToCreate.push({ action: 'EXPENSE_REMOVED', msg: `🗑️ Gasto Eliminado`, meta: { count: newLen }, type: 'WARNING' });
     }
 
-    // E) Notes Updated (Only log diff)
-    if (updates.technicianNotes && updates.technicianNotes !== currentOrder.technicianNotes) {
-        const oldNote = currentOrder.technicianNotes || '';
-        const newNote = updates.technicianNotes;
-        let diff = '';
-
-        if (newNote.startsWith(oldNote)) {
-            // It's an append
-            diff = newNote.slice(oldNote.length).trim();
-        } else {
-            // It's a rewrite or edit in the middle
-            diff = `Nota modificada: ${newNote}`;
-        }
-
-        if (diff) {
-            logsToCreate.push({ action: 'NOTE_UPDATED', msg: diff, meta: null, type: 'INFO' });
+    // E) Notes Updated (Only log diff - Optimized Logic)
+    if (updates.technicianNotes !== undefined && updates.technicianNotes !== currentOrder.technicianNotes) {
+        const oldNote = (currentOrder.technicianNotes || '').trim();
+        const newNote = (updates.technicianNotes || '').trim();
+        
+        if (newNote && oldNote && newNote.startsWith(oldNote)) {
+            // Case 1: Append (Clean Diff)
+            const addedText = newNote.slice(oldNote.length).trim();
+            if (addedText) {
+                logsToCreate.push({ action: 'NOTE_ADDED', msg: `Se agregó a la nota: ${addedText}`, meta: null, type: 'INFO' });
+            }
+        } else if (newNote !== oldNote) {
+             // Case 2: Rewrite, Delete or Edit in Middle
+             logsToCreate.push({ action: 'NOTE_UPDATED', msg: `Nota modificada. Nuevo contenido: ${newNote}`, meta: null, type: 'INFO' });
         }
     }
 
@@ -378,6 +398,26 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
 
     // 3. Apply Updates Locally
     const updatedOrder = { ...currentOrder, ...updates };
+
+    // SECURITY GUARD: Prevent 'Sistema' from marking as RETURNED (Entregado)
+    if (updates.status === OrderStatus.RETURNED) {
+        // Check if user is real
+        if (!currentUser || currentUser.name === 'Sistema') {
+            console.warn("⚠️ SECURITY BLOCK: 'Sistema' attempted to mark order as RETURNED. Action blocked.");
+            // We do NOT throw error to avoid crashing the script, but we prevent the status change.
+            // We revert the status change in the updates object.
+            delete updates.status; 
+            updatedOrder.status = currentOrder.status; // Revert local object too
+            
+            // Add a warning log instead
+            logsToCreate.push({ 
+                action: 'SECURITY_ALERT', 
+                msg: '⚠️ Intento automático de marcar como ENTREGADO bloqueado por seguridad.', 
+                meta: { blocked: true }, 
+                type: 'DANGER' 
+            });
+        }
+    }
     
     // 4. Append Logs to History (Optimistic)
     const newHistoryLogs = logsToCreate.map(l => ({

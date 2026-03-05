@@ -216,6 +216,7 @@ export enum ActionType {
   RECEIPT_PRINTED = 'RECEIPT_PRINTED',
   SECURITY_ALERT = 'SECURITY_ALERT',
   NOTE_ADDED = 'NOTE_ADDED',
+  NOTE_UPDATED = 'NOTE_UPDATED',
   PASSWORD_CHANGED = 'PASSWORD_CHANGED',
   ACCESSORIES_UPDATED = 'ACCESSORIES_UPDATED',
   IMEI_CHANGED = 'IMEI_CHANGED',
@@ -224,6 +225,10 @@ export enum ActionType {
   DEADLINE_CHANGED = 'DEADLINE_CHANGED',
   BUDGET_PROPOSED = 'BUDGET_PROPOSED',
   BUDGET_RESOLVED = 'BUDGET_RESOLVED',
+  BUDGET_APPROVED = 'BUDGET_APPROVED',
+  APPROVAL_ACKNOWLEDGED = 'APPROVAL_ACKNOWLEDGED',
+  POINTS_APPROVED = 'POINTS_APPROVED',
+  POINTS_REJECTED = 'POINTS_REJECTED',
   VALIDATION_COMPLETED = 'VALIDATION_COMPLETED'
 }
 
@@ -391,4 +396,61 @@ export interface InternalChatMessage {
   user_name: string;
   message: string;
   created_at: string;
+}
+
+// --- ACCOUNTING MODULE TYPES ---
+
+export interface AccountingCategory {
+  id: string;
+  name: string;
+  type: 'INCOME' | 'EXPENSE';
+  parent_id?: string;
+}
+
+export interface AccountingTransaction {
+  id: string;
+  amount: number;
+  transaction_date: string;
+  description: string;
+  category_id: string;
+  vendor?: string;
+  receipt_url?: string;
+  created_at: string;
+  status?: 'PENDING' | 'COMPLETED' | 'CANCELLED';
+  source?: 'MANUAL' | 'ORDER' | 'STORE';
+  order_id?: string;
+  created_by?: string;
+}
+
+export interface CashflowData {
+  month: string;
+  income: number;
+  expenses: number;
+  isProjection?: boolean;
+}
+
+export interface ExpenseDistribution {
+  category_name: string;
+  total_amount: number;
+}
+
+export interface FinancialKPIs {
+  current_income: number;
+  current_expenses: number;
+  net_profit: number;
+  prev_income: number;
+  prev_expenses: number;
+  growth_income: number;
+}
+
+export interface AIInsight {
+  type: 'success' | 'warning' | 'info';
+  message: string;
+  metric?: string;
+}
+
+export interface AIChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: Date;
 }

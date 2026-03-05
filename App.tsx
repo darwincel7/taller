@@ -1,6 +1,7 @@
 
 import React from 'react';
 import { HashRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Layout } from './components/Layout';
 import { Dashboard } from './pages/Dashboard';
 import { Intake } from './pages/Intake';
@@ -17,11 +18,14 @@ import { CashRegister } from './pages/CashRegister';
 import { WorkshopAudit } from './pages/WorkshopAudit';
 import { PartsPanel } from './pages/PartsPanel';
 import { MobileVideoUpload } from './pages/MobileVideoUpload';
+import { FinancialDashboard } from './pages/FinancialDashboard';
 import { OrderProvider } from './contexts/OrderContext';
 import { InventoryProvider } from './contexts/InventoryContext'; 
 import { CashProvider } from './contexts/CashContext'; 
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { Loader2 } from 'lucide-react';
+
+const queryClient = new QueryClient();
 
 const ProtectedRoute = ({ children }: { children?: React.ReactNode }) => {
   const { currentUser, isLoading } = useAuth();
@@ -44,36 +48,39 @@ const ProtectedRoute = ({ children }: { children?: React.ReactNode }) => {
 
 const App: React.FC = () => {
   return (
-    <AuthProvider>
-      <OrderProvider>
-        <InventoryProvider>
-          <CashProvider>
-            <HashRouter>
-              <Routes>
-                <Route path="/login" element={<Login />} />
-                <Route path="/client" element={<ClientView />} />
-                <Route path="/mobile-upload/:sessionId" element={<MobileVideoUpload />} />
-                
-                <Route path="/" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
-                <Route path="/store" element={<ProtectedRoute><StoreStock /></ProtectedRoute>} />
-                <Route path="/intake" element={<ProtectedRoute><Intake /></ProtectedRoute>} />
-                <Route path="/orders" element={<ProtectedRoute><OrderList /></ProtectedRoute>} />
-                <Route path="/orders/:id" element={<ProtectedRoute><OrderDetails /></ProtectedRoute>} />
-                <Route path="/team" element={<ProtectedRoute><TeamManagement /></ProtectedRoute>} />
-                <Route path="/activity" element={<ProtectedRoute><ActivityLog /></ProtectedRoute>} />
-                <Route path="/inventory" element={<ProtectedRoute><Inventory /></ProtectedRoute>} />
-                <Route path="/parts" element={<ProtectedRoute><PartsPanel /></ProtectedRoute>} />
-                <Route path="/wiki" element={<ProtectedRoute><KnowledgeBase /></ProtectedRoute>} />
-                <Route path="/cash" element={<ProtectedRoute><CashRegister /></ProtectedRoute>} />
-                <Route path="/audit" element={<ProtectedRoute><WorkshopAudit /></ProtectedRoute>} />
-                
-                <Route path="*" element={<Navigate to="/" replace />} />
-              </Routes>
-            </HashRouter>
-          </CashProvider>
-        </InventoryProvider>
-      </OrderProvider>
-    </AuthProvider>
+    <QueryClientProvider client={queryClient}>
+      <AuthProvider>
+        <OrderProvider>
+          <InventoryProvider>
+            <CashProvider>
+              <HashRouter>
+                <Routes>
+                  <Route path="/login" element={<Login />} />
+                  <Route path="/client" element={<ClientView />} />
+                  <Route path="/mobile-upload/:sessionId" element={<MobileVideoUpload />} />
+                  
+                  <Route path="/" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+                  <Route path="/finance" element={<ProtectedRoute><FinancialDashboard /></ProtectedRoute>} />
+                  <Route path="/store" element={<ProtectedRoute><StoreStock /></ProtectedRoute>} />
+                  <Route path="/intake" element={<ProtectedRoute><Intake /></ProtectedRoute>} />
+                  <Route path="/orders" element={<ProtectedRoute><OrderList /></ProtectedRoute>} />
+                  <Route path="/orders/:id" element={<ProtectedRoute><OrderDetails /></ProtectedRoute>} />
+                  <Route path="/team" element={<ProtectedRoute><TeamManagement /></ProtectedRoute>} />
+                  <Route path="/activity" element={<ProtectedRoute><ActivityLog /></ProtectedRoute>} />
+                  <Route path="/inventory" element={<ProtectedRoute><Inventory /></ProtectedRoute>} />
+                  <Route path="/parts" element={<ProtectedRoute><PartsPanel /></ProtectedRoute>} />
+                  <Route path="/wiki" element={<ProtectedRoute><KnowledgeBase /></ProtectedRoute>} />
+                  <Route path="/cash" element={<ProtectedRoute><CashRegister /></ProtectedRoute>} />
+                  <Route path="/audit" element={<ProtectedRoute><WorkshopAudit /></ProtectedRoute>} />
+                  
+                  <Route path="*" element={<Navigate to="/" replace />} />
+                </Routes>
+              </HashRouter>
+            </CashProvider>
+          </InventoryProvider>
+        </OrderProvider>
+      </AuthProvider>
+    </QueryClientProvider>
   );
 };
 

@@ -4,6 +4,7 @@ import { DollarSign, Trash2, Plus, Package, TrendingUp, Edit2, X, Save as SaveIc
 import { useOrders } from '../contexts/OrderContext';
 import { useInventory } from '../contexts/InventoryContext';
 import { useAuth } from '../contexts/AuthContext';
+import { InventoryUsageModal } from './modals/InventoryUsageModal';
 
 interface OrderFinancialsProps {
   order: RepairOrder;
@@ -45,6 +46,7 @@ export const OrderFinancials: React.FC<OrderFinancialsProps> = ({
   const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
   
   const [showInventorySelect, setShowInventorySelect] = useState(false);
+  const [selectedPart, setSelectedPart] = useState<InventoryPart | null>(null);
 
   // Local state for Store Stock specific fields
   const [purchaseCostInput, setPurchaseCostInput] = useState(() => {
@@ -97,56 +99,37 @@ export const OrderFinancials: React.FC<OrderFinancialsProps> = ({
       setExpenseAmount('');
   };
 
-  const handleSelectPart = async (part: InventoryPart) => {
+  const handleSelectPart = (part: InventoryPart) => {
       if (!canEdit) {
           triggerError();
           setShowInventorySelect(false);
           return;
       }
+      setSelectedPart(part);
+      setShowInventorySelect(false);
+  };
 
-      // PREGUNTA: Unidad o Parcial
-      const useMode = prompt(
-          `¿Cómo utilizar "${part.name}"?\n\n` +
-          `1. Unidad Completa (Descuenta 1 del stock)\n` +
-          `2. Parcial / Dividir (Extrae valor del costo)\n\n` +
-          `Escribe 1 o 2:`, 
-          "1"
-      );
+  const confirmInventoryUsage = async (mode: 'UNIT' | 'FRACTION', amount?: number) => {
+      if (!selectedPart) return;
 
-      if (useMode === '2') {
+      if (mode === 'FRACTION' && amount) {
           // LOGICA PARCIAL (DIVIDIR)
-          const amountStr = prompt(
-              `Costo total de la pieza: $${part.cost}\n\n` +
-              `¿Qué valor monetario ($) vas a utilizar para esta orden?`
-          );
+          const newCost = selectedPart.cost - amount;
+          await updateInventoryPart(selectedPart.id, { cost: newCost });
           
-          if (!amountStr) return;
-          const amount = parseFloat(amountStr);
-          
-          if (isNaN(amount) || amount <= 0 || amount > part.cost) {
-              alert("Monto inválido. Debe ser mayor a 0 y menor o igual al costo de la pieza.");
-              return;
-          }
-
-          // Actualizamos el costo del item en inventario (restando lo usado)
-          const newCost = part.cost - amount;
-          await updateInventoryPart(part.id, { cost: newCost });
-          
-          // Agregamos el gasto a la orden
-          onAddExpense(`Parte de ${part.name}`, amount);
-          setShowInventorySelect(false);
+          onAddExpense(`Parte de ${selectedPart.name}`, amount);
           showNotification('success', `Repuesto particionado. Nuevo valor en inventario: $${newCost}`);
 
-      } else if (useMode === '1') {
+      } else if (mode === 'UNIT') {
           // LOGICA ESTANDAR (Unidad completa)
-          if (part.stock > 0) {
-              await updateInventoryPart(part.id, { stock: part.stock - 1 });
-              onAddExpense(part.name, part.cost); 
-              setShowInventorySelect(false);
+          if (selectedPart.stock > 0) {
+              await updateInventoryPart(selectedPart.id, { stock: selectedPart.stock - 1 });
+              onAddExpense(selectedPart.name, selectedPart.cost); 
           } else {
               alert("No hay stock de esta pieza.");
           }
       }
+      setSelectedPart(null);
   };
 
   const handleStoreFinancialUpdate = async () => {
@@ -227,8 +210,17 @@ export const OrderFinancials: React.FC<OrderFinancialsProps> = ({
   const projectedMargin = targetPrice - totalInvestment;
 
   return (
-    <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm h-full flex flex-col">
+    <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm h-full flex flex-col relative">
         
+        {/* --- MODAL INVENTORY --- */}
+        {selectedPart && (
+            <InventoryUsageModal 
+                part={selectedPart}
+                onConfirm={confirmInventoryUsage}
+                onCancel={() => setSelectedPart(null)}
+            />
+        )}
+
         {/* --- HEADER --- */}
         <div className="flex justify-between items-center mb-4">
             <h4 className="font-bold text-slate-700 flex items-center gap-2 text-xs uppercase">

@@ -22,6 +22,7 @@ import { printInvoice, printSticker } from '../services/invoiceService';
 import { sendWhatsAppNotification } from '../services/notificationService';
 import { chatWithDarwin } from '../services/geminiService';
 import { finalizeDelivery } from '../services/deliveryService';
+import { accountingService } from '../services/accountingService';
 
 // --- CANONICAL ROOT IMPORTS ---
 import { ControlPanel } from '../components/ControlPanel'; 
@@ -163,17 +164,26 @@ const PointsRequestModal = ({ users, currentUser, onConfirm, onCancel, isSubmitt
     const [isSplit, setIsSplit] = useState(false);
     const [partnerId, setPartnerId] = useState('');
     const [myShare, setMyShare] = useState(1); 
+    const [reason, setReason] = useState('');
 
     const availablePartners = users.filter((u: any) => u.role === UserRole.TECHNICIAN && u.id !== currentUser.id);
 
     useEffect(() => {
-        if (pts < 2) setIsSplit(false);
+        if (pts < 2) {
+            setIsSplit(false);
+            setReason('');
+        }
         if (pts >= 2 && !isSplit) {
             setMyShare(Math.floor(pts / 2));
         }
     }, [pts]);
 
     const handleConfirm = () => {
+        if (pts >= 2 && !reason.trim()) {
+            alert("Por favor indica la razón para solicitar 2 o más puntos.");
+            return;
+        }
+
         if (isSplit && partnerId) {
             const splitData: PointSplit = {
                 primaryTechId: currentUser.id,
@@ -181,10 +191,10 @@ const PointsRequestModal = ({ users, currentUser, onConfirm, onCancel, isSubmitt
                 secondaryTechId: partnerId,
                 secondaryPoints: pts - myShare
             };
-            onConfirm(pts, "Reparación Colaborativa", splitData);
+            onConfirm(pts, reason || "Reparación Colaborativa", splitData);
         } else {
-            const reason = pts === 0 ? "Reparación sin costo/puntos" : "Reparación Estándar";
-            onConfirm(pts, reason);
+            const finalReason = pts === 0 ? "Reparación sin costo/puntos" : (reason || "Reparación Estándar");
+            onConfirm(pts, finalReason);
         }
     };
 
@@ -209,47 +219,60 @@ const PointsRequestModal = ({ users, currentUser, onConfirm, onCancel, isSubmitt
                 </div>
 
                 {pts >= 2 && (
-                    <div className="mb-6 bg-slate-50 p-4 rounded-2xl border border-slate-200">
-                        <label className="flex items-center justify-between cursor-pointer group">
-                            <span className="flex items-center gap-2 font-bold text-slate-700 text-sm"><Split className="w-4 h-4 text-purple-500"/> Dividir con compañero</span>
-                            <div className={`w-12 h-6 rounded-full p-1 transition-colors duration-300 ${isSplit ? 'bg-purple-600' : 'bg-slate-300'}`} onClick={() => setIsSplit(!isSplit)}>
-                                <div className={`w-4 h-4 bg-white rounded-full shadow-md transform transition-transform duration-300 ${isSplit ? 'translate-x-6' : 'translate-x-0'}`}/>
-                            </div>
-                        </label>
+                    <div className="mb-6 space-y-4">
+                        <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200">
+                            <label className="text-xs font-bold text-slate-500 uppercase mb-2 block">Razón de la solicitud ({pts} puntos)</label>
+                            <textarea
+                                className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-blue-200 resize-none"
+                                placeholder="Explica por qué esta reparación requiere más puntos..."
+                                rows={2}
+                                value={reason}
+                                onChange={(e) => setReason(e.target.value)}
+                            />
+                        </div>
 
-                        {isSplit && (
-                            <div className="mt-4 animate-in slide-in-from-top-2">
-                                <div className="mb-3">
-                                    <label className="text-xs font-bold text-slate-400 uppercase mb-1 block">Compañero</label>
-                                    <select 
-                                        className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-purple-200"
-                                        value={partnerId}
-                                        onChange={(e) => setPartnerId(e.target.value)}
-                                    >
-                                        <option value="">Seleccionar...</option>
-                                        {availablePartners.map((u: any) => (
-                                            <option key={u.id} value={u.id}>{u.name}</option>
-                                        ))}
-                                    </select>
+                        <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200">
+                            <label className="flex items-center justify-between cursor-pointer group">
+                                <span className="flex items-center gap-2 font-bold text-slate-700 text-sm"><Split className="w-4 h-4 text-purple-500"/> Dividir con compañero</span>
+                                <div className={`w-12 h-6 rounded-full p-1 transition-colors duration-300 ${isSplit ? 'bg-purple-600' : 'bg-slate-300'}`} onClick={() => setIsSplit(!isSplit)}>
+                                    <div className={`w-4 h-4 bg-white rounded-full shadow-md transform transition-transform duration-300 ${isSplit ? 'translate-x-6' : 'translate-x-0'}`}/>
                                 </div>
-                                {partnerId && (
-                                    <div>
-                                        <div className="flex justify-between text-xs font-bold mb-2">
-                                            <span className="text-blue-600">Yo: {myShare}</span>
-                                            <span className="text-purple-600">El: {pts - myShare}</span>
-                                        </div>
-                                        <input 
-                                            type="range" 
-                                            min="1" 
-                                            max={pts - 1} 
-                                            value={myShare} 
-                                            onChange={(e) => setMyShare(parseInt(e.target.value))}
-                                            className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
-                                        />
+                            </label>
+
+                            {isSplit && (
+                                <div className="mt-4 animate-in slide-in-from-top-2">
+                                    <div className="mb-3">
+                                        <label className="text-xs font-bold text-slate-400 uppercase mb-1 block">Compañero</label>
+                                        <select 
+                                            className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-purple-200"
+                                            value={partnerId}
+                                            onChange={(e) => setPartnerId(e.target.value)}
+                                        >
+                                            <option value="">Seleccionar...</option>
+                                            {availablePartners.map((u: any) => (
+                                                <option key={u.id} value={u.id}>{u.name}</option>
+                                            ))}
+                                        </select>
                                     </div>
-                                )}
-                            </div>
-                        )}
+                                    {partnerId && (
+                                        <div>
+                                            <div className="flex justify-between text-xs font-bold mb-2">
+                                                <span className="text-blue-600">Yo: {myShare}</span>
+                                                <span className="text-purple-600">El: {pts - myShare}</span>
+                                            </div>
+                                            <input 
+                                                type="range" 
+                                                min="1" 
+                                                max={pts - 1} 
+                                                value={myShare} 
+                                                onChange={(e) => setMyShare(parseInt(e.target.value))}
+                                                className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
+                                            />
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                        </div>
                     </div>
                 )}
 
@@ -257,12 +280,14 @@ const PointsRequestModal = ({ users, currentUser, onConfirm, onCancel, isSubmitt
                     <button onClick={onCancel} disabled={isSubmitting} className="flex-1 py-4 text-slate-500 font-bold hover:bg-slate-50 rounded-xl transition disabled:opacity-50">Cancelar</button>
                     <button 
                         onClick={handleConfirm}
-                        disabled={(isSplit && !partnerId) || isSubmitting}
+                        disabled={(isSplit && !partnerId) || isSubmitting || (pts >= 2 && !reason.trim())}
                         className={`flex-[2] py-4 rounded-xl text-white font-bold shadow-lg transition active:scale-95 flex items-center justify-center gap-2 ${pts === 0 ? 'bg-slate-700 hover:bg-slate-800' : 'bg-green-600 hover:bg-green-700'} disabled:opacity-50 disabled:cursor-not-allowed`}
                     >
                         {isSubmitting ? <Loader2 className="w-5 h-5 animate-spin" /> : (pts === 0 ? 'Reparación sin Costo' : `Confirmar (${pts} pts)`)}
                     </button>
                 </div>
+
+
             </div>
         </div>
     );
@@ -433,6 +458,7 @@ export const OrderDetails: React.FC = () => {
   const [showConfirmApproval, setShowConfirmApproval] = useState(false); 
   const [showTechMsgModal, setShowTechMsgModal] = useState(false);
   const [isSubmittingPoints, setIsSubmittingPoints] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
   
   // Edit Form State
   const [editForm, setEditForm] = useState<any>({});
@@ -573,6 +599,29 @@ export const OrderDetails: React.FC = () => {
       const newExp: Expense = { id: Date.now().toString(), description: desc, amount, date: Date.now() };
       const newExpenses = [...expenses, newExp];
       await updateOrderDetails(order.id, { expenses: newExpenses }); 
+      
+      // --- NEW ACCOUNTING LOGIC ---
+      try {
+        let catId = await accountingService.getCategoryIdByName('Repuestos');
+        if (!catId) {
+            // Fallback to 'Compras' or create 'Repuestos'
+            catId = await accountingService.getCategoryIdByName('Compras');
+        }
+
+        await accountingService.addTransaction({
+          amount: -Math.abs(amount), // Expense is negative
+          transaction_date: new Date().toISOString().split('T')[0],
+          description: `[Orden #${order.readable_id || order.id.slice(0,6)}] ${desc}`,
+          category_id: catId || undefined, 
+          vendor: 'Taller',
+          status: 'PENDING',
+          source: 'ORDER',
+          order_id: order.id,
+          created_by: currentUser?.id
+        });
+      } catch (e) {
+        console.error("Error syncing expense to accounting:", e);
+      }
   };
   const handleRemoveExpense = async (eid: string) => { 
       const newExpenses = expenses.filter(e => e.id !== eid);
@@ -632,102 +681,125 @@ export const OrderDetails: React.FC = () => {
   };
 
   const handleBudgetResponse = async (approve: boolean) => {
-      if (!order || !currentUser) return;
+      if (!order || !currentUser || isProcessing) return;
       if (approve) {
           setShowConfirmApproval(true);
       } else {
-          await updateOrderStatus(order.id, OrderStatus.DIAGNOSIS, `❌ Presupuesto RECHAZADO por ${currentUser.name}.`);
+          setIsProcessing(true);
+          try {
+              await updateOrderStatus(order.id, OrderStatus.DIAGNOSIS, `❌ Presupuesto RECHAZADO por ${currentUser.name}.`);
+          } finally {
+              setIsProcessing(false);
+          }
       }
   };
 
   const handleConfirmApproval = async (finalAmount: string, instructions: string) => {
-      if (!order || !currentUser) return;
-      const newEstimate = parseFloat(finalAmount);
-      const currentNotes = order.technicianNotes || '';
-      const updatedNotes = instructions.trim() ? `${currentNotes}\n\n[APROBACIÓN (${currentUser.name})]: ${instructions}` : currentNotes;
-      
-      const newLog = {
-          date: new Date().toISOString(),
-          status: OrderStatus.IN_REPAIR,
-          note: `✅ APROBADO: Presupuesto $${finalAmount}. Notas: ${instructions || 'Ninguna'}`,
-          technician: currentUser.name,
-          logType: 'SUCCESS' as LogType,
-          action_type: 'BUDGET_APPROVED',
-          metadata: { amount: finalAmount, instructions }
-      };
-
-      const currentHistory = order.history || [];
-      const newHistory = [...currentHistory, newLog];
-
-      await updateOrderDetails(order.id, { 
-          status: OrderStatus.IN_REPAIR,
-          estimatedCost: !isNaN(newEstimate) ? newEstimate : order.estimatedCost,
-          finalPrice: !isNaN(newEstimate) ? newEstimate : order.finalPrice,
-          technicianNotes: updatedNotes,
-          approvalAckPending: true,
-          history: newHistory
-      });
-      
-      setShowConfirmApproval(false);
-      showNotification('success', 'Aprobación registrada y enviada al técnico.');
-  };
-
-  const handlePointsResponse = async (approve: boolean) => {
-      if (!order || !order.pointRequest || !currentUser) return;
-      if (approve) {
+      if (!order || !currentUser || isProcessing) return;
+      setIsProcessing(true);
+      try {
+          const newEstimate = parseFloat(finalAmount);
+          const currentNotes = order.technicianNotes || '';
+          const updatedNotes = instructions.trim() ? `${currentNotes}\n\n[APROBACIÓN (${currentUser.name})]: ${instructions}` : currentNotes;
+          
           const newLog = {
               date: new Date().toISOString(),
-              status: OrderStatus.REPAIRED,
-              note: `✅ Puntos APROBADOS (${order.pointRequest.requestedPoints}) por ${currentUser.name}.`,
+              status: OrderStatus.IN_REPAIR,
+              note: `✅ APROBADO: Presupuesto $${finalAmount}. Notas: ${instructions || 'Ninguna'}`,
               technician: currentUser.name,
               logType: 'SUCCESS' as LogType,
-              action_type: 'POINTS_APPROVED',
-              metadata: { points: order.pointRequest.requestedPoints }
+              action_type: 'BUDGET_APPROVED',
+              metadata: { amount: finalAmount, instructions }
           };
-          
-          const currentHistory = order.history || [];
-          const newHistory = [...currentHistory, newLog];
 
-          const updates: Partial<RepairOrder> = { 
-              pointsAwarded: order.pointRequest.requestedPoints, 
-              pointRequest: { ...order.pointRequest, status: 'APPROVED', approvedBy: currentUser.name },
-              status: OrderStatus.REPAIRED,
-              history: newHistory
-          };
-          if (order.pointRequest.splitProposal) updates.pointsSplit = order.pointRequest.splitProposal;
-          await updateOrderDetails(order.id, updates);
-          sendWhatsAppNotification(order, OrderStatus.REPAIRED);
-      } else {
-          const newLog = {
-              date: new Date().toISOString(),
-              status: order.status,
-              note: `❌ Solicitud de puntos RECHAZADA por ${currentUser.name}.`,
-              technician: currentUser.name,
-              logType: 'DANGER' as LogType,
-              action_type: 'POINTS_REJECTED',
-              metadata: { requested: order.pointRequest.requestedPoints }
-          };
-          
           const currentHistory = order.history || [];
           const newHistory = [...currentHistory, newLog];
 
           await updateOrderDetails(order.id, { 
-              pointsAwarded: 0, 
-              pointRequest: { ...order.pointRequest, status: 'REJECTED', approvedBy: currentUser.name },
+              status: OrderStatus.IN_REPAIR,
+              estimatedCost: !isNaN(newEstimate) ? newEstimate : order.estimatedCost,
+              finalPrice: !isNaN(newEstimate) ? newEstimate : order.finalPrice,
+              technicianNotes: updatedNotes,
+              approvalAckPending: true,
               history: newHistory
           });
+          
+          setShowConfirmApproval(false);
+          showNotification('success', 'Aprobación registrada y enviada al técnico.');
+      } catch (error) {
+          console.error(error);
+          showNotification('error', 'Error al aprobar presupuesto');
+      } finally {
+          setIsProcessing(false);
+      }
+  };
+
+  const handlePointsResponse = async (approve: boolean) => {
+      if (!order || !order.pointRequest || !currentUser || isProcessing) return;
+      setIsProcessing(true);
+      try {
+          if (approve) {
+              const newLog = {
+                  date: new Date().toISOString(),
+                  status: OrderStatus.REPAIRED,
+                  note: `✅ Puntos APROBADOS (${order.pointRequest.requestedPoints}) por ${currentUser.name}.`,
+                  technician: currentUser.name,
+                  logType: 'SUCCESS' as LogType,
+                  action_type: 'POINTS_APPROVED',
+                  metadata: { points: order.pointRequest.requestedPoints }
+              };
+              
+              const currentHistory = order.history || [];
+              const newHistory = [...currentHistory, newLog];
+
+              const updates: Partial<RepairOrder> = { 
+                  pointsAwarded: order.pointRequest.requestedPoints, 
+                  pointRequest: { ...order.pointRequest, status: 'APPROVED', approvedBy: currentUser.name },
+                  status: OrderStatus.REPAIRED,
+                  history: newHistory
+              };
+              if (order.pointRequest.splitProposal) updates.pointsSplit = order.pointRequest.splitProposal;
+              await updateOrderDetails(order.id, updates);
+              sendWhatsAppNotification(order, OrderStatus.REPAIRED);
+          } else {
+              const newLog = {
+                  date: new Date().toISOString(),
+                  status: order.status,
+                  note: `❌ Solicitud de puntos RECHAZADA por ${currentUser.name}.`,
+                  technician: currentUser.name,
+                  logType: 'DANGER' as LogType,
+                  action_type: 'POINTS_REJECTED',
+                  metadata: { requested: order.pointRequest.requestedPoints }
+              };
+              
+              const currentHistory = order.history || [];
+              const newHistory = [...currentHistory, newLog];
+
+              await updateOrderDetails(order.id, { 
+                  pointsAwarded: 0, 
+                  pointRequest: { ...order.pointRequest, status: 'REJECTED', approvedBy: currentUser.name },
+                  history: newHistory
+              });
+          }
+      } finally {
+          setIsProcessing(false);
       }
   };
 
   const handleAckApproval = async () => {
-      if(!order || !currentUser) return;
-      // a) marcar la alerta como resuelta
-      await updateOrderDetails(order.id, { approvalAckPending: false });
-      // b) registrar historial
-      await recordOrderLog(order.id, 'APPROVAL_ACKNOWLEDGED', `🤓 TÉCNICO CONFIRMÓ INSTRUCCIONES: El técnico ${currentUser.name} ha leído y aceptado la aprobación.`, { technician: currentUser.name }, 'INFO', currentUser.name);
-      // c) permitir continuar a la etapa siguiente (reparación) según lógica actual
-      // (La lógica actual ya permite editar/avanzar si el estado es IN_REPAIR, que ya debería estar seteado al aprobar presupuesto)
-      showNotification('success', 'Confirmado');
+      if(!order || !currentUser || isProcessing) return;
+      setIsProcessing(true);
+      try {
+          // a) marcar la alerta como resuelta
+          await updateOrderDetails(order.id, { approvalAckPending: false });
+          // b) registrar historial
+          await recordOrderLog(order.id, 'APPROVAL_ACKNOWLEDGED', `🤓 TÉCNICO CONFIRMÓ INSTRUCCIONES: El técnico ${currentUser.name} ha leído y aceptado la aprobación.`, { technician: currentUser.name }, 'INFO', currentUser.name);
+          // c) permitir continuar a la etapa siguiente (reparación) según lógica actual
+          // (La lógica actual ya permite editar/avanzar si el estado es IN_REPAIR, que ya debería estar seteado al aprobar presupuesto)
+          showNotification('success', 'Confirmado');
+      } finally {
+          setIsProcessing(false);
+      }
   };
 
   const handleSendTechMessage = async (msg: string) => {
@@ -975,7 +1047,8 @@ export const OrderDetails: React.FC = () => {
             <ConfirmApprovalModal 
                 defaultAmount={order.proposedEstimate || order.estimatedCost.toString()} 
                 onConfirm={handleConfirmApproval} 
-                onCancel={() => setShowConfirmApproval(false)} 
+                onCancel={() => { if (!isProcessing) setShowConfirmApproval(false); }} 
+                isLoading={isProcessing}
             />
         )}
         {showTechMsgModal && assignedUser && (
@@ -1421,13 +1494,15 @@ export const OrderDetails: React.FC = () => {
                         <div className="relative z-10 flex gap-2 w-full md:w-auto">
                             <button 
                                 onClick={() => handleBudgetResponse(false)} 
-                                className="flex-1 md:flex-none px-4 py-2 bg-white/10 border border-white/20 text-white rounded-xl font-black text-[10px] uppercase hover:bg-white/20 transition active:scale-95 flex flex-col items-center justify-center gap-0.5"
+                                disabled={isProcessing}
+                                className="flex-1 md:flex-none px-4 py-2 bg-white/10 border border-white/20 text-white rounded-xl font-black text-[10px] uppercase hover:bg-white/20 transition active:scale-95 flex flex-col items-center justify-center gap-0.5 disabled:opacity-50"
                             >
                                 <XCircle className="w-4 h-4 opacity-80"/> Rechazar
                             </button>
                             <button 
                                 onClick={() => handleBudgetResponse(true)} 
-                                className="flex-[2] md:flex-none px-5 py-2.5 bg-white text-orange-600 rounded-xl font-black text-xs uppercase shadow-md hover:bg-orange-50 transition active:scale-95 flex flex-col items-center justify-center gap-0.5 hover:shadow-lg hover:-translate-y-0.5 transform duration-200"
+                                disabled={isProcessing}
+                                className="flex-[2] md:flex-none px-5 py-2.5 bg-white text-orange-600 rounded-xl font-black text-xs uppercase shadow-md hover:bg-orange-50 transition active:scale-95 flex flex-col items-center justify-center gap-0.5 hover:shadow-lg hover:-translate-y-0.5 transform duration-200 disabled:opacity-50"
                             >
                                 <CheckCircle2 className="w-4 h-4 text-green-500"/> Aprobar Reparación
                             </button>
@@ -1436,7 +1511,7 @@ export const OrderDetails: React.FC = () => {
                 )}
 
                 {/* 1. APPROVAL ACKNOWLEDGEMENT (NEW - TECHNICIAN ONLY) */}
-                {order.approvalAckPending && (currentUser?.role === UserRole.TECHNICIAN && order.assignedTo === currentUser.id) && (
+                {order.approvalAckPending && ((currentUser?.role === UserRole.TECHNICIAN && order.assignedTo === currentUser.id) || currentUser?.role === UserRole.ADMIN) && (
                     <div className="bg-green-600 text-white p-4 rounded-2xl shadow-lg shadow-green-200 mb-4 flex flex-col md:flex-row justify-between items-center gap-4 animate-in slide-in-from-top-4 border-2 border-white/20 relative overflow-hidden">
                         <div className="absolute top-0 right-0 p-4 opacity-10 rotate-12">
                             <CheckCircle2 className="w-32 h-32 text-white" />
@@ -1465,9 +1540,10 @@ export const OrderDetails: React.FC = () => {
                         </div>
                         <button 
                             onClick={handleAckApproval} 
-                            className="relative z-10 px-5 py-2.5 bg-white text-green-600 rounded-xl font-black text-xs uppercase shadow-md hover:bg-green-50 transition active:scale-95 flex flex-col items-center justify-center gap-0.5 hover:shadow-lg hover:-translate-y-0.5 transform duration-200 whitespace-nowrap"
+                            disabled={isProcessing}
+                            className="relative z-10 px-5 py-2.5 bg-white text-green-600 rounded-xl font-black text-xs uppercase shadow-md hover:bg-green-50 transition active:scale-95 flex flex-col items-center justify-center gap-0.5 hover:shadow-lg hover:-translate-y-0.5 transform duration-200 whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
                         >
-                            <CheckCircle2 className="w-4 h-4 text-green-600"/> CONFIRMAR LECTURA
+                            {isProcessing ? <Loader2 className="w-4 h-4 animate-spin text-green-600"/> : <><CheckCircle2 className="w-4 h-4 text-green-600"/> CONFIRMAR LECTURA</>}
                         </button>
                     </div>
                 )}
@@ -1485,12 +1561,19 @@ export const OrderDetails: React.FC = () => {
                                         : `${order.pointRequest?.requestedPoints} Puntos solicitados`
                                     }
                                 </p>
+                                {order.pointRequest?.reason && (
+                                    <p className="text-[10px] text-orange-800 italic mt-0.5">
+                                        "{order.pointRequest.reason}"
+                                    </p>
+                                )}
                             </div>
                         </div>
                         <div className="flex gap-2">
-                            <button onClick={() => handlePointsResponse(false)} className="px-4 py-2 bg-white border border-red-200 text-red-600 rounded-xl text-xs font-bold hover:bg-red-50 transition">Rechazar</button>
-                            <button onClick={async () => { if(confirm('¿Iniciar debate de puntos con el técnico?')) { await debatePoints(order.id, currentUser.name); } }} className="px-4 py-2 bg-yellow-50 border border-yellow-200 text-yellow-600 rounded-xl text-xs font-bold hover:bg-yellow-100 transition">Debatir</button>
-                            <button onClick={() => handlePointsResponse(true)} className="px-6 py-2 bg-orange-500 text-white rounded-xl text-xs font-bold shadow-lg hover:bg-orange-600 transition">Aprobar</button>
+                            <button onClick={() => handlePointsResponse(false)} disabled={isProcessing} className="px-4 py-2 bg-white border border-red-200 text-red-600 rounded-xl text-xs font-bold hover:bg-red-50 transition disabled:opacity-50">Rechazar</button>
+                            <button onClick={async () => { if(confirm('¿Iniciar debate de puntos con el técnico?')) { await debatePoints(order.id, currentUser.name); } }} disabled={isProcessing} className="px-4 py-2 bg-yellow-50 border border-yellow-200 text-yellow-600 rounded-xl text-xs font-bold hover:bg-yellow-100 transition disabled:opacity-50">Debatir</button>
+                            <button onClick={() => handlePointsResponse(true)} disabled={isProcessing} className="px-6 py-2 bg-orange-500 text-white rounded-xl text-xs font-bold shadow-lg hover:bg-orange-600 transition disabled:opacity-50 flex items-center gap-2">
+                                {isProcessing ? <Loader2 className="w-3 h-3 animate-spin"/> : 'Aprobar'}
+                            </button>
                         </div>
                     </div>
                 )}
