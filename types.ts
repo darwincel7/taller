@@ -415,11 +415,13 @@ export interface AccountingTransaction {
   category_id: string;
   vendor?: string;
   receipt_url?: string;
+  search_text?: string; // For AI Search
   created_at: string;
   status?: 'PENDING' | 'COMPLETED' | 'CANCELLED';
   source?: 'MANUAL' | 'ORDER' | 'STORE';
   order_id?: string;
   created_by?: string;
+  category_name?: string; // Joined field
 }
 
 export interface CashflowData {

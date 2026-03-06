@@ -16,6 +16,8 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({ isOpen, onClos
   const [isScanning, setIsScanning] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [apiKeyMissing, setApiKeyMissing] = useState(false);
   const [categories, setCategories] = useState<AccountingCategory[]>([]);
   
   useEffect(() => {
@@ -40,15 +42,28 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({ isOpen, onClos
     }
   }, [categories]);
 
+  const [file, setFile] = useState<File | null>(null);
+  const [ocrText, setOcrText] = useState<string>('');
+
   const onDrop = useCallback(async (acceptedFiles: File[]) => {
-    const file = acceptedFiles[0];
-    if (!file) return;
+    const droppedFile = acceptedFiles[0];
+    if (!droppedFile) return;
+
+    setFile(droppedFile);
+    setScanError(null);
+    setApiKeyMissing(false);
+
+    // Check API Key
+    const hasKey = await aiAccountingService.checkApiKey();
+    if (!hasKey) {
+        setApiKeyMissing(true);
+        return;
+    }
 
     setIsScanning(true);
-    setScanError(null);
 
     try {
-      const scannedData = await aiAccountingService.scanReceipt(file);
+      const scannedData = await aiAccountingService.scanReceipt(droppedFile);
       
       if (scannedData.error) {
         setScanError("No se detectó un recibo válido.");
@@ -62,6 +77,12 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({ isOpen, onClos
           description: scannedData.description || '',
           category: matchedCat ? matchedCat.id : (categories[0]?.id || '')
         }));
+        
+        // Store raw OCR text for search indexing
+        // We might want to ask the AI to return the raw text too, or just use the structured data as proxy
+        // For now, let's construct a rich search string from the structured data + any extra fields
+        const richText = `OCR_DATA: ${JSON.stringify(scannedData)}`;
+        setOcrText(richText);
       }
     } catch (error) {
       console.error("Scan failed", error);
@@ -69,7 +90,7 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({ isOpen, onClos
     } finally {
       setIsScanning(false);
     }
-  }, []);
+  }, [categories]);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
@@ -77,11 +98,12 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({ isOpen, onClos
       'image/*': ['.jpeg', '.jpg', '.png', '.webp']
     },
     maxFiles: 1
-  });
+  } as any);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSubmitting(true);
+    setSubmitError(null);
 
     try {
       await accountingService.addTransaction({
@@ -91,8 +113,9 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({ isOpen, onClos
         description: formData.description,
         category_id: formData.category,
         source: formData.source,
-        status: 'COMPLETED'
-      });
+        status: 'COMPLETED',
+        search_text: ocrText // Pass the OCR text for indexing
+      }, file || undefined); // Pass the file for uploading
       
       onSuccess();
       onClose();
@@ -102,11 +125,14 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({ isOpen, onClos
         date: new Date().toISOString().split('T')[0],
         vendor: '',
         description: '',
-        category: 'Gastos Variables',
+        category: categories[0]?.id || '',
         source: 'MANUAL'
       });
+      setFile(null);
+      setOcrText('');
     } catch (error) {
       console.error("Submit failed", error);
+      setSubmitError("Error al guardar. Verifica la conexión o el almacenamiento.");
     } finally {
       setIsSubmitting(false);
     }
@@ -141,6 +167,31 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({ isOpen, onClos
             </div>
 
             <div className="p-6 space-y-6">
+              {apiKeyMissing && (
+                <div className="p-3 bg-amber-50 border border-amber-100 rounded-xl flex flex-col gap-2">
+                  <div className="flex items-center gap-2 text-amber-700 text-sm font-medium">
+                    <AlertCircle className="w-4 h-4" />
+                    <span>Se requiere conectar la API de Gemini para usar la IA.</span>
+                  </div>
+                  <button 
+                    onClick={async () => {
+                        await aiAccountingService.promptApiKey();
+                        setApiKeyMissing(false);
+                    }}
+                    className="self-start px-3 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-800 rounded-lg text-xs font-bold transition"
+                  >
+                    Conectar API Key
+                  </button>
+                </div>
+              )}
+
+              {submitError && (
+                <div className="p-3 bg-red-50 text-red-600 text-sm rounded-lg flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4" />
+                  {submitError}
+                </div>
+              )}
+
               {/* AI Scanner Dropzone */}
               <div 
                 {...getRootProps()} 

@@ -45,7 +45,7 @@ export const KPICards: React.FC<KPICardsProps> = ({ kpis, isLoading }) => {
     },
     {
       title: 'Margen',
-      value: ((kpis.net_profit / kpis.current_income) * 100).toFixed(1) + '%',
+      value: kpis.current_income > 0 ? ((kpis.net_profit / kpis.current_income) * 100).toFixed(1) + '%' : '0%',
       prev: 'N/A',
       icon: PieChart,
       color: 'text-purple-600',
@@ -69,7 +69,7 @@ export const KPICards: React.FC<KPICardsProps> = ({ kpis, isLoading }) => {
             <div className={`p-3 rounded-xl ${card.bg}`}>
               <card.icon className={`w-6 h-6 ${card.color}`} />
             </div>
-            {card.trend !== 'neutral' && typeof card.value === 'number' && typeof card.prev === 'number' && (
+            {card.trend !== 'neutral' && typeof card.value === 'number' && typeof card.prev === 'number' && card.prev !== 0 && (
               <span className={`text-xs font-bold px-2 py-1 rounded-full ${
                 card.trend === 'positive' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'
               }`}>

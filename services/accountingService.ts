@@ -15,14 +15,22 @@ export const accountingService = {
       if (filters.startDate) query = query.gte('transaction_date', filters.startDate);
       if (filters.endDate) query = query.lte('transaction_date', filters.endDate);
       if (filters.type) {
-        // Need to join category to filter by type, or filter by amount sign
-        // Assuming amount > 0 is INCOME, < 0 is EXPENSE
         if (filters.type === 'INCOME') query = query.gt('amount', 0);
         if (filters.type === 'EXPENSE') query = query.lt('amount', 0);
       }
       if (filters.categoryId) query = query.eq('category_id', filters.categoryId);
       if (filters.status) query = query.eq('status', filters.status);
       if (filters.source) query = query.eq('source', filters.source);
+      
+      // SMART SEARCH
+      if (filters.search) {
+        // Search in search_text column (which includes OCR data) OR fallback to description/vendor
+        query = query.or(`description.ilike.%${filters.search}%,vendor.ilike.%${filters.search}%,search_text.ilike.%${filters.search}%`);
+      }
+
+      // PAGINATION
+      if (filters.limit) query = query.limit(filters.limit);
+      if (filters.offset) query = query.range(filters.offset, filters.offset + filters.limit - 1);
     }
 
     const { data, error } = await query;
@@ -37,12 +45,52 @@ export const accountingService = {
     }));
   },
 
-  addTransaction: async (transaction: Partial<AccountingTransaction>): Promise<AccountingTransaction | null> => {
+  uploadReceipt: async (file: File): Promise<string | null> => {
+    if (!supabase) return null;
+    const fileName = `${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.]/g, '')}`;
+    const { data, error } = await supabase.storage
+      .from('receipts')
+      .upload(fileName, file);
+
+    if (error) {
+      console.error("Upload error:", error);
+      return null;
+    }
+    
+    const { data: publicData } = supabase.storage.from('receipts').getPublicUrl(fileName);
+    return publicData.publicUrl;
+  },
+
+  addTransaction: async (transaction: Partial<AccountingTransaction>, file?: File): Promise<AccountingTransaction | null> => {
     if (!supabase) return null;
     
+    let receiptUrl = transaction.receipt_url;
+    
+    // Upload file if present
+    if (file) {
+        const url = await accountingService.uploadReceipt(file);
+        if (url) receiptUrl = url;
+    }
+
+    // Construct search text for "Smart Search"
+    // Combine vendor, description, amount, and any OCR text provided in search_text
+    const searchText = `
+        ${transaction.vendor || ''} 
+        ${transaction.description || ''} 
+        ${transaction.amount || ''} 
+        ${transaction.transaction_date || ''} 
+        ${transaction.search_text || ''}
+    `.toLowerCase();
+
+    const finalTransaction = {
+        ...transaction,
+        receipt_url: receiptUrl,
+        search_text: searchText
+    };
+
     const { data, error } = await supabase
       .from('accounting_transactions')
-      .insert([transaction])
+      .insert([finalTransaction])
       .select()
       .single();
 

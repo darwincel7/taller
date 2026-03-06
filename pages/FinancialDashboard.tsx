@@ -10,14 +10,16 @@ import { ExpensesDonut } from '../components/accounting/ExpensesDonut';
 import { ProjectionChart } from '../components/accounting/ProjectionChart';
 import { TransactionsTable } from '../components/accounting/TransactionsTable';
 import { NewExpenseModal } from '../components/accounting/NewExpenseModal';
+import { NewIncomeModal } from '../components/accounting/NewIncomeModal';
 import { ManageCategoriesModal } from '../components/accounting/ManageCategoriesModal';
-import { Plus, Sparkles, MessageSquare, X, ShieldAlert, Tag, CheckCircle2 } from 'lucide-react';
+import { Plus, Sparkles, MessageSquare, X, ShieldAlert, Tag, CheckCircle2, TrendingUp } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 export const FinancialDashboard: React.FC = () => {
   const { currentUser } = useAuth();
   const queryClient = useQueryClient();
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isIncomeModalOpen, setIsIncomeModalOpen] = useState(false);
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [chatQuery, setChatQuery] = useState('');
@@ -125,6 +127,13 @@ export const FinancialDashboard: React.FC = () => {
           >
             <Sparkles className="w-4 h-4" />
             CFO Virtual
+          </button>
+          <button 
+            onClick={() => setIsIncomeModalOpen(true)}
+            className="px-5 py-2.5 bg-emerald-600 text-white rounded-xl font-bold shadow-lg shadow-emerald-600/20 hover:bg-emerald-700 transition active:scale-95 flex items-center gap-2"
+          >
+            <TrendingUp className="w-5 h-5" />
+            Nuevo Ingreso
           </button>
           <button 
             onClick={() => setIsModalOpen(true)}
@@ -315,6 +324,16 @@ export const FinancialDashboard: React.FC = () => {
           queryClient.invalidateQueries({ queryKey: ['cashflow'] });
           queryClient.invalidateQueries({ queryKey: ['financialKPIs'] });
           queryClient.invalidateQueries({ queryKey: ['expensesDistribution'] });
+        }}
+      />
+
+      <NewIncomeModal 
+        isOpen={isIncomeModalOpen} 
+        onClose={() => setIsIncomeModalOpen(false)} 
+        onSuccess={() => {
+          queryClient.invalidateQueries({ queryKey: ['transactions'] });
+          queryClient.invalidateQueries({ queryKey: ['cashflow'] });
+          queryClient.invalidateQueries({ queryKey: ['financialKPIs'] });
         }}
       />
 

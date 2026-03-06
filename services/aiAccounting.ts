@@ -1,6 +1,33 @@
 import { GoogleGenAI } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
+const getApiKey = () => {
+    try {
+        // Priority 1: Official Gemini API Key (per instructions)
+        // @ts-ignore
+        if (typeof process !== 'undefined' && process.env && process.env.GEMINI_API_KEY) return process.env.GEMINI_API_KEY;
+        
+        // Priority 2: Generic API Key (often used for Veo/Imagen)
+        // @ts-ignore
+        if (typeof process !== 'undefined' && process.env && process.env.API_KEY) return process.env.API_KEY;
+        
+        // Priority 3: Vite environment variable
+        // @ts-ignore
+        if (import.meta && import.meta.env && import.meta.env.VITE_GEMINI_API_KEY) return import.meta.env.VITE_GEMINI_API_KEY;
+
+        // Priority 4: User provided fallback (to ensure it works in this specific environment)
+        return 'AIzaSyCrdM0mhdEopnFQb_7i52ON4VkI_dtcNw4';
+    } catch (e) {}
+    return 'AIzaSyCrdM0mhdEopnFQb_7i52ON4VkI_dtcNw4'; // Final fallback
+};
+
+const getAiClient = () => {
+    const key = getApiKey();
+    if (!key) {
+        console.warn("Gemini API Key missing. AI features will be disabled.");
+        throw new Error("API Key not found.");
+    }
+    return new GoogleGenAI({ apiKey: key });
+};
 
 const SYSTEM_PROMPT_OCR = `
 You are an expert AI Accountant. Analyze this receipt/invoice image and extract the following data in strict JSON format:
@@ -32,33 +59,64 @@ If the answer isn't in the data, say so. Do not hallucinate numbers.
 IMPORTANT: You MUST generate all responses, analysis, projections, and tips STRICTLY IN SPANISH language.
 `;
 
+
 export const aiAccountingService = {
+  checkApiKey: async () => {
+    const key = getApiKey();
+    if (key) return true;
+    // @ts-ignore
+    if (typeof window !== 'undefined' && window.aistudio && window.aistudio.hasSelectedApiKey) {
+        // @ts-ignore
+        return await window.aistudio.hasSelectedApiKey();
+    }
+    return false;
+  },
+
+  promptApiKey: async () => {
+    // @ts-ignore
+    if (typeof window !== 'undefined' && window.aistudio && window.aistudio.openSelectKey) {
+        // @ts-ignore
+        await window.aistudio.openSelectKey();
+    }
+  },
+
   scanReceipt: async (file: File) => {
     try {
+      const ai = getAiClient();
       const base64Data = await fileToGenerativePart(file);
       
       const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview", // Using flash for speed/cost
+        model: "gemini-3-flash-preview",
         contents: {
           parts: [
-            { inlineData: { mimeType: file.type, data: base64Data } },
+            { 
+              inlineData: { 
+                mimeType: file.type, 
+                data: base64Data 
+              } 
+            },
             { text: SYSTEM_PROMPT_OCR }
           ]
         }
       });
 
       const text = response.text;
-      // Clean up markdown code blocks if present
-      const jsonStr = text.replace(/```json/g, '').replace(/```/g, '').trim();
-      return JSON.parse(jsonStr);
+      if (!text) throw new Error("No response from AI");
+
+      // Robust JSON extraction
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error("No JSON found in response");
+      
+      return JSON.parse(jsonMatch[0]);
     } catch (error) {
       console.error("AI Scan Error:", error);
-      throw error;
+      return { error: "Failed to scan receipt" };
     }
   },
 
   getInsights: async (financialData: any) => {
     try {
+      const ai = getAiClient();
       const response = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
         contents: {
@@ -70,8 +128,12 @@ export const aiAccountingService = {
       });
 
       const text = response.text;
-      const jsonStr = text.replace(/```json/g, '').replace(/```/g, '').trim();
-      return JSON.parse(jsonStr);
+      if (!text) throw new Error("No response from AI");
+
+      const jsonMatch = text.match(/\[[\s\S]*\]/); // Insights are an array
+      if (!jsonMatch) throw new Error("No JSON array found in response");
+      
+      return JSON.parse(jsonMatch[0]);
     } catch (error) {
       console.error("AI Insights Error:", error);
       // Fallback insights if AI fails
@@ -85,6 +147,7 @@ export const aiAccountingService = {
 
   chatWithCFO: async (query: string, contextData: any) => {
     try {
+      const ai = getAiClient();
       const response = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
         contents: {
