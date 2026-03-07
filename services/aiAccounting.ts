@@ -1,23 +1,14 @@
 import { GoogleGenAI } from "@google/genai";
 
 const getApiKey = () => {
-    try {
-        // Priority 1: Official Gemini API Key (per instructions)
-        // @ts-ignore
-        if (typeof process !== 'undefined' && process.env && process.env.GEMINI_API_KEY) return process.env.GEMINI_API_KEY;
-        
-        // Priority 2: Generic API Key (often used for Veo/Imagen)
-        // @ts-ignore
-        if (typeof process !== 'undefined' && process.env && process.env.API_KEY) return process.env.API_KEY;
-        
-        // Priority 3: Vite environment variable
-        // @ts-ignore
-        if (import.meta && import.meta.env && import.meta.env.VITE_GEMINI_API_KEY) return import.meta.env.VITE_GEMINI_API_KEY;
-
-        // Priority 4: User provided fallback (to ensure it works in this specific environment)
-        return 'AIzaSyCrdM0mhdEopnFQb_7i52ON4VkI_dtcNw4';
-    } catch (e) {}
-    return 'AIzaSyCrdM0mhdEopnFQb_7i52ON4VkI_dtcNw4'; // Final fallback
+    // 1. Intentar obtener de Variables de Entorno de Vite
+    // @ts-ignore
+    if (import.meta && import.meta.env && import.meta.env.VITE_GEMINI_API_KEY) return import.meta.env.VITE_GEMINI_API_KEY;
+    // 2. Intentar obtener del entorno de Node / Google AI Studio
+    // @ts-ignore
+    if (typeof process !== 'undefined' && process.env && process.env.GEMINI_API_KEY) return process.env.GEMINI_API_KEY;
+    // 3. Fallback manual (Solo si los anteriores fallan)
+    return "AIzaSyCrdM0mhdEopnFQb_7i52ON4VkI_dtcNw4";
 };
 
 const getAiClient = () => {
