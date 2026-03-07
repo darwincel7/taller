@@ -8,7 +8,7 @@ const getApiKey = () => {
     // @ts-ignore
     if (typeof process !== 'undefined' && process.env && process.env.GEMINI_API_KEY) return process.env.GEMINI_API_KEY;
     // 3. Fallback manual (Solo si los anteriores fallan)
-    return "AIzaSyCrdM0mhdEopnFQb_7i52ON4VkI_dtcNw4";
+    return "AIzaSyDpyxDaoeoYRyFTYStdszfmh7ZL4C6kUFo";
 };
 
 const getAiClient = () => {
