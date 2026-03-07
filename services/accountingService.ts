@@ -83,6 +83,8 @@ export const accountingService = {
     `.toLowerCase();
 
     const finalTransaction = {
+        status: 'CONSOLIDATED',
+        source: 'MANUAL',
         ...transaction,
         receipt_url: receiptUrl,
         search_text: searchText
@@ -95,7 +97,7 @@ export const accountingService = {
       .single();
 
     if (error) {
-      console.error('Error adding transaction:', error);
+      console.error('Supabase Error:', error);
       throw error;
     }
     return data;
