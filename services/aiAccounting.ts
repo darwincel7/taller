@@ -1,13 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
 
 const getApiKey = () => {
-    // 1. Intentar obtener de Variables de Entorno de Vite
-    // @ts-ignore
-    if (import.meta && import.meta.env && import.meta.env.VITE_GEMINI_API_KEY) return import.meta.env.VITE_GEMINI_API_KEY;
-    // 2. Intentar obtener del entorno de Node / Google AI Studio
-    // @ts-ignore
-    if (typeof process !== 'undefined' && process.env && process.env.GEMINI_API_KEY) return process.env.GEMINI_API_KEY;
-    // 3. Fallback manual (Solo si los anteriores fallan)
     return "AIzaSyDpyxDaoeoYRyFTYStdszfmh7ZL4C6kUFo";
 };
 
