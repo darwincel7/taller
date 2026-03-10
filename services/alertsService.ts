@@ -61,9 +61,9 @@ export const fetchActionRequiredOrders = async (
             const isMyBranch = order.currentBranch === branch;
             const isAdmin = userRole === UserRole.ADMIN;
 
-            // Strict Branch Check for Non-Admins (unless it's a transfer or assignment targeting them)
-            // This prevents cross-branch notifications for regular staff
-            if (!isAdmin && !isMyBranch) {
+            // Strict Branch Check for ALL users (including Admins, as requested)
+            // This prevents cross-branch notifications
+            if (!isMyBranch) {
                 // Exceptions:
                 // 1. Incoming Transfer (handled below)
                 // 2. Assignment Request (handled below)
@@ -86,11 +86,8 @@ export const fetchActionRequiredOrders = async (
             if (order.status === OrderStatus.WAITING_APPROVAL) {
                 // QUIÉN LO VE: ADMIN + MONITOR + CASHIER de la sucursal.
                 // QUIÉN NO LO VE: TECHNICIAN.
-                if (userRole === UserRole.TECHNICIAN) {
-                    // Técnico nunca ve esto.
-                } else {
-                    // Admin global o Staff de la sucursal
-                    if (isAdmin || isMyBranch) return true;
+                if (userRole !== UserRole.TECHNICIAN) {
+                    if (isMyBranch) return true;
                 }
             }
 
@@ -102,10 +99,11 @@ export const fetchActionRequiredOrders = async (
 
             // D. transferStatus (Traslado Entrante)
             if (order.transferStatus === 'PENDING') {
-                // QUIÉN LO VE: MONITOR + TECHNICIAN + CASHIER de la sucursal de DESTINO, y ADMIN global.
-                // Nota: La query original ya filtra por branch, pero aquí reforzamos.
-                if (isAdmin) return true;
-                if (order.transferTarget === branch) return true;
+                // QUIÉN LO VE: MONITOR + CASHIER de la sucursal de DESTINO, y ADMIN.
+                // QUIÉN NO LO VE: TECHNICIAN.
+                if (userRole !== UserRole.TECHNICIAN) {
+                    if (order.transferTarget === branch) return true;
+                }
             }
 
             // E. pending_assignment_to (Solicitud de Traspaso)
@@ -116,26 +114,25 @@ export const fetchActionRequiredOrders = async (
 
             // F. returnRequest (Devolución Pendiente)
             if (order.returnRequest?.status === 'PENDING') {
-                // QUIÉN LO VE: ADMIN/MONITOR de la sucursal (asumimos lógica actual para roles admin/monitor)
-                // El PDF no especifica roles exactos, dice "ADMIN/MONITOR según reglas actuales".
+                // QUIÉN LO VE: ADMIN/MONITOR de la sucursal
                 // Asumimos que técnicos no aprueban devoluciones.
-                if (userRole !== UserRole.TECHNICIAN && (isAdmin || isMyBranch)) return true;
+                if (userRole !== UserRole.TECHNICIAN && isMyBranch) return true;
             }
 
-            // G. pointRequest (Solicitud de Puntos) - Lógica existente
+            // G. pointRequest (Solicitud de Puntos)
             if (order.pointRequest?.status === 'PENDING') {
                 // Solo Admin/Monitor
-                if ((userRole === UserRole.ADMIN || userRole === UserRole.MONITOR) && (isAdmin || isMyBranch)) return true;
+                if ((userRole === UserRole.ADMIN || userRole === UserRole.MONITOR) && isMyBranch) return true;
             }
 
-            // H. externalRepair (Salida Externa) - Lógica existente
+            // H. externalRepair (Salida Externa)
             if (order.externalRepair?.status === 'PENDING') {
-                if (userRole !== UserRole.TECHNICIAN && (isAdmin || isMyBranch)) return true;
+                if (userRole !== UserRole.TECHNICIAN && isMyBranch) return true;
             }
 
-            // I. isValidated (Validar Ingreso) - Lógica existente
+            // I. isValidated (Validar Ingreso)
             if (order.isValidated === false) {
-                if (userRole !== UserRole.TECHNICIAN && (isAdmin || isMyBranch)) return true;
+                if (userRole !== UserRole.TECHNICIAN && isMyBranch) return true;
             }
 
             // Si no cumplió ninguna regla de visibilidad personal, no mostrar.

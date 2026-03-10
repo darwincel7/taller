@@ -442,7 +442,7 @@ export const printInvoice = (order: RepairOrder, targetWindow?: Window | null) =
 
   // --- STANDARD CLIENT INVOICE ---
   let paymentsHtml = '';
-  if (order.payments && order.payments.length > 0) {
+  if (order.orderType !== OrderType.STORE && order.payments && order.payments.length > 0) {
       paymentsHtml = `
       <div class="dashed-line"></div>
       <div style="margin-top: 5px;">PAGOS REALIZADOS:</div>
@@ -454,6 +454,11 @@ export const printInvoice = (order: RepairOrder, targetWindow?: Window | null) =
       `).join('')}
       `;
   }
+
+  const isStore = order.orderType === OrderType.STORE;
+  const serviceLabel = isStore ? 'Costo de Compra' : (isReturn ? 'Costo Chequeo/Diagnóstico' : 'Reparación/Servicio');
+  const finalAmount = isStore ? (order.purchaseCost || 0) : (order.finalPrice || 0);
+  const estimatedAmount = isStore ? (order.purchaseCost || 0) : (order.estimatedCost || 0);
 
   const content = `
     <!DOCTYPE html>
@@ -521,16 +526,16 @@ export const printInvoice = (order: RepairOrder, targetWindow?: Window | null) =
       ${isFinal ? 
         `<div class="row"><span>SERVICIO</span> <span>VALOR</span></div>
          <div class="row">
-            <span>${isReturn ? 'Costo Chequeo/Diagnóstico' : 'Reparación/Servicio'}</span>
-            <span>$${(order.finalPrice || 0).toFixed(2)}</span>
+            <span>${serviceLabel}</span>
+            <span>$${finalAmount.toFixed(2)}</span>
          </div>` 
         : 
-        `<div class="row"><span>PRECIO ESTIMADO:</span> <span>$${(order.estimatedCost || 0).toFixed(2)}</span></div>
-         <div style="font-size:9px; font-style:italic; margin-top:2px;">* Sujeto a revisión técnica final.</div>`
+        `<div class="row"><span>${isStore ? 'PRECIO DE COMPRA:' : 'PRECIO ESTIMADO:'}</span> <span>$${estimatedAmount.toFixed(2)}</span></div>
+         ${!isStore ? `<div style="font-size:9px; font-style:italic; margin-top:2px;">* Sujeto a revisión técnica final.</div>` : ''}`
       }
 
       ${isFinal ? 
-        `<div class="total-box">TOTAL: $${(order.finalPrice || 0).toFixed(2)}</div>` 
+        `<div class="total-box">TOTAL: $${finalAmount.toFixed(2)}</div>` 
         : ''
       }
 

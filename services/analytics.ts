@@ -298,3 +298,62 @@ export const fetchTechnicianLeaderboard = async () => {
         return [];
     }
 };
+
+export const fetchTechnicianPointsDetails = async (techId: string) => {
+    if (!supabase) return [];
+
+    const now = new Date();
+    const day = now.getDate();
+    let startTs: number;
+    let endTs: number;
+
+    // Determine current fortnight (1-15 or 16-End)
+    if (day <= 15) {
+        startTs = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+        endTs = new Date(now.getFullYear(), now.getMonth(), 16).getTime() - 1;
+    } else {
+        startTs = new Date(now.getFullYear(), now.getMonth(), 16).getTime();
+        // End of month
+        endTs = new Date(now.getFullYear(), now.getMonth() + 1, 1).getTime() - 1;
+    }
+
+    try {
+        const { data } = await supabase
+            .from('orders')
+            .select('*')
+            .in('status', [OrderStatus.REPAIRED, OrderStatus.RETURNED])
+            .gte('completedAt', startTs)
+            .lte('completedAt', endTs);
+
+        if (!data) return [];
+
+        const techOrders: any[] = [];
+
+        data.forEach((order: any) => {
+            let pointsForTech = 0;
+            if (order.pointsSplit) {
+                const split = typeof order.pointsSplit === 'string' ? JSON.parse(order.pointsSplit) : order.pointsSplit;
+                if (split.primaryTechId === techId) {
+                    pointsForTech = Number(split.primaryPoints) || 0;
+                }
+                if (split.secondaryTechId === techId) {
+                    pointsForTech += Number(split.secondaryPoints) || 0;
+                }
+            } else if (order.assignedTo === techId && order.pointsAwarded) {
+                pointsForTech = Number(order.pointsAwarded);
+            }
+
+            if (pointsForTech > 0) {
+                techOrders.push({
+                    ...order,
+                    earnedPoints: pointsForTech
+                });
+            }
+        });
+
+        return techOrders.sort((a: any, b: any) => b.completedAt - a.completedAt);
+    } catch (e) {
+        console.error("Error fetching technician points details:", e);
+        return [];
+    }
+};

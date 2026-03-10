@@ -20,6 +20,7 @@ You are an expert AI Accountant. Analyze this receipt/invoice image and extract 
 - vendor (string)
 - description (string, brief)
 - category (string, strictly one of: 'Sueldos', 'Compras', 'Gastos Fijos', 'Gastos Variables')
+- invoice_number (string, null if not found. Look for Folio, Ticket, Receipt Number, Invoice #)
 - confidence (number, 0-1)
 
 If the image is not a receipt, return { "error": "Not a receipt" }.

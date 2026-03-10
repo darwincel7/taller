@@ -13,7 +13,7 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, 
   BarChart, Bar, Legend, PieChart, Pie, Cell, ComposedChart, Line
 } from 'recharts';
-import { fetchRealDashboardStats, fetchRevenueChartData, fetchAdvancedDashboardData, fetchTechnicianLeaderboard } from '../services/analytics';
+import { fetchRealDashboardStats, fetchRevenueChartData, fetchAdvancedDashboardData, fetchTechnicianLeaderboard, fetchTechnicianPointsDetails } from '../services/analytics';
 
 const DashboardComponent: React.FC = () => {
   const navigate = useNavigate();
@@ -29,6 +29,11 @@ const DashboardComponent: React.FC = () => {
   const [advancedData, setAdvancedData] = useState<any>(null);
   const [leaderboard, setLeaderboard] = useState<{techId: string, points: number}[]>([]);
   const [loadingStats, setLoadingStats] = useState(true);
+
+  // MODAL STATE FOR TECH POINTS
+  const [selectedTechForPoints, setSelectedTechForPoints] = useState<string | null>(null);
+  const [techPointsDetails, setTechPointsDetails] = useState<any[]>([]);
+  const [loadingTechPoints, setLoadingTechPoints] = useState(false);
 
   // FETCH ON MOUNT
   useEffect(() => {
@@ -49,6 +54,14 @@ const DashboardComponent: React.FC = () => {
   }, []);
 
   const isAdmin = currentUser?.role === UserRole.ADMIN;
+  
+  const handleTechClick = async (techId: string) => {
+      setSelectedTechForPoints(techId);
+      setLoadingTechPoints(true);
+      const details = await fetchTechnicianPointsDetails(techId);
+      setTechPointsDetails(details);
+      setLoadingTechPoints(false);
+  };
   
   // NOTE: Keep existing `orders` logic for specific alerts/lists (like "My Tech Alerts") 
   // because those usually involve recent/active orders which ARE in the context.
@@ -96,7 +109,11 @@ const DashboardComponent: React.FC = () => {
                               const bgColor = index === 0 ? 'bg-yellow-500/10 border-yellow-500/50' : index === 1 ? 'bg-slate-500/10 border-slate-500/50' : index === 2 ? 'bg-amber-600/10 border-amber-600/50' : 'bg-slate-800/50 border-slate-700';
                               
                               return (
-                                  <div key={entry.techId} className={`relative p-4 rounded-xl border ${bgColor} flex items-center gap-4 transition-transform hover:scale-105`}>
+                                  <div 
+                                      key={entry.techId} 
+                                      onClick={() => handleTechClick(entry.techId)}
+                                      className={`relative p-4 rounded-xl border ${bgColor} flex items-center gap-4 transition-transform hover:scale-105 cursor-pointer`}
+                                  >
                                       <div className={`text-2xl font-black ${rankColor} w-8 text-center`}>
                                           #{index + 1}
                                       </div>
@@ -350,6 +367,78 @@ const DashboardComponent: React.FC = () => {
           </div>
           )}
       </div>
+      )}
+      {/* TECH POINTS MODAL */}
+      {selectedTechForPoints && (
+          <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]">
+                  <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+                      <div>
+                          <h2 className="text-xl font-black text-slate-800 flex items-center gap-2">
+                              <Trophy className="w-6 h-6 text-yellow-500" />
+                              Detalle de Puntos
+                          </h2>
+                          <p className="text-sm text-slate-500 font-medium mt-1">
+                              {users.find(u => u.id === selectedTechForPoints)?.name || 'Técnico'}
+                          </p>
+                      </div>
+                      <button 
+                          onClick={() => setSelectedTechForPoints(null)}
+                          className="p-2 hover:bg-slate-200 rounded-full transition-colors"
+                      >
+                          <X className="w-6 h-6 text-slate-500" />
+                      </button>
+                  </div>
+                  
+                  <div className="p-6 overflow-y-auto flex-1 bg-slate-50/50">
+                      {loadingTechPoints ? (
+                          <div className="flex flex-col items-center justify-center py-12 text-slate-400">
+                              <Loader2 className="w-8 h-8 animate-spin mb-4 text-blue-500" />
+                              <p className="font-medium">Cargando detalles...</p>
+                          </div>
+                      ) : techPointsDetails.length > 0 ? (
+                          <div className="space-y-3">
+                              {techPointsDetails.map((order, i) => (
+                                  <div 
+                                      key={i} 
+                                      onClick={() => {
+                                          setSelectedTechForPoints(null);
+                                          navigate(`/orders/${order.id}`);
+                                      }}
+                                      className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md hover:border-blue-300 transition-all cursor-pointer flex items-center justify-between group"
+                                  >
+                                      <div className="flex items-center gap-4">
+                                          <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center text-blue-600 shrink-0 group-hover:bg-blue-600 group-hover:text-white transition-colors">
+                                              <Wrench className="w-5 h-5" />
+                                          </div>
+                                          <div>
+                                              <h4 className="font-bold text-slate-800 flex items-center gap-2">
+                                                  {order.deviceModel}
+                                                  <span className="text-[10px] font-mono text-slate-400 font-normal">#{order.readable_id || order.id.slice(-4)}</span>
+                                              </h4>
+                                              <p className="text-xs text-slate-500 font-medium mt-0.5">
+                                                  Completado: {new Date(order.completedAt).toLocaleDateString()}
+                                              </p>
+                                          </div>
+                                      </div>
+                                      <div className="flex items-center gap-4">
+                                          <div className="text-right">
+                                              <p className="text-lg font-black text-green-600">+{order.earnedPoints}</p>
+                                              <p className="text-[9px] font-bold text-slate-400 uppercase">Puntos</p>
+                                          </div>
+                                          <ChevronRight className="w-5 h-5 text-slate-300 group-hover:text-blue-500 transition-colors" />
+                                      </div>
+                                  </div>
+                              ))}
+                          </div>
+                      ) : (
+                          <div className="text-center py-12 text-slate-500">
+                              <p className="font-medium">No se encontraron órdenes con puntos para este técnico en la quincena actual.</p>
+                          </div>
+                      )}
+                  </div>
+              </div>
+          </div>
       )}
     </div>
   );

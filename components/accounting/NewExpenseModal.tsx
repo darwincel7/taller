@@ -31,6 +31,7 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({ isOpen, onClos
     date: new Date().toISOString().split('T')[0],
     vendor: '',
     description: '',
+    invoice_number: '',
     category: '', // Will be set to first category ID or empty
     source: 'MANUAL' as 'MANUAL' | 'STORE'
   });
@@ -75,6 +76,7 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({ isOpen, onClos
           date: scannedData.date || new Date().toISOString().split('T')[0],
           vendor: scannedData.vendor || '',
           description: scannedData.description || '',
+          invoice_number: scannedData.invoice_number || '',
           category: matchedCat ? matchedCat.id : (categories[0]?.id || '')
         }));
         
@@ -111,6 +113,7 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({ isOpen, onClos
         transaction_date: formData.date,
         vendor: formData.vendor,
         description: formData.description,
+        invoice_number: formData.invoice_number || undefined,
         category_id: formData.category,
         source: formData.source,
         status: 'COMPLETED',
@@ -125,14 +128,19 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({ isOpen, onClos
         date: new Date().toISOString().split('T')[0],
         vendor: '',
         description: '',
+        invoice_number: '',
         category: categories[0]?.id || '',
         source: 'MANUAL'
       });
       setFile(null);
       setOcrText('');
-    } catch (error) {
+    } catch (error: any) {
       console.error("Submit failed", error);
-      setSubmitError("Error al guardar. Verifica la conexión o el almacenamiento.");
+      if (error.message === 'DUPLICATE_INVOICE') {
+        setSubmitError(`Error: La factura #${formData.invoice_number} ya fue registrada anteriormente para el proveedor ${formData.vendor}.`);
+      } else {
+        setSubmitError("Error al guardar. Verifica la conexión o el almacenamiento.");
+      }
     } finally {
       setIsSubmitting(false);
     }
@@ -253,16 +261,28 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({ isOpen, onClos
                   </div>
                 </div>
 
-                <div>
-                  <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">Proveedor / Comercio</label>
-                  <input 
-                    type="text" 
-                    required
-                    className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition"
-                    placeholder="Ej. Amazon, Proveedor Local"
-                    value={formData.vendor}
-                    onChange={e => setFormData({...formData, vendor: e.target.value})}
-                  />
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">Proveedor / Comercio</label>
+                    <input 
+                      type="text" 
+                      required
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition"
+                      placeholder="Ej. Amazon, Proveedor Local"
+                      value={formData.vendor}
+                      onChange={e => setFormData({...formData, vendor: e.target.value})}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">Nº de Factura / Ticket</label>
+                    <input 
+                      type="text" 
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition"
+                      placeholder="Opcional"
+                      value={formData.invoice_number}
+                      onChange={e => setFormData({...formData, invoice_number: e.target.value})}
+                    />
+                  </div>
                 </div>
 
                 <div>

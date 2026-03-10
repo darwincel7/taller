@@ -1087,10 +1087,13 @@ export const OrderDetails: React.FC = () => {
                             const updatedOrder = await finalizeDelivery(order, payments, currentUser!, addPayments, recordOrderLog);
                             
                             // Construct temp order for printing (since we navigate away)
+                            const allPayments = updatedOrder.payments?.length > (order.payments?.length || 0) 
+                                ? updatedOrder.payments 
+                                : [...(order.payments || []), ...payments];
+                            
                             orderToPrint = {
                                 ...updatedOrder,
-                                // status: OrderStatus.RETURNED, // Already set in updatedOrder
-                                // payments: [...(order.payments || []), ...payments] // Already set in updatedOrder
+                                payments: allPayments
                             };
 
                             showNotification('success', 'Orden finalizada y entregada');
@@ -1151,7 +1154,10 @@ export const OrderDetails: React.FC = () => {
                 <div className="flex items-center gap-3 text-sm mt-1">
                     <span className="font-bold text-slate-500 uppercase">CLIENTE: {order.customer.name}</span>
                     <div className="flex items-center gap-1.5 bg-slate-800 px-3 py-1 rounded-full border border-slate-700 shadow-md">
-                        <span className="font-black text-white uppercase text-sm tracking-wider">{order.branch || 'T4'}</span>
+                        <span className="font-black text-white uppercase text-xs tracking-wider">ORIGEN: {order.originBranch || order.currentBranch || 'T4'}</span>
+                    </div>
+                    <div className="flex items-center gap-1.5 bg-blue-100 px-3 py-1 rounded-full border border-blue-200 shadow-sm">
+                        <span className="font-black text-blue-800 uppercase text-xs tracking-wider">ACTUAL: {order.currentBranch || 'T4'}</span>
                     </div>
                     {assignedUser ? (
                         <div className="flex items-center gap-1.5 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-100">

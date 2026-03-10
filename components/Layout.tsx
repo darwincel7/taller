@@ -17,6 +17,9 @@ const LayoutComponent: React.FC<LayoutProps> = ({ children }) => {
   const location = useLocation();
   const isClientView = location.pathname === '/client';
   
+  // MOBILE MENU STATE
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
   // DARK MODE STATE
   const [darkMode, setDarkMode] = useState(() => {
       return localStorage.getItem('theme') === 'dark';
@@ -74,20 +77,25 @@ const LayoutComponent: React.FC<LayoutProps> = ({ children }) => {
           ))}
       </div>
 
-      <aside className="w-64 bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 fixed h-full z-10 hidden md:flex flex-col transition-colors duration-200">
-        <div className="p-6 border-b border-slate-100 dark:border-slate-800">
-          <Link to="/" className="flex items-center gap-2 text-blue-600 dark:text-blue-400 hover:opacity-80 transition-opacity">
+      <aside className={`w-64 bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 fixed h-full z-30 flex flex-col transition-transform duration-300 ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
+        <div className="p-6 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center">
+          <Link to="/" className="flex items-center gap-2 text-blue-600 dark:text-blue-400 hover:opacity-80 transition-opacity" onClick={() => setIsMobileMenuOpen(false)}>
             <Smartphone className="w-7 h-7" />
             <h1 className="text-lg font-bold tracking-tight text-slate-900 dark:text-white">Darwin's Taller</h1>
           </Link>
-          {/* LIVE STATUS INDICATOR */}
-          <div className={`mt-3 flex items-center gap-2 text-[10px] font-bold px-2.5 py-1 rounded-full border w-fit ${isConnected ? 'bg-green-50 text-green-700 border-green-200 dark:bg-green-900/20 dark:text-green-400 dark:border-green-900' : 'bg-red-50 text-red-700 border-red-200 dark:bg-red-900/20 dark:text-red-400 dark:border-red-900'}`}>
+          <button className="md:hidden text-slate-500" onClick={() => setIsMobileMenuOpen(false)}>
+            <XCircle className="w-6 h-6" />
+          </button>
+        </div>
+        {/* LIVE STATUS INDICATOR */}
+        <div className="px-6 pb-2 pt-3">
+          <div className={`flex items-center gap-2 text-[10px] font-bold px-2.5 py-1 rounded-full border w-fit ${isConnected ? 'bg-green-50 text-green-700 border-green-200 dark:bg-green-900/20 dark:text-green-400 dark:border-green-900' : 'bg-red-50 text-red-700 border-red-200 dark:bg-red-900/20 dark:text-red-400 dark:border-red-900'}`}>
               {isConnected ? <Wifi className="w-2.5 h-2.5"/> : <WifiOff className="w-2.5 h-2.5"/>}
               {isConnected ? 'SISTEMA ONLINE' : 'SISTEMA OFFLINE'}
           </div>
         </div>
 
-        <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
+        <nav className="flex-1 p-4 space-y-1 overflow-y-auto" onClick={() => { if(window.innerWidth < 768) setIsMobileMenuOpen(false); }}>
           <div className="pb-1 text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest pl-2">Principal</div>
           <Link to="/" className={getNavLinkClass('/')}>
             <LayoutDashboard className="w-4 h-4" />
@@ -216,15 +224,26 @@ const LayoutComponent: React.FC<LayoutProps> = ({ children }) => {
         </div>
       </aside>
 
+      {/* MOBILE OVERLAY */}
+      {isMobileMenuOpen && (
+        <div 
+          className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-20 md:hidden"
+          onClick={() => setIsMobileMenuOpen(false)}
+        />
+      )}
+
       <main className="flex-1 md:ml-64 p-2 md:p-0 dark:text-slate-200">
-        <div className="md:hidden bg-white dark:bg-slate-900 p-4 mb-4 shadow-sm flex items-center justify-between sticky top-0 z-20 border-b dark:border-slate-800">
-           <Link to="/" className="font-bold text-lg text-slate-900 dark:text-white">Darwin's Taller</Link>
-           <div className="flex gap-2 items-center">
+        <div className="md:hidden bg-white dark:bg-slate-900 p-4 mb-4 shadow-sm flex items-center justify-between sticky top-0 z-10 border-b dark:border-slate-800">
+           <div className="flex items-center gap-3">
+               <button onClick={() => setIsMobileMenuOpen(true)} className="text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 p-1.5 rounded-lg transition-colors">
+                   <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+               </button>
+               <Link to="/" className="font-bold text-lg text-slate-900 dark:text-white">Darwin's Taller</Link>
+           </div>
+           <div className="flex gap-3 items-center">
              <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
-             <Link to="/" className={location.pathname === '/' ? "text-blue-600" : "text-slate-500 dark:text-slate-400"}><LayoutDashboard /></Link>
-             <Link to="/store" className={location.pathname === '/store' ? "text-red-600 dark:text-red-400" : "text-slate-500 dark:text-slate-400"}><ShoppingBag /></Link>
-             <Link to="/orders" className={location.pathname === '/orders' ? "text-blue-600" : "text-slate-500 dark:text-slate-400"}><List /></Link>
-             <button onClick={logout} className="text-red-500"><LogOut /></button>
+             <Link to="/orders" className={location.pathname === '/orders' ? "text-blue-600" : "text-slate-500 dark:text-slate-400"}><List className="w-5 h-5" /></Link>
+             <button onClick={logout} className="text-red-500"><LogOut className="w-5 h-5" /></button>
            </div>
         </div>
         <div className="max-w-7xl mx-auto">

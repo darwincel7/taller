@@ -414,10 +414,11 @@ export interface AccountingTransaction {
   description: string;
   category_id: string;
   vendor?: string;
+  invoice_number?: string;
   receipt_url?: string;
   search_text?: string; // For AI Search
   created_at: string;
-  status?: 'PENDING' | 'COMPLETED' | 'CANCELLED';
+  status?: 'PENDING' | 'COMPLETED' | 'CANCELLED' | 'CONSOLIDATED';
   source?: 'MANUAL' | 'ORDER' | 'STORE';
   order_id?: string;
   created_by?: string;

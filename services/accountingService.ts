@@ -98,6 +98,9 @@ export const accountingService = {
 
     if (error) {
       console.error('Supabase Error:', error);
+      if (error.code === '23505') {
+        throw new Error('DUPLICATE_INVOICE');
+      }
       throw error;
     }
     return data;
