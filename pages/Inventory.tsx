@@ -24,11 +24,16 @@ export const Inventory: React.FC = () => {
 
   // STRICT PERMISSION: Only ADMIN can edit inventory
   const isAdmin = currentUser?.role === UserRole.ADMIN;
+  const canViewFinancials = currentUser?.role === UserRole.ADMIN || currentUser?.role === UserRole.SUB_ADMIN || currentUser?.permissions?.canViewAccounting;
 
-  const filteredInventory = inventory.filter(part => 
-      part.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      part.id.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const filteredInventory = inventory.filter(part => {
+      const term = searchTerm.toLowerCase();
+      return (
+          part.name.toLowerCase().includes(term) ||
+          part.id.toLowerCase().includes(term) ||
+          part.category?.toLowerCase().includes(term)
+      );
+  });
 
   return (
     <div className="p-6 max-w-6xl mx-auto">
@@ -45,10 +50,12 @@ export const Inventory: React.FC = () => {
                     <label className="text-xs font-bold text-slate-500">Stock Actual</label>
                     <input required type="number" className="w-full p-2 border rounded bg-white text-slate-900" value={formData.stock} onChange={e => setFormData({...formData, stock: parseInt(e.target.value)})} />
                 </div>
-                <div>
-                    <label className="text-xs font-bold text-slate-500">Costo (Compra)</label>
-                    <input required type="number" className="w-full p-2 border rounded bg-white text-slate-900" value={formData.cost} onChange={e => setFormData({...formData, cost: parseFloat(e.target.value)})} />
-                </div>
+                {canViewFinancials && (
+                    <div>
+                        <label className="text-xs font-bold text-slate-500">Costo (Compra)</label>
+                        <input required type="number" className="w-full p-2 border rounded bg-white text-slate-900" value={formData.cost} onChange={e => setFormData({...formData, cost: parseFloat(e.target.value)})} />
+                    </div>
+                )}
                 <div>
                     <label className="text-xs font-bold text-slate-500">Precio (Venta)</label>
                     <input required type="number" className="w-full p-2 border rounded bg-white text-slate-900" value={formData.price} onChange={e => setFormData({...formData, price: parseFloat(e.target.value)})} />
@@ -85,7 +92,7 @@ export const Inventory: React.FC = () => {
                         <th className="p-4">Código / SKU</th>
                         <th className="p-4">Nombre</th>
                         <th className="p-4">Stock</th>
-                        <th className="p-4">Costo</th>
+                        {canViewFinancials && <th className="p-4">Costo</th>}
                         <th className="p-4">Precio</th>
                         <th className="p-4 text-right">Acciones</th>
                     </tr>
@@ -104,7 +111,7 @@ export const Inventory: React.FC = () => {
                                     {part.stock} {part.stock <= part.min_stock && <AlertCircle className="w-3 h-3 inline"/>}
                                 </span>
                             </td>
-                            <td className="p-4 text-slate-600">{isAdmin ? `$${part.cost}` : '***'}</td>
+                            {canViewFinancials && <td className="p-4 text-slate-600">${part.cost}</td>}
                             <td className="p-4 text-slate-600 font-bold">${part.price}</td>
                             <td className="p-4 flex justify-end gap-2">
                                 <button onClick={() => printInventoryLabel(part)} className="p-2 text-slate-600 hover:bg-slate-100 rounded border border-slate-200 hover:border-slate-300 transition" title="Imprimir Etiqueta">
@@ -124,7 +131,7 @@ export const Inventory: React.FC = () => {
                         </tr>
                     ))}
                     {filteredInventory.length === 0 && (
-                        <tr><td colSpan={6} className="p-8 text-center text-slate-400">No se encontraron repuestos.</td></tr>
+                        <tr><td colSpan={canViewFinancials ? 6 : 5} className="p-8 text-center text-slate-400">No se encontraron repuestos.</td></tr>
                     )}
                 </tbody>
             </table>

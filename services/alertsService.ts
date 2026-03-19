@@ -1,6 +1,6 @@
 
 import { supabase } from './supabase';
-import { RepairOrder, OrderStatus, UserRole } from '../types';
+import { RepairOrder, OrderStatus, UserRole, RequestStatus, TransferStatus } from '../types';
 
 export const fetchActionRequiredOrders = async (
     userRole: UserRole, 
@@ -21,7 +21,7 @@ export const fetchActionRequiredOrders = async (
             'externalRepair->>status.eq.PENDING',     // Salida Externa
             'techMessage->pending.eq.true',           // Mensaje Técnico
             `pending_assignment_to.eq.${userId}`,     // Asignación directa (siempre visible al user)
-            'status.eq.Esperando Aprobación',         // Presupuesto
+            'status.eq."Esperando Aprobación"',       // Presupuesto
             'isValidated.eq.false'                    // Validación Ingreso
         ];
 
@@ -68,7 +68,7 @@ export const fetchActionRequiredOrders = async (
                 // 1. Incoming Transfer (handled below)
                 // 2. Assignment Request (handled below)
                 // If neither, skip immediately
-                const isIncomingTransfer = order.transferStatus === 'PENDING' && order.transferTarget === branch;
+                const isIncomingTransfer = order.transferStatus === TransferStatus.PENDING && order.transferTarget === branch;
                 const isAssignmentRequest = order.pending_assignment_to === userId;
                 
                 if (!isIncomingTransfer && !isAssignmentRequest) return false;
@@ -85,8 +85,8 @@ export const fetchActionRequiredOrders = async (
             // B. WAITING_APPROVAL (Presupuesto Pendiente)
             if (order.status === OrderStatus.WAITING_APPROVAL) {
                 // QUIÉN LO VE: ADMIN + MONITOR + CASHIER de la sucursal.
-                // QUIÉN NO LO VE: TECHNICIAN.
-                if (userRole !== UserRole.TECHNICIAN) {
+                // Y el técnico asignado.
+                if (userRole !== UserRole.TECHNICIAN || order.assignedTo === userId) {
                     if (isMyBranch) return true;
                 }
             }
@@ -98,7 +98,7 @@ export const fetchActionRequiredOrders = async (
             }
 
             // D. transferStatus (Traslado Entrante)
-            if (order.transferStatus === 'PENDING') {
+            if (order.transferStatus === TransferStatus.PENDING) {
                 // QUIÉN LO VE: MONITOR + CASHIER de la sucursal de DESTINO, y ADMIN.
                 // QUIÉN NO LO VE: TECHNICIAN.
                 if (userRole !== UserRole.TECHNICIAN) {
@@ -113,20 +113,20 @@ export const fetchActionRequiredOrders = async (
             }
 
             // F. returnRequest (Devolución Pendiente)
-            if (order.returnRequest?.status === 'PENDING') {
+            if (order.returnRequest?.status === RequestStatus.PENDING) {
                 // QUIÉN LO VE: ADMIN/MONITOR de la sucursal
                 // Asumimos que técnicos no aprueban devoluciones.
                 if (userRole !== UserRole.TECHNICIAN && isMyBranch) return true;
             }
 
             // G. pointRequest (Solicitud de Puntos)
-            if (order.pointRequest?.status === 'PENDING') {
+            if (order.pointRequest?.status === RequestStatus.PENDING) {
                 // Solo Admin/Monitor
                 if ((userRole === UserRole.ADMIN || userRole === UserRole.MONITOR) && isMyBranch) return true;
             }
 
             // H. externalRepair (Salida Externa)
-            if (order.externalRepair?.status === 'PENDING') {
+            if (order.externalRepair?.status === RequestStatus.PENDING) {
                 if (userRole !== UserRole.TECHNICIAN && isMyBranch) return true;
             }
 

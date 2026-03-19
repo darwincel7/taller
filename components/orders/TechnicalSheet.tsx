@@ -12,7 +12,9 @@ interface TechnicalSheetProps {
   setEditForm: (val: any) => void;
   isAdmin: boolean;
   canEdit: boolean;
+  canChangeDeadline?: boolean;
   onSave: () => void;
+  onSearchCustomer?: () => void;
 }
 
 export const TechnicalSheet: React.FC<TechnicalSheetProps> = ({
@@ -23,7 +25,9 @@ export const TechnicalSheet: React.FC<TechnicalSheetProps> = ({
   setEditForm,
   isAdmin,
   canEdit,
-  onSave
+  canChangeDeadline,
+  onSave,
+  onSearchCustomer
 }) => {
   const [isZoomed, setIsZoomed] = useState(false);
 
@@ -86,9 +90,11 @@ export const TechnicalSheet: React.FC<TechnicalSheetProps> = ({
             editForm={editForm} 
             setEditForm={setEditForm} 
             isAdmin={isAdmin} 
+            canChangeDeadline={canChangeDeadline}
             onCancel={() => setIsEditing(false)} 
             onSave={onSave} 
             orderType={order.orderType}
+            onSearchCustomer={onSearchCustomer}
           />
         ) : (
           <div className="space-y-4 text-sm">

@@ -21,11 +21,15 @@ export const KnowledgeBase: React.FC = () => {
       setNewArticle({ title: '', model: '', issue: '', solution: '' });
   };
 
-  const filtered = wikiArticles.filter(a => 
-      a.title.toLowerCase().includes(search.toLowerCase()) || 
-      a.model.toLowerCase().includes(search.toLowerCase()) || 
-      a.issue.toLowerCase().includes(search.toLowerCase())
-  );
+  const filtered = wikiArticles.filter(a => {
+      const term = search.toLowerCase();
+      return (
+          a.title.toLowerCase().includes(term) || 
+          a.model.toLowerCase().includes(term) || 
+          a.issue.toLowerCase().includes(term) ||
+          a.solution.toLowerCase().includes(term)
+      );
+  });
 
   return (
     <div className="p-6 max-w-5xl mx-auto">

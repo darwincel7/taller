@@ -1,7 +1,7 @@
 
 import React from 'react';
 import { Reply, User as UserIcon, MapPin, Wallet, Truck, DollarSign, Trash2, ShieldCheck, Sparkles, MessageSquare, Download } from 'lucide-react';
-import { OrderStatus, RepairOrder, User, UserRole } from '../types';
+import { OrderStatus, RepairOrder, User, UserRole, OrderType } from '../types';
 
 interface ControlPanelProps {
   order: RepairOrder;
@@ -138,27 +138,12 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
              </button>
           )}
 
-          <button type="button" onClick={onTransfer} className="py-3 bg-slate-50 text-slate-600 rounded-xl font-bold flex flex-col items-center justify-center gap-1 hover:bg-slate-100 transition border border-slate-200 cursor-pointer active:scale-95">
+          <button type="button" onClick={onTransfer} className="col-span-2 py-3 bg-slate-50 text-slate-600 rounded-xl font-bold flex flex-col items-center justify-center gap-1 hover:bg-slate-100 transition border border-slate-200 cursor-pointer active:scale-95">
             <MapPin className="w-4 h-4"/> <span className="text-[9px] uppercase">TRANSFERIR</span>
-          </button>
-          <button type="button" onClick={onDeposit} className="py-3 bg-emerald-50 text-emerald-600 rounded-xl font-bold flex flex-col items-center justify-center gap-1 hover:bg-emerald-100 transition border border-emerald-100 cursor-pointer active:scale-95">
-            <Wallet className="w-4 h-4"/> <span className="text-[9px] uppercase">ABONO</span>
           </button>
           <button type="button" onClick={onExternal} className="col-span-2 py-3 bg-purple-50 text-purple-600 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-purple-100 transition border border-purple-100 cursor-pointer active:scale-95">
             <Truck className="w-4 h-4"/> <span className="text-[10px] uppercase">OTRO TALLER</span>
           </button>
-          
-          {/* BUTTON: ENTREGAR EQUIPO (Visible only when REPAIRED) */}
-          {order.status === OrderStatus.REPAIRED && (
-            <button 
-              type="button"
-              onClick={onDeliver} 
-              disabled={!canDeliver}
-              className="col-span-2 py-4 bg-green-600 text-white rounded-xl font-black flex items-center justify-center gap-2 shadow-lg hover:bg-green-700 transition animate-pulse cursor-pointer active:scale-95"
-            >
-              <DollarSign className="w-5 h-5"/> ENTREGAR EQUIPO
-            </button>
-          )}
         </div>
       )}
 

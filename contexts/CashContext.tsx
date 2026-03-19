@@ -1,7 +1,8 @@
 
 import React, { createContext, useContext, useState, ReactNode } from 'react';
 import { supabase } from '../services/supabase';
-import { Payment, CashClosing, DebtLog } from '../types';
+import { Payment, CashClosing, DebtLog, ActionType } from '../types';
+import { auditService } from '../services/auditService';
 
 interface CashContextType {
   performCashClosing: (cashierIds: string, systemTotal: number, actualTotal: number, adminId: string, paymentIds: string[]) => Promise<void>;
@@ -34,6 +35,7 @@ export const CashProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           p_actual_total: actualTotal,
           p_difference: difference,
           p_timestamp: timestamp,
+          p_notes: '',
           p_payment_ids: paymentIds || []
       });
 
@@ -51,12 +53,26 @@ export const CashProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       // 3. Si el RPC dice que actualizó 0 filas, intentar actualización directa (Fallback)
       if (res && res.updated_count === 0 && paymentIds.length > 0) {
           console.warn("RPC actualizó 0 filas. Intentando actualización directa...");
+          
+          // Update order_payments
           const { error: updateError } = await supabase
               .from('order_payments')
               .update({ closing_id: closingId })
               .in('id', paymentIds);
           
-          if (updateError) {
+          // Also update accounting_transactions (Product sales)
+          const { error: accError } = await supabase
+              .from('accounting_transactions')
+              .update({ closing_id: closingId })
+              .in('id', paymentIds);
+          
+          // Also update floating_expenses
+          const { error: floatError } = await supabase
+              .from('floating_expenses')
+              .update({ closing_id: closingId })
+              .in('id', paymentIds);
+          
+          if (updateError && accError && floatError) {
               throw new Error(`Fallo total al actualizar pagos: ${updateError.message}`);
           }
       }
@@ -123,6 +139,11 @@ export const CashProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const editClosedPayment = async (paymentId: string, newAmount: number, adminId: string) => {
       if (!supabase) return;
+      
+      // 1. Get order_id before editing
+      const { data: paymentData } = await supabase.from('order_payments').select('order_id').eq('id', paymentId).single();
+      
+      // 2. Edit payment via RPC
       const { data, error } = await supabase.rpc('edit_closed_payment', {
           p_payment_id: paymentId,
           p_new_amount: newAmount,
@@ -130,6 +151,23 @@ export const CashProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       });
       if (error) throw new Error(error.message);
       if (data && !data.success) throw new Error(data.error || 'Error al editar pago');
+
+      // 3. Sync JSONB array in orders table
+      if (paymentData?.order_id) {
+          const { data: orderData } = await supabase.from('orders').select('payments, readable_id').eq('id', paymentData.order_id).single();
+          if (orderData && orderData.payments) {
+              const updatedPayments = orderData.payments.map((p: any) => p.id === paymentId ? { ...p, amount: newAmount, isEdited: true, originalAmount: p.originalAmount || p.amount } : p);
+              await supabase.from('orders').update({ payments: updatedPayments }).eq('id', paymentData.order_id);
+              
+              // Record audit log
+              await auditService.recordLog(
+                { id: adminId, name: 'Admin' }, // We don't have the name here easily, but we have the ID
+                ActionType.CASH_PAYMENT_EDITED,
+                `Pago editado en Orden #${orderData.readable_id || paymentData.order_id}. Nuevo monto: $${newAmount}`,
+                paymentData.order_id
+              );
+          }
+      }
   };
 
   return (

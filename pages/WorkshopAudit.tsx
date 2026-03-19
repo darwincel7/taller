@@ -2,7 +2,9 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useOrders } from '../contexts/OrderContext';
 import { useAuth } from '../contexts/AuthContext';
-import { OrderStatus, OrderType, RepairOrder, UserRole } from '../types';
+import { OrderStatus, OrderType, RepairOrder, UserRole, AuditStatus, LogType, ActionType } from '../types';
+import { auditService } from '../services/auditService';
+import { orderService } from '../services/orderService';
 import { 
   ClipboardCheck, Search, Filter, MapPin, CheckCircle2, 
   AlertTriangle, XCircle, RefreshCw, Smartphone, User as UserIcon,
@@ -16,6 +18,10 @@ import { printAuditReport } from '../services/invoiceService';
 const AUDIT_FOUND_KEY = 'darwin_audit_found_v1';
 const AUDIT_MISSING_KEY = 'darwin_audit_missing_v1';
 const AUDIT_REVIEW_KEY = 'darwin_audit_review_v1';
+const AUDIT_WAITING_RESPONSE_KEY = 'darwin_audit_waiting_response_v1';
+const AUDIT_WAITING_PART_KEY = 'darwin_audit_waiting_part_v1';
+const AUDIT_READY_KEY = 'darwin_audit_ready_v1';
+const AUDIT_ALREADY_LEFT_KEY = 'darwin_audit_already_left_v1';
 
 // Preview Modal Component
 const SimpleOrderPreview = ({ item, onClose, onNavigate }: { item: RepairOrder, onClose: () => void, onNavigate: (id: string) => void }) => (
@@ -85,6 +91,26 @@ export const WorkshopAudit: React.FC = () => {
     return stored ? new Set(JSON.parse(stored)) : new Set();
   });
 
+  const [waitingResponseIds, setWaitingResponseIds] = useState<Set<string>>(() => {
+    const stored = localStorage.getItem(AUDIT_WAITING_RESPONSE_KEY);
+    return stored ? new Set(JSON.parse(stored)) : new Set();
+  });
+
+  const [waitingPartIds, setWaitingPartIds] = useState<Set<string>>(() => {
+    const stored = localStorage.getItem(AUDIT_WAITING_PART_KEY);
+    return stored ? new Set(JSON.parse(stored)) : new Set();
+  });
+
+  const [readyIds, setReadyIds] = useState<Set<string>>(() => {
+    const stored = localStorage.getItem(AUDIT_READY_KEY);
+    return stored ? new Set(JSON.parse(stored)) : new Set();
+  });
+
+  const [alreadyLeftIds, setAlreadyLeftIds] = useState<Set<string>>(() => {
+    const stored = localStorage.getItem(AUDIT_ALREADY_LEFT_KEY);
+    return stored ? new Set(JSON.parse(stored)) : new Set();
+  });
+
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedBranch, setSelectedBranch] = useState<string>('all');
   const [selectedTech, setSelectedTech] = useState<string>('all');
@@ -98,6 +124,10 @@ export const WorkshopAudit: React.FC = () => {
   useEffect(() => { localStorage.setItem(AUDIT_FOUND_KEY, JSON.stringify(Array.from(foundIds))); }, [foundIds]);
   useEffect(() => { localStorage.setItem(AUDIT_MISSING_KEY, JSON.stringify(Array.from(missingIds))); }, [missingIds]);
   useEffect(() => { localStorage.setItem(AUDIT_REVIEW_KEY, JSON.stringify(Array.from(reviewIds))); }, [reviewIds]);
+  useEffect(() => { localStorage.setItem(AUDIT_WAITING_RESPONSE_KEY, JSON.stringify(Array.from(waitingResponseIds))); }, [waitingResponseIds]);
+  useEffect(() => { localStorage.setItem(AUDIT_WAITING_PART_KEY, JSON.stringify(Array.from(waitingPartIds))); }, [waitingPartIds]);
+  useEffect(() => { localStorage.setItem(AUDIT_READY_KEY, JSON.stringify(Array.from(readyIds))); }, [readyIds]);
+  useEffect(() => { localStorage.setItem(AUDIT_ALREADY_LEFT_KEY, JSON.stringify(Array.from(alreadyLeftIds))); }, [alreadyLeftIds]);
 
   // Default to user's branch
   useEffect(() => {
@@ -123,29 +153,78 @@ export const WorkshopAudit: React.FC = () => {
       }
   };
 
+  const [allActiveOrders, setAllActiveOrders] = useState<RepairOrder[]>([]);
+  const [isLoadingOrders, setIsLoadingOrders] = useState(true);
+
+  useEffect(() => {
+      const fetchAllOrders = async () => {
+          setIsLoadingOrders(true);
+          try {
+              const data = await orderService.getAllActiveOrders(selectedBranch, selectedTech);
+              setAllActiveOrders(data);
+          } catch (error) {
+              console.error("Error fetching active orders for audit:", error);
+              showNotification('error', 'Error al cargar las órdenes para la auditoría.');
+          } finally {
+              setIsLoadingOrders(false);
+          }
+      };
+
+      if (activeTab === 'CURRENT') {
+          fetchAllOrders();
+      }
+  }, [activeTab, selectedBranch, selectedTech]);
+
   useEffect(() => {
       if (activeTab === 'HISTORY') fetchHistory();
   }, [activeTab]);
 
   // Filter ONLY items that SHOULD be in the shop physically
   const baseAuditList = useMemo(() => {
-    return orders.filter(o => {
+    return allActiveOrders.filter(o => {
         const isActive = o.status !== OrderStatus.RETURNED && o.status !== OrderStatus.CANCELED;
         if (!isActive) return false;
+        
+        // Excluir equipos que están en un taller externo
+        if (o.status === OrderStatus.EXTERNAL) return false;
+        
+        // Excluir equipos que están en tránsito (transferencia pendiente a otra sucursal)
+        if (o.transferStatus === 'PENDING') return false;
+
         if (selectedBranch !== 'all' && o.currentBranch !== selectedBranch) return false;
         if (selectedTech !== 'all' && o.assignedTo !== selectedTech) return false;
         return true;
     });
-  }, [orders, selectedBranch, selectedTech]);
+  }, [allActiveOrders, selectedBranch, selectedTech]);
 
   const auditList = useMemo(() => {
       if (!searchTerm) return baseAuditList;
-      const term = searchTerm.toLowerCase();
-      return baseAuditList.filter(o => 
+      const term = searchTerm.toLowerCase().trim();
+      const filtered = baseAuditList.filter(o => 
           o.deviceModel.toLowerCase().includes(term) ||
           o.customer.name.toLowerCase().includes(term) ||
-          (o.readable_id?.toString() || o.id).includes(term)
+          (o.readable_id?.toString() || o.id.toLowerCase()).includes(term) ||
+          (o.imei && o.imei.toLowerCase().includes(term))
       );
+      
+      return filtered.sort((a, b) => {
+          const aIdStr = a.readable_id?.toString() || '';
+          const bIdStr = b.readable_id?.toString() || '';
+          
+          const aExact = aIdStr === term;
+          const bExact = bIdStr === term;
+          
+          if (aExact && !bExact) return -1;
+          if (!aExact && bExact) return 1;
+          
+          const aStarts = aIdStr.startsWith(term);
+          const bStarts = bIdStr.startsWith(term);
+          
+          if (aStarts && !bStarts) return -1;
+          if (!aStarts && bStarts) return 1;
+          
+          return 0;
+      });
   }, [baseAuditList, searchTerm]);
 
   // Stats
@@ -153,28 +232,64 @@ export const WorkshopAudit: React.FC = () => {
   const totalFound = baseAuditList.filter(o => foundIds.has(o.id)).length;
   const totalMissing = baseAuditList.filter(o => missingIds.has(o.id)).length;
   const totalReview = baseAuditList.filter(o => reviewIds.has(o.id)).length;
-  const totalPending = totalExpected - totalFound - totalMissing - totalReview;
-  const progressPercent = totalExpected > 0 ? ((totalFound + totalMissing + totalReview) / totalExpected) * 100 : 0;
+  const totalWaitingResponse = baseAuditList.filter(o => waitingResponseIds.has(o.id)).length;
+  const totalWaitingPart = baseAuditList.filter(o => waitingPartIds.has(o.id)).length;
+  const totalReady = baseAuditList.filter(o => readyIds.has(o.id)).length;
+  const totalAlreadyLeft = baseAuditList.filter(o => alreadyLeftIds.has(o.id)).length;
+  
+  const totalPending = totalExpected - totalFound - totalMissing - totalReview - totalWaitingResponse - totalWaitingPart - totalReady - totalAlreadyLeft;
+  const progressPercent = totalExpected > 0 ? ((totalExpected - totalPending) / totalExpected) * 100 : 0;
+
+  const clearFromAll = (id: string) => {
+      setFoundIds(prev => { const next = new Set(prev); next.delete(id); return next; });
+      setMissingIds(prev => { const next = new Set(prev); next.delete(id); return next; });
+      setReviewIds(prev => { const next = new Set(prev); next.delete(id); return next; });
+      setWaitingResponseIds(prev => { const next = new Set(prev); next.delete(id); return next; });
+      setWaitingPartIds(prev => { const next = new Set(prev); next.delete(id); return next; });
+      setReadyIds(prev => { const next = new Set(prev); next.delete(id); return next; });
+      setAlreadyLeftIds(prev => { const next = new Set(prev); next.delete(id); return next; });
+  };
 
   const handleMarkFound = (e: React.MouseEvent, id: string) => {
       e.stopPropagation();
-      setMissingIds(prev => { const next = new Set(prev); next.delete(id); return next; });
-      setReviewIds(prev => { const next = new Set(prev); next.delete(id); return next; });
+      clearFromAll(id);
       setFoundIds(prev => new Set(prev).add(id));
   };
 
   const handleMarkMissing = (e: React.MouseEvent, id: string) => {
       e.stopPropagation();
-      setFoundIds(prev => { const next = new Set(prev); next.delete(id); return next; });
-      setReviewIds(prev => { const next = new Set(prev); next.delete(id); return next; });
+      clearFromAll(id);
       setMissingIds(prev => new Set(prev).add(id));
   };
 
   const handleMarkReview = (e: React.MouseEvent, id: string) => {
       e.stopPropagation();
-      setFoundIds(prev => { const next = new Set(prev); next.delete(id); return next; });
-      setMissingIds(prev => { const next = new Set(prev); next.delete(id); return next; });
+      clearFromAll(id);
       setReviewIds(prev => new Set(prev).add(id));
+  };
+
+  const handleMarkWaitingResponse = (e: React.MouseEvent, id: string) => {
+      e.stopPropagation();
+      clearFromAll(id);
+      setWaitingResponseIds(prev => new Set(prev).add(id));
+  };
+
+  const handleMarkWaitingPart = (e: React.MouseEvent, id: string) => {
+      e.stopPropagation();
+      clearFromAll(id);
+      setWaitingPartIds(prev => new Set(prev).add(id));
+  };
+
+  const handleMarkReady = (e: React.MouseEvent, id: string) => {
+      e.stopPropagation();
+      clearFromAll(id);
+      setReadyIds(prev => new Set(prev).add(id));
+  };
+
+  const handleMarkAlreadyLeft = (e: React.MouseEvent, id: string) => {
+      e.stopPropagation();
+      clearFromAll(id);
+      setAlreadyLeftIds(prev => new Set(prev).add(id));
   };
 
   const toggleSection = (section: string) => {
@@ -198,10 +313,14 @@ export const WorkshopAudit: React.FC = () => {
       try {
           // Gather ALL items with their status (Include PENDING items to match Total Expected)
           const allDiscrepancies = baseAuditList.map(o => {
-              let status = 'PENDING';
-              if (missingIds.has(o.id)) status = 'MISSING';
-              else if (reviewIds.has(o.id)) status = 'REVIEW';
-              else if (foundIds.has(o.id)) status = 'FOUND';
+              let status = AuditStatus.PENDING;
+              if (missingIds.has(o.id)) status = AuditStatus.MISSING;
+              else if (reviewIds.has(o.id)) status = AuditStatus.REVIEW;
+              else if (foundIds.has(o.id)) status = AuditStatus.FOUND;
+              else if (waitingResponseIds.has(o.id)) status = AuditStatus.WAITING_RESPONSE;
+              else if (waitingPartIds.has(o.id)) status = AuditStatus.WAITING_PART;
+              else if (readyIds.has(o.id)) status = AuditStatus.READY;
+              else if (alreadyLeftIds.has(o.id)) status = AuditStatus.ALREADY_LEFT;
 
               return {
                 id: o.id,
@@ -230,23 +349,78 @@ export const WorkshopAudit: React.FC = () => {
 
           if (reportError) throw reportError;
 
-          // 2. Log discrepancies in each order history (Only Missing and Review)
-          const itemsToLog = allDiscrepancies.filter(d => d.status === 'MISSING' || d.status === 'REVIEW');
+          // Record global audit log
+          await auditService.recordLog(
+              { id: currentUser.id, name: currentUser.name },
+              ActionType.WORKSHOP_AUDIT_SUBMITTED,
+              `Reporte de auditoría enviado: ${selectedBranch === 'all' ? 'Multisucursal' : selectedBranch}. Encontrados: ${totalFound}/${totalExpected}. Faltantes: ${totalMissing}.`
+          );
+
+          // 2. Log discrepancies in each order history
+          const itemsToLog = allDiscrepancies.filter(d => 
+              d.status === AuditStatus.MISSING || 
+              d.status === AuditStatus.REVIEW || 
+              d.status === AuditStatus.WAITING_RESPONSE || 
+              d.status === AuditStatus.WAITING_PART || 
+              d.status === AuditStatus.READY || 
+              d.status === AuditStatus.ALREADY_LEFT
+          );
           for (const item of itemsToLog) {
-              const status = item.status === 'MISSING' ? 'DANGER' : 'WARNING';
-              const msg = item.status === 'MISSING' 
-                  ? `⚠️ DISCREPANCIA: Equipo no localizado en auditoría.` 
-                  : `🟠 AUDITORÍA: Equipo marcado para REVISIÓN.`;
-              await addOrderLog(item.id, OrderStatus.ON_HOLD, `${msg} Auditado por: ${currentUser.name}`, currentUser.name, status);
+              let orderStatus = OrderStatus.ON_HOLD;
+              let logType = 'WARNING';
+              let msg = '';
+
+              switch (item.status) {
+                  case AuditStatus.MISSING:
+                      orderStatus = OrderStatus.ON_HOLD;
+                      logType = 'DANGER';
+                      msg = `⚠️ DISCREPANCIA: Equipo no localizado en auditoría.`;
+                      break;
+                  case AuditStatus.REVIEW:
+                      orderStatus = OrderStatus.ON_HOLD;
+                      logType = 'WARNING';
+                      msg = `🟠 AUDITORÍA: Equipo marcado para REVISIÓN.`;
+                      break;
+                  case AuditStatus.WAITING_RESPONSE:
+                      orderStatus = OrderStatus.WAITING_APPROVAL;
+                      logType = 'WARNING';
+                      msg = `⏳ AUDITORÍA: Equipo marcado en ESPERA DE RESPUESTA.`;
+                      break;
+                  case AuditStatus.WAITING_PART:
+                      orderStatus = OrderStatus.ON_HOLD;
+                      logType = 'WARNING';
+                      msg = `🧩 AUDITORÍA: Equipo marcado en ESPERA DE PIEZA.`;
+                      break;
+                  case AuditStatus.READY:
+                      orderStatus = OrderStatus.REPAIRED;
+                      logType = 'SUCCESS';
+                      msg = `🎉 AUDITORÍA: Equipo marcado como LISTO.`;
+                      break;
+                  case AuditStatus.ALREADY_LEFT:
+                      orderStatus = OrderStatus.RETURNED;
+                      logType = 'INFO';
+                      msg = `🚀 AUDITORÍA: Equipo marcado como YA SALIÓ (Entregado).`;
+                      break;
+              }
+
+              await addOrderLog(item.id, orderStatus, `${msg} Auditado por: ${currentUser.name}`, currentUser.name, logType as LogType);
           }
 
           // 3. Clear Session
           setFoundIds(new Set());
           setMissingIds(new Set());
           setReviewIds(new Set());
+          setWaitingResponseIds(new Set());
+          setWaitingPartIds(new Set());
+          setReadyIds(new Set());
+          setAlreadyLeftIds(new Set());
           localStorage.removeItem(AUDIT_FOUND_KEY);
           localStorage.removeItem(AUDIT_MISSING_KEY);
           localStorage.removeItem(AUDIT_REVIEW_KEY);
+          localStorage.removeItem(AUDIT_WAITING_RESPONSE_KEY);
+          localStorage.removeItem(AUDIT_WAITING_PART_KEY);
+          localStorage.removeItem(AUDIT_READY_KEY);
+          localStorage.removeItem(AUDIT_ALREADY_LEFT_KEY);
           
           showNotification('success', 'Auditoría finalizada y reporte guardado.');
           setActiveTab('HISTORY');
@@ -262,9 +436,17 @@ export const WorkshopAudit: React.FC = () => {
           setFoundIds(new Set());
           setMissingIds(new Set());
           setReviewIds(new Set());
+          setWaitingResponseIds(new Set());
+          setWaitingPartIds(new Set());
+          setReadyIds(new Set());
+          setAlreadyLeftIds(new Set());
           localStorage.removeItem(AUDIT_FOUND_KEY);
           localStorage.removeItem(AUDIT_MISSING_KEY);
           localStorage.removeItem(AUDIT_REVIEW_KEY);
+          localStorage.removeItem(AUDIT_WAITING_RESPONSE_KEY);
+          localStorage.removeItem(AUDIT_WAITING_PART_KEY);
+          localStorage.removeItem(AUDIT_READY_KEY);
+          localStorage.removeItem(AUDIT_ALREADY_LEFT_KEY);
       }
   };
 
@@ -283,13 +465,13 @@ export const WorkshopAudit: React.FC = () => {
           model: order.deviceModel,
           customer: order.customer.name,
           tech: users.find(u => u.id === order.assignedTo)?.name || 'Sin asignar',
-          status: 'MISSING',
+          status: AuditStatus.MISSING,
           resolvedBy: '',
           resolvedAt: 0
       };
 
       const newDiscrepancies = [...selectedReport.discrepancies, newItem];
-      const newTotalMissing = newDiscrepancies.filter((d: any) => d.status === 'MISSING').length;
+      const newTotalMissing = newDiscrepancies.filter((d: any) => d.status === AuditStatus.MISSING).length;
       
       // Update local state immediately
       setSelectedReport({ 
@@ -313,7 +495,7 @@ export const WorkshopAudit: React.FC = () => {
   };
 
   // 2. Change Status of Discrepancy (MISSING <-> PENDING <-> FOUND)
-  const handleUpdateStatus = async (index: number, newStatus: 'MISSING' | 'FOUND' | 'PENDING') => {
+  const handleUpdateStatus = async (index: number, newStatus: AuditStatus.MISSING | AuditStatus.FOUND | AuditStatus.PENDING) => {
       if (!selectedReport || !supabase) return;
       
       const newDiscrepancies = [...selectedReport.discrepancies];
@@ -322,14 +504,14 @@ export const WorkshopAudit: React.FC = () => {
       newDiscrepancies[index] = {
           ...item,
           status: newStatus,
-          resolved: newStatus === 'FOUND', // Legacy support
-          resolvedBy: newStatus === 'FOUND' ? currentUser?.name : '',
-          resolvedAt: newStatus === 'FOUND' ? Date.now() : 0
+          resolved: newStatus === AuditStatus.FOUND, // Legacy support
+          resolvedBy: newStatus === AuditStatus.FOUND ? currentUser?.name : '',
+          resolvedAt: newStatus === AuditStatus.FOUND ? Date.now() : 0
       };
 
       // Recalculate Totals
-      const missingCount = newDiscrepancies.filter((d: any) => d.status === 'MISSING').length;
-      const foundCount = selectedReport.total_expected - missingCount - newDiscrepancies.filter((d: any) => d.status === 'PENDING').length;
+      const missingCount = newDiscrepancies.filter((d: any) => d.status === AuditStatus.MISSING).length;
+      const foundCount = selectedReport.total_expected - missingCount - newDiscrepancies.filter((d: any) => d.status === AuditStatus.PENDING).length;
 
       const updatedReport = {
           ...selectedReport,
@@ -348,10 +530,10 @@ export const WorkshopAudit: React.FC = () => {
         })
         .eq('id', selectedReport.id);
         
-      if (newStatus === 'FOUND') {
-          await addOrderLog(item.id, OrderStatus.IN_REPAIR, `✅ CORRECCIÓN AUDITORÍA: Equipo localizado post-auditoría por ${currentUser?.name}.`, currentUser?.name, 'SUCCESS');
-      } else if (newStatus === 'PENDING') {
-          await addOrderLog(item.id, OrderStatus.ON_HOLD, `🟠 AUDITORÍA: Equipo marcado como 'Pendiente de Revisión' por ${currentUser?.name}.`, currentUser?.name, 'WARNING');
+      if (newStatus === AuditStatus.FOUND) {
+          await addOrderLog(item.id, OrderStatus.IN_REPAIR, `✅ CORRECCIÓN AUDITORÍA: Equipo localizado post-auditoría por ${currentUser?.name}.`, currentUser?.name, LogType.SUCCESS);
+      } else if (newStatus === AuditStatus.PENDING) {
+          await addOrderLog(item.id, OrderStatus.ON_HOLD, `🟠 AUDITORÍA: Equipo marcado como 'Pendiente de Revisión' por ${currentUser?.name}.`, currentUser?.name, LogType.WARNING);
       }
   };
 
@@ -391,25 +573,56 @@ export const WorkshopAudit: React.FC = () => {
 
         {activeTab === 'CURRENT' ? (
             <div className="space-y-6 animate-in fade-in">
-                {/* Audit Stats Dashboard */}
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                    <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800">
-                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Esperado</p>
-                        <p className="text-2xl font-black text-slate-800 dark:text-white">{totalExpected}</p>
+                {isLoadingOrders ? (
+                    <div className="flex flex-col items-center justify-center py-20 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800">
+                        <Loader2 className="w-8 h-8 text-blue-500 animate-spin mb-4" />
+                        <p className="text-sm font-bold text-slate-500">Cargando órdenes activas...</p>
                     </div>
-                    <div className="bg-green-50 dark:bg-green-900/10 p-4 rounded-2xl shadow-sm border border-green-100 dark:border-green-900">
-                        <p className="text-[10px] font-bold text-green-600 dark:text-green-400 uppercase tracking-widest mb-1">Confirmados</p>
-                        <p className="text-2xl font-black text-green-700 dark:text-green-300">{totalFound}</p>
-                    </div>
-                    <div className="bg-red-50 dark:bg-red-900/10 p-4 rounded-2xl shadow-sm border border-red-100 dark:border-red-900">
-                        <p className="text-[10px] font-bold text-red-600 dark:text-red-400 uppercase tracking-widest mb-1">Faltantes</p>
-                        <p className="text-2xl font-black text-red-700 dark:text-red-300">{totalMissing}</p>
-                    </div>
-                    <div className="bg-blue-50 dark:bg-blue-900/10 p-4 rounded-2xl shadow-sm border border-blue-100 dark:border-blue-900">
-                        <p className="text-[10px] font-bold text-blue-600 dark:text-blue-400 uppercase tracking-widest mb-1">Pendientes</p>
-                        <p className="text-2xl font-black text-blue-700 dark:text-blue-300">{totalPending}</p>
-                    </div>
-                </div>
+                ) : (
+                    <>
+                        {/* Audit Stats Dashboard */}
+                        <div className="space-y-4">
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                                <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800">
+                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Esperado</p>
+                                    <p className="text-2xl font-black text-slate-800 dark:text-white">{totalExpected}</p>
+                                </div>
+                                <div className="bg-green-50 dark:bg-green-900/10 p-4 rounded-2xl shadow-sm border border-green-100 dark:border-green-900">
+                                    <p className="text-[10px] font-bold text-green-600 dark:text-green-400 uppercase tracking-widest mb-1">Confirmados</p>
+                                    <p className="text-2xl font-black text-green-700 dark:text-green-300">{totalFound}</p>
+                                </div>
+                                <div className="bg-red-50 dark:bg-red-900/10 p-4 rounded-2xl shadow-sm border border-red-100 dark:border-red-900">
+                                    <p className="text-[10px] font-bold text-red-600 dark:text-red-400 uppercase tracking-widest mb-1">Faltantes</p>
+                                    <p className="text-2xl font-black text-red-700 dark:text-red-300">{totalMissing}</p>
+                                </div>
+                                <div className="bg-slate-50 dark:bg-slate-900/10 p-4 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800">
+                                    <p className="text-[10px] font-bold text-slate-600 dark:text-slate-400 uppercase tracking-widest mb-1">Pendientes</p>
+                                    <p className="text-2xl font-black text-slate-700 dark:text-slate-300">{totalPending}</p>
+                                </div>
+                            </div>
+                            <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                                <div className="bg-amber-50 dark:bg-amber-900/10 p-3 rounded-2xl shadow-sm border border-amber-100 dark:border-amber-900">
+                                    <p className="text-[10px] font-bold text-amber-600 dark:text-amber-400 uppercase tracking-widest mb-1">Revisar</p>
+                                    <p className="text-xl font-black text-amber-700 dark:text-amber-300">{totalReview}</p>
+                                </div>
+                                <div className="bg-blue-50 dark:bg-blue-900/10 p-3 rounded-2xl shadow-sm border border-blue-100 dark:border-blue-900">
+                                    <p className="text-[10px] font-bold text-blue-600 dark:text-blue-400 uppercase tracking-widest mb-1">Espera Resp.</p>
+                                    <p className="text-xl font-black text-blue-700 dark:text-blue-300">{totalWaitingResponse}</p>
+                                </div>
+                                <div className="bg-purple-50 dark:bg-purple-900/10 p-3 rounded-2xl shadow-sm border border-purple-100 dark:border-purple-900">
+                                    <p className="text-[10px] font-bold text-purple-600 dark:text-purple-400 uppercase tracking-widest mb-1">Espera Pieza</p>
+                                    <p className="text-xl font-black text-purple-700 dark:text-purple-300">{totalWaitingPart}</p>
+                                </div>
+                                <div className="bg-teal-50 dark:bg-teal-900/10 p-3 rounded-2xl shadow-sm border border-teal-100 dark:border-teal-900">
+                                    <p className="text-[10px] font-bold text-teal-600 dark:text-teal-400 uppercase tracking-widest mb-1">Listos</p>
+                                    <p className="text-xl font-black text-teal-700 dark:text-teal-300">{totalReady}</p>
+                                </div>
+                                <div className="bg-orange-50 dark:bg-orange-900/10 p-3 rounded-2xl shadow-sm border border-orange-100 dark:border-orange-900">
+                                    <p className="text-[10px] font-bold text-orange-600 dark:text-orange-400 uppercase tracking-widest mb-1">Ya Salió</p>
+                                    <p className="text-xl font-black text-orange-700 dark:text-orange-300">{totalAlreadyLeft}</p>
+                                </div>
+                            </div>
+                        </div>
 
                 {/* Progress & Persistence Info */}
                 <div className="space-y-2">
@@ -448,15 +661,23 @@ export const WorkshopAudit: React.FC = () => {
                     {auditList.map(order => {
                         const isFound = foundIds.has(order.id);
                         const isMissing = missingIds.has(order.id);
+                        const isReview = reviewIds.has(order.id);
+                        const isWaitingResponse = waitingResponseIds.has(order.id);
+                        const isWaitingPart = waitingPartIds.has(order.id);
+                        const isReady = readyIds.has(order.id);
+                        const isAlreadyLeft = alreadyLeftIds.has(order.id);
+                        
+                        const isMarked = isFound || isMissing || isReview || isWaitingResponse || isWaitingPart || isReady || isAlreadyLeft;
+
                         return (
                             <div 
                                 key={order.id} 
                                 onClick={() => setPreviewItem(order)}
-                                className={`bg-white dark:bg-slate-900 p-3 rounded-2xl border transition-all flex flex-col md:flex-row items-center justify-between gap-4 cursor-pointer hover:shadow-md ${isFound ? 'border-green-200 bg-green-50/20' : isMissing ? 'border-red-200 bg-red-50/20' : 'border-slate-200 dark:border-slate-800'}`}
+                                className={`bg-white dark:bg-slate-900 p-3 rounded-2xl border transition-all flex flex-col md:flex-row items-center justify-between gap-4 cursor-pointer hover:shadow-md ${isFound ? 'border-green-200 bg-green-50/20' : isMissing ? 'border-red-200 bg-red-50/20' : isMarked ? 'border-blue-200 bg-blue-50/20' : 'border-slate-200 dark:border-slate-800'}`}
                             >
                                 <div className="flex items-center gap-4 w-full md:w-auto pointer-events-none">
-                                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border ${isFound ? 'bg-green-100 text-green-600 border-green-200' : isMissing ? 'bg-red-100 text-red-600 border-red-200' : 'bg-slate-100 dark:bg-slate-800 text-slate-400 border-slate-200 dark:border-slate-700'}`}>
-                                        {isFound ? <CheckCircle2 className="w-5 h-5" /> : isMissing ? <XCircle className="w-5 h-5" /> : <Smartphone className="w-5 h-5" />}
+                                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border ${isFound ? 'bg-green-100 text-green-600 border-green-200' : isMissing ? 'bg-red-100 text-red-600 border-red-200' : isMarked ? 'bg-blue-100 text-blue-600 border-blue-200' : 'bg-slate-100 dark:bg-slate-800 text-slate-400 border-slate-200 dark:border-slate-700'}`}>
+                                        {isFound ? <CheckCircle2 className="w-5 h-5" /> : isMissing ? <XCircle className="w-5 h-5" /> : isMarked ? <Info className="w-5 h-5" /> : <Smartphone className="w-5 h-5" />}
                                     </div>
                                     <div className="min-w-0 flex-1">
                                         <div className="flex items-center gap-2 mb-0.5"><span className="font-black text-[10px] text-slate-400">#{order.readable_id || order.id.slice(-4)}</span><span className="text-[9px] font-bold bg-slate-100 dark:bg-slate-800 text-slate-500 px-1.5 py-0.5 rounded border dark:border-slate-700 uppercase">{order.currentBranch}</span></div>
@@ -464,15 +685,32 @@ export const WorkshopAudit: React.FC = () => {
                                         <p className="text-[10px] text-slate-500 truncate">{order.customer.name}</p>
                                     </div>
                                 </div>
-                                <div className="flex items-center gap-2 w-full md:w-auto shrink-0" onClick={e => e.stopPropagation()}>
-                                    {!isFound && !isMissing && !reviewIds.has(order.id) ? (
-                                        <>
-                                            <button onClick={(e) => handleMarkMissing(e, order.id)} className="flex-1 md:flex-none px-3 py-2 bg-red-50 text-red-600 hover:bg-red-100 rounded-xl text-xs font-bold border border-red-100 transition">Faltante</button>
-                                            <button onClick={(e) => handleMarkReview(e, order.id)} className="flex-1 md:flex-none px-3 py-2 bg-orange-50 text-orange-600 hover:bg-orange-100 rounded-xl text-xs font-bold border border-orange-100 transition">Revisar</button>
-                                            <button onClick={(e) => handleMarkFound(e, order.id)} className="flex-[2] md:flex-none px-6 py-2 bg-blue-600 text-white hover:bg-blue-700 rounded-xl text-xs font-bold shadow-md transition">Localizado</button>
-                                        </>
+                                <div className="flex flex-wrap gap-2 w-full md:w-auto shrink-0" onClick={e => e.stopPropagation()}>
+                                    {!isMarked ? (
+                                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 w-full">
+                                            <button onClick={(e) => handleMarkFound(e, order.id)} className="px-2 py-2 bg-emerald-50 text-emerald-600 hover:bg-emerald-100 rounded-xl text-[10px] sm:text-xs font-bold border border-emerald-100 transition">Localizado</button>
+                                            <button onClick={(e) => handleMarkMissing(e, order.id)} className="px-2 py-2 bg-red-50 text-red-600 hover:bg-red-100 rounded-xl text-[10px] sm:text-xs font-bold border border-red-100 transition">Faltante</button>
+                                            <button onClick={(e) => handleMarkReview(e, order.id)} className="px-2 py-2 bg-amber-50 text-amber-600 hover:bg-amber-100 rounded-xl text-[10px] sm:text-xs font-bold border border-amber-100 transition">Revisar</button>
+                                            <button onClick={(e) => handleMarkWaitingResponse(e, order.id)} className="px-2 py-2 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-xl text-[10px] sm:text-xs font-bold border border-blue-100 transition">Espera Resp.</button>
+                                            <button onClick={(e) => handleMarkWaitingPart(e, order.id)} className="px-2 py-2 bg-purple-50 text-purple-600 hover:bg-purple-100 rounded-xl text-[10px] sm:text-xs font-bold border border-purple-100 transition">Espera Pieza</button>
+                                            <button onClick={(e) => handleMarkReady(e, order.id)} className="px-2 py-2 bg-teal-50 text-teal-600 hover:bg-teal-100 rounded-xl text-[10px] sm:text-xs font-bold border border-teal-100 transition">Listos</button>
+                                            <button onClick={(e) => handleMarkAlreadyLeft(e, order.id)} className="px-2 py-2 bg-orange-50 text-orange-600 hover:bg-orange-100 rounded-xl text-[10px] sm:text-xs font-bold border border-orange-100 transition">Ya Salió</button>
+                                        </div>
                                     ) : (
-                                        <button onClick={(e) => { e.stopPropagation(); setFoundIds(prev => { const n = new Set(prev); n.delete(order.id); return n; }); setMissingIds(prev => { const n = new Set(prev); n.delete(order.id); return n; }); setReviewIds(prev => { const n = new Set(prev); n.delete(order.id); return n; }); }} className="text-[10px] font-bold text-slate-400 hover:text-blue-600 uppercase">Deshacer</button>
+                                        <div className="flex items-center justify-between w-full md:w-auto gap-4">
+                                            <span className={`text-xs font-bold px-3 py-1.5 rounded-lg border ${
+                                                isFound ? 'bg-emerald-100 text-emerald-700 border-emerald-200' : 
+                                                isMissing ? 'bg-red-100 text-red-700 border-red-200' : 
+                                                isReview ? 'bg-amber-100 text-amber-700 border-amber-200' : 
+                                                isWaitingResponse ? 'bg-blue-100 text-blue-700 border-blue-200' : 
+                                                isWaitingPart ? 'bg-purple-100 text-purple-700 border-purple-200' : 
+                                                isReady ? 'bg-teal-100 text-teal-700 border-teal-200' : 
+                                                'bg-orange-100 text-orange-700 border-orange-200'
+                                            }`}>
+                                                {isFound ? 'Localizado' : isMissing ? 'Faltante' : isReview ? 'Revisar' : isWaitingResponse ? 'Espera Resp.' : isWaitingPart ? 'Espera Pieza' : isReady ? 'Listos' : 'Ya Salió'}
+                                            </span>
+                                            <button onClick={(e) => { e.stopPropagation(); clearFromAll(order.id); }} className="text-[10px] font-bold text-slate-400 hover:text-blue-600 uppercase px-2 py-1 bg-slate-100 rounded-lg">Deshacer</button>
+                                        </div>
                                     )}
                                 </div>
                             </div>
@@ -491,6 +729,8 @@ export const WorkshopAudit: React.FC = () => {
                         CONCLUIR Y GUARDAR AUDITORÍA
                     </button>
                 </div>
+                </>
+                )}
             </div>
         ) : (
             <div className="space-y-4 animate-in fade-in">
@@ -656,12 +896,12 @@ export const WorkshopAudit: React.FC = () => {
                                         colorClass = "text-blue-600 bg-blue-50 border-blue-100";
                                         icon = <ClipboardCheck className="w-4 h-4"/>;
                                     } else if (section === 'MISSING') {
-                                        items = (selectedReport.discrepancies || []).filter((d: any) => d.status === 'MISSING' || (!d.status && !d.resolved));
+                                        items = (selectedReport.discrepancies || []).filter((d: any) => d.status === AuditStatus.MISSING || (!d.status && !d.resolved));
                                         title = "Equipos Faltantes";
                                         colorClass = "text-red-600 bg-red-50 border-red-100";
                                         icon = <AlertTriangle className="w-4 h-4"/>;
                                     } else if (section === 'FOUND') {
-                                        items = (selectedReport.discrepancies || []).filter((d: any) => d.status === 'FOUND' || d.resolved);
+                                        items = (selectedReport.discrepancies || []).filter((d: any) => d.status === AuditStatus.FOUND || d.resolved);
                                         title = "Equipos Encontrados";
                                         colorClass = "text-green-600 bg-green-50 border-green-100";
                                         icon = <CheckCircle2 className="w-4 h-4"/>;
@@ -691,10 +931,14 @@ export const WorkshopAudit: React.FC = () => {
                                                         // Determine status for the badge if showing ALL
                                                         let statusBadge = null;
                                                         if (section === 'ALL') {
-                                                            if (item.status === 'MISSING') statusBadge = <span className="px-2 py-1 rounded-md bg-red-100 text-red-700 text-[10px] font-bold uppercase border border-red-200">Faltante</span>;
-                                                            else if (item.status === 'FOUND' || item.resolved) statusBadge = <span className="px-2 py-1 rounded-md bg-green-100 text-green-700 text-[10px] font-bold uppercase border border-green-200">Encontrado</span>;
-                                                            else if (item.status === 'REVIEW') statusBadge = <span className="px-2 py-1 rounded-md bg-orange-100 text-orange-700 text-[10px] font-bold uppercase border border-orange-200">Revisión</span>;
-                                                            else if (item.status === 'PENDING') statusBadge = <span className="px-2 py-1 rounded-md bg-slate-100 text-slate-500 text-[10px] font-bold uppercase border border-slate-200">No Verificado</span>;
+                                                            if (item.status === AuditStatus.MISSING) statusBadge = <span className="px-2 py-1 rounded-md bg-red-100 text-red-700 text-[10px] font-bold uppercase border border-red-200">Faltante</span>;
+                                                            else if (item.status === AuditStatus.FOUND || item.resolved) statusBadge = <span className="px-2 py-1 rounded-md bg-green-100 text-green-700 text-[10px] font-bold uppercase border border-green-200">Encontrado</span>;
+                                                            else if (item.status === AuditStatus.REVIEW) statusBadge = <span className="px-2 py-1 rounded-md bg-amber-100 text-amber-700 text-[10px] font-bold uppercase border border-amber-200">Revisión</span>;
+                                                            else if (item.status === AuditStatus.WAITING_RESPONSE) statusBadge = <span className="px-2 py-1 rounded-md bg-blue-100 text-blue-700 text-[10px] font-bold uppercase border border-blue-200">Espera Resp.</span>;
+                                                            else if (item.status === AuditStatus.WAITING_PART) statusBadge = <span className="px-2 py-1 rounded-md bg-purple-100 text-purple-700 text-[10px] font-bold uppercase border border-purple-200">Espera Pieza</span>;
+                                                            else if (item.status === AuditStatus.READY) statusBadge = <span className="px-2 py-1 rounded-md bg-teal-100 text-teal-700 text-[10px] font-bold uppercase border border-teal-200">Listos</span>;
+                                                            else if (item.status === AuditStatus.ALREADY_LEFT) statusBadge = <span className="px-2 py-1 rounded-md bg-orange-100 text-orange-700 text-[10px] font-bold uppercase border border-orange-200">Ya Salió</span>;
+                                                            else if (item.status === AuditStatus.PENDING) statusBadge = <span className="px-2 py-1 rounded-md bg-slate-100 text-slate-500 text-[10px] font-bold uppercase border border-slate-200">No Verificado</span>;
                                                         }
 
                                                         return (

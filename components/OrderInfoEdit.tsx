@@ -11,13 +11,25 @@ interface OrderInfoEditProps {
   onCancel: () => void;
   onSave: () => void;
   orderType?: OrderType;
+  onSearchCustomer?: () => void;
 }
 
-export const OrderInfoEdit: React.FC<OrderInfoEditProps> = ({ editForm, setEditForm, isAdmin, canChangeDeadline, onCancel, onSave, orderType }) => {
+export const OrderInfoEdit: React.FC<OrderInfoEditProps> = ({ editForm, setEditForm, isAdmin, canChangeDeadline, onCancel, onSave, orderType, onSearchCustomer }) => {
   return (
     <div className="space-y-3 bg-slate-50 p-4 rounded-xl border border-slate-200 shadow-inner">
         <div>
-            <label className="text-xs font-bold text-slate-500">Nombre Cliente / Referencia</label>
+            <div className="flex justify-between items-center mb-1">
+                <label className="text-xs font-bold text-slate-500">Nombre Cliente / Referencia</label>
+                {onSearchCustomer && orderType !== OrderType.STORE && (
+                    <button
+                        type="button"
+                        onClick={onSearchCustomer}
+                        className="text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-1 rounded hover:bg-blue-100 transition-colors"
+                    >
+                        Buscar Cliente
+                    </button>
+                )}
+            </div>
             <input className="w-full p-2 border border-slate-300 rounded bg-white text-slate-900 font-medium" value={editForm.customerName} onChange={e => setEditForm({...editForm, customerName: e.target.value})} />
         </div>
         <div>
@@ -96,6 +108,7 @@ export const OrderInfoEdit: React.FC<OrderInfoEditProps> = ({ editForm, setEditF
                 <ShieldCheck className="w-4 h-4" />
                 <span className="text-xs font-bold uppercase">Zona de Administración</span>
             </div>
+            
             <div>
                 <label className="text-xs font-bold text-red-700 flex items-center gap-1 mb-1">
                     <CalendarClock className="w-3 h-3"/> Editar Tiempo Límite

@@ -235,11 +235,15 @@ export const TeamManagement: React.FC = () => {
 
   const emojis = ['👨‍🔧', '👩‍🔧', '🧑‍🔧', '👨‍💼', '👩‍💼', '🤖', '⚡', '🛠️', '🕵️‍♂️', '🎓', '👓', '🧢'];
 
-  const filteredUsers = users.filter(u => 
-      u.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-      u.role.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      u.specialization?.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const filteredUsers = users.filter(u => {
+      const term = searchTerm.toLowerCase();
+      return (
+          u.name.toLowerCase().includes(term) || 
+          u.role.toLowerCase().includes(term) ||
+          u.specialization?.toLowerCase().includes(term) ||
+          u.email?.toLowerCase().includes(term)
+      );
+  });
 
   if (currentUser?.role !== UserRole.ADMIN) {
       return <div className="p-8 text-center text-red-500">Acceso Denegado. Solo administradores.</div>;

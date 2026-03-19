@@ -7,15 +7,17 @@ interface StageBarProps {
   currentStatus: OrderStatus;
   onStepClick: (status: OrderStatus) => void;
   disabled: boolean;
+  isReturn?: boolean;
 }
 
-export const StageBar: React.FC<StageBarProps> = ({ currentStatus, onStepClick, disabled }) => {
+export const StageBar: React.FC<StageBarProps> = ({ currentStatus, onStepClick, disabled, isReturn = false }) => {
   return (
     <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 overflow-x-auto">
       <StatusTimeline 
         currentStatus={currentStatus} 
         onStepClick={onStepClick} 
         disabled={disabled} 
+        isReturn={isReturn}
       />
     </div>
   );

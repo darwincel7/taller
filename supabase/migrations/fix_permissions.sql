@@ -13,26 +13,60 @@ DROP POLICY IF EXISTS "Users can update their own receipts" ON storage.objects;
 DROP POLICY IF EXISTS "Users can delete their own receipts" ON storage.objects;
 DROP POLICY IF EXISTS "Public Read Receipts" ON storage.objects;
 DROP POLICY IF EXISTS "Public Upload Receipts" ON storage.objects;
+DROP POLICY IF EXISTS "Public Update Receipts" ON storage.objects;
+DROP POLICY IF EXISTS "Public Delete Receipts" ON storage.objects;
 
 -- 3. Create PERMISSIVE policies for the receipts bucket
 -- Allow anyone to read
 CREATE POLICY "Public Read Receipts"
 ON storage.objects FOR SELECT
+TO anon, authenticated
 USING ( bucket_id = 'receipts' );
 
 -- Allow anyone (anon + authenticated) to upload
 CREATE POLICY "Public Upload Receipts"
 ON storage.objects FOR INSERT
+TO anon, authenticated
 WITH CHECK ( bucket_id = 'receipts' );
 
 -- Allow anyone to update/delete
 CREATE POLICY "Public Update Receipts"
 ON storage.objects FOR UPDATE
+TO anon, authenticated
 USING ( bucket_id = 'receipts' );
 
 CREATE POLICY "Public Delete Receipts"
 ON storage.objects FOR DELETE
+TO anon, authenticated
 USING ( bucket_id = 'receipts' );
+
+
+-- FIX: Table Permissions for 'floating_expenses'
+-- This is critical for the mobile photo upload feature
+ALTER TABLE floating_expenses ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Public Access Floating Expenses" ON floating_expenses;
+DROP POLICY IF EXISTS "Public Insert Floating Expenses" ON floating_expenses;
+DROP POLICY IF EXISTS "Public Delete Floating Expenses" ON floating_expenses;
+
+CREATE POLICY "Public Access Floating Expenses"
+ON floating_expenses FOR SELECT
+TO anon, authenticated
+USING (true);
+
+CREATE POLICY "Public Insert Floating Expenses"
+ON floating_expenses FOR INSERT
+TO anon, authenticated
+WITH CHECK (true);
+
+CREATE POLICY "Public Delete Floating Expenses"
+ON floating_expenses FOR DELETE
+TO anon, authenticated
+USING (true);
+
+GRANT ALL ON floating_expenses TO authenticated;
+GRANT ALL ON floating_expenses TO anon;
+GRANT ALL ON floating_expenses TO service_role;
 
 
 -- FIX: Table Permissions for 'accounting_transactions'

@@ -1,196 +1,167 @@
-
-import React, { useState, useRef, useEffect } from 'react';
-import { useParams } from 'react-router-dom';
+import React, { useState, useRef } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
+import { Camera, CheckCircle2, Loader2, UploadCloud } from 'lucide-react';
 import { supabase } from '../services/supabase';
-import { CheckCircle2, Video, AlertTriangle, Loader2, Camera, Wifi, XCircle, ShieldAlert } from 'lucide-react';
 
 export const MobileVideoUpload: React.FC = () => {
   const { sessionId } = useParams<{ sessionId: string }>();
-  const [uploading, setUploading] = useState(false);
-  const [completed, setCompleted] = useState(false);
+  const navigate = useNavigate();
+  const [isUploading, setIsUploading] = useState(false);
+  const [isSuccess, setIsSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [isValidSession, setIsValidSession] = useState<boolean>(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // VALIDATE SESSION ID ON MOUNT (Prevents DB Type Error 22P02)
-  useEffect(() => {
-      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-      if (!sessionId || !uuidRegex.test(sessionId)) {
-          setIsValidSession(false);
-          setError("QR Inválido: Este código pertenece a una versión anterior o está dañado. Por favor genera uno nuevo en la PC.");
-      }
-  }, [sessionId]);
+  const handleCaptureClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const compressImage = (file: File): Promise<Blob> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = (event) => {
+        const img = new Image();
+        img.src = event.target?.result as string;
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          const MAX_WIDTH = 1200;
+          const MAX_HEIGHT = 1200;
+          let width = img.width;
+          let height = img.height;
+
+          if (width > height) {
+            if (width > MAX_WIDTH) {
+              height *= MAX_WIDTH / width;
+              width = MAX_WIDTH;
+            }
+          } else {
+            if (height > MAX_HEIGHT) {
+              width *= MAX_HEIGHT / height;
+              height = MAX_HEIGHT;
+            }
+          }
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx?.drawImage(img, 0, 0, width, height);
+          canvas.toBlob((blob) => {
+            if (blob) resolve(blob);
+            else reject(new Error('Canvas to Blob failed'));
+          }, 'image/jpeg', 0.7);
+        };
+      };
+      reader.onerror = error => reject(error);
+    });
+  };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !sessionId) return;
 
-    // 1. Validate Size
-    if (file.size > 50 * 1024 * 1024) {
-        setError("El video es muy grande (Máx 50MB). Intenta grabar menos tiempo.");
-        return;
-    }
-
-    // 2. Validate Session Again
-    if (!isValidSession) {
-        setError("No se puede subir: ID de sesión inválido.");
-        return;
-    }
-
-    setUploading(true);
+    setIsUploading(true);
     setError(null);
 
     try {
-        if (!supabase) throw new Error("Error de configuración: Cliente Supabase no inicializado.");
+      // 1. Compress Image
+      const compressedBlob = await compressImage(file);
+      
+      // 2. Upload to Storage
+      const fileName = `${sessionId}-${Date.now()}.jpg`;
+      const { error: uploadError } = await supabase.storage
+        .from('receipts')
+        .upload(fileName, compressedBlob, {
+          contentType: 'image/jpeg',
+          cacheControl: '3600',
+          upsert: false
+        });
 
-        // 3. Upload to Storage
-        const fileName = `${sessionId}.mp4`;
-        const { error: uploadError } = await supabase.storage
-            .from('temp-videos')
-            .upload(fileName, file, { upsert: true });
+      if (uploadError) throw uploadError;
 
-        if (uploadError) {
-            console.error("Storage Error:", uploadError);
-            if (uploadError.message.includes("Bucket not found") || uploadError.message.includes("row-level security")) {
-                throw new Error("El sistema no acepta videos aún. (Falta ejecutar SQL de instalación en PC)");
-            }
-            throw uploadError;
-        }
+      // 3. Get Public URL
+      const { data: publicUrlData } = supabase.storage
+        .from('receipts')
+        .getPublicUrl(fileName);
 
-        // 4. Update Database Session
-        const { data } = supabase.storage.from('temp-videos').getPublicUrl(fileName);
-        const publicUrl = data.publicUrl;
-        
-        const { error: dbError } = await supabase
-            .from('intake_sessions')
-            .update({ 
-                status: 'READY', 
-                video_url: publicUrl 
-            })
-            .eq('id', sessionId);
+      // 4. Trigger PC via floating_expenses dummy record
+      const { error: insertError } = await supabase
+        .from('floating_expenses')
+        .insert({
+          description: 'RECEIPT_UPLOAD_TRIGGER',
+          amount: 0,
+          shared_receipt_id: sessionId,
+          receipt_url: publicUrlData.publicUrl
+        });
 
-        if (dbError) {
-            console.error("DB Error:", dbError);
-            throw new Error("Video subido, pero falló la notificación a la PC.");
-        }
+      if (insertError) throw insertError;
 
-        setCompleted(true);
+      setIsSuccess(true);
+      setTimeout(() => {
+        // Optional: close window or show success message permanently
+      }, 2000);
 
     } catch (err: any) {
-        console.error(err);
-        setError(err.message || "Fallo al subir video.");
+      console.error("Error uploading receipt:", err);
+      setError(err.message || "Error al subir la imagen");
     } finally {
-        setUploading(false);
+      setIsUploading(false);
     }
   };
 
-  // --- RENDER STATES ---
-
-  if (!isValidSession) {
-      return (
-          <div className="min-h-screen bg-red-50 flex flex-col items-center justify-center p-6 text-center">
-              <div className="bg-red-100 p-6 rounded-full mb-6">
-                  <ShieldAlert className="w-12 h-12 text-red-600" />
-              </div>
-              <h1 className="text-2xl font-bold text-red-800 mb-2">Código QR Inválido</h1>
-              <p className="text-red-600 mb-6">
-                  El formato del código no es compatible con la base de datos actual.
-              </p>
-              <div className="bg-white p-4 rounded-xl border border-red-200 text-sm text-slate-600">
-                  <strong>Solución:</strong><br/>
-                  Cierra esta ventana, actualiza la página en tu computadora y genera un <strong>nuevo código QR</strong>.
-              </div>
-          </div>
-      );
-  }
-
-  if (completed) {
-      return (
-          <div className="min-h-screen bg-green-50 flex flex-col items-center justify-center p-6 text-center animate-in zoom-in">
-              <div className="w-24 h-24 bg-green-100 rounded-full flex items-center justify-center mb-6 shadow-lg shadow-green-200">
-                  <CheckCircle2 className="w-12 h-12 text-green-600" />
-              </div>
-              <h1 className="text-3xl font-extrabold text-green-800 mb-2">¡Video Enviado!</h1>
-              <p className="text-green-700 font-medium">
-                  La Inteligencia Artificial está procesando el video en la computadora principal.
-              </p>
-              <div className="mt-8 p-4 bg-white/50 rounded-xl border border-green-200 text-sm text-green-800">
-                  Ya puedes cerrar esta pestaña.
-              </div>
-          </div>
-      );
+  if (isSuccess) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 text-center animate-in fade-in duration-500">
+        <div className="bg-green-100 p-6 rounded-full mb-6">
+          <CheckCircle2 className="w-20 h-20 text-green-600" />
+        </div>
+        <h1 className="text-3xl font-black text-slate-800 mb-2 tracking-tight">¡Factura Subida!</h1>
+        <p className="text-slate-500 text-lg">Puede continuar en la computadora.</p>
+        <p className="text-slate-400 text-sm mt-8">Ya puede cerrar esta pestaña.</p>
+      </div>
+    );
   }
 
   return (
-    <div className="min-h-screen bg-slate-900 text-white flex flex-col p-6">
-        <div className="flex-1 flex flex-col items-center justify-center text-center space-y-8">
-            
-            {/* Header / Status */}
-            <div className="relative">
-                <div className="bg-blue-600 p-5 rounded-full shadow-[0_0_40px_rgba(37,99,235,0.6)] animate-pulse">
-                    <Video className="w-10 h-10 text-white" />
-                </div>
-                <div className="absolute -top-2 -right-2 bg-green-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1 shadow-sm">
-                    <Wifi className="w-3 h-3"/> Online
-                </div>
-            </div>
-            
-            <div>
-                <h1 className="text-3xl font-bold mb-2 tracking-tight">Escaneo Visual AI</h1>
-                <p className="text-slate-400 max-w-xs mx-auto leading-relaxed">
-                    Graba el equipo mostrando pantalla, bordes y parte trasera.
-                </p>
-            </div>
-
-            {/* Error Display */}
-            {error && (
-                <div className="bg-red-500/20 text-red-200 p-4 rounded-2xl flex items-start gap-3 text-left w-full border border-red-500/50 animate-in slide-in-from-top-2">
-                    <AlertTriangle className="w-6 h-6 flex-shrink-0 mt-0.5 text-red-400" />
-                    <div>
-                        <p className="font-bold text-sm text-red-300 mb-1">Hubo un problema</p>
-                        <p className="text-xs opacity-90">{error}</p>
-                    </div>
-                </div>
-            )}
-
-            <input 
-                ref={fileInputRef}
-                type="file" 
-                accept="video/*" 
-                capture="environment" 
-                className="hidden" 
-                onChange={handleFileChange}
-            />
-
-            {/* Main Action Button */}
-            <button 
-                onClick={() => fileInputRef.current?.click()}
-                disabled={uploading}
-                className={`w-full py-6 rounded-3xl font-bold text-lg shadow-xl flex flex-col items-center gap-3 border transition-all active:scale-95 ${uploading ? 'bg-slate-700 border-slate-600 text-slate-400 cursor-not-allowed' : 'bg-gradient-to-b from-blue-500 to-blue-700 border-blue-400 text-white hover:shadow-blue-500/20'}`}
-            >
-                {uploading ? (
-                    <>
-                        <Loader2 className="w-8 h-8 animate-spin text-blue-400" />
-                        <span className="text-sm">Subiendo Video...</span>
-                    </>
-                ) : (
-                    <>
-                        <Camera className="w-8 h-8" />
-                        <span>GRABAR AHORA</span>
-                    </>
-                )}
-            </button>
-            
-            <div className="bg-slate-800/50 p-4 rounded-xl border border-slate-700 w-full max-w-xs">
-                <p className="text-xs text-slate-400">
-                    <span className="text-blue-400 font-bold">Tip:</span> Mantén el video corto (5-10 segundos) para que la IA lo procese más rápido.
-                </p>
-            </div>
+    <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center p-6 text-center">
+      <div className="bg-slate-800 p-8 rounded-3xl shadow-2xl max-w-sm w-full border border-slate-700">
+        <div className="bg-blue-500/10 p-4 rounded-full w-20 h-20 mx-auto mb-6 flex items-center justify-center">
+          <UploadCloud className="w-10 h-10 text-blue-400" />
         </div>
-        
-        <div className="text-center pb-4 opacity-40">
-            <p className="text-[10px] font-mono">ID: {sessionId?.slice(0,8)}</p>
-        </div>
+        <h1 className="text-2xl font-black text-white mb-2 tracking-tight">Subir Factura</h1>
+        <p className="text-slate-400 text-sm mb-8">Tome una foto clara de la factura para adjuntarla a los gastos.</p>
+
+        <input 
+          type="file" 
+          accept="image/*" 
+          capture="environment" 
+          ref={fileInputRef} 
+          onChange={handleFileChange} 
+          className="hidden" 
+        />
+
+        {error && (
+          <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-3 rounded-xl text-sm mb-6">
+            {error}
+          </div>
+        )}
+
+        <button 
+          onClick={handleCaptureClick}
+          disabled={isUploading}
+          className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 rounded-2xl flex items-center justify-center gap-3 transition-all active:scale-95 shadow-lg shadow-blue-900/20 disabled:opacity-50 disabled:pointer-events-none"
+        >
+          {isUploading ? (
+            <>
+              <Loader2 className="w-6 h-6 animate-spin" />
+              Procesando...
+            </>
+          ) : (
+            <>
+              <Camera className="w-6 h-6" />
+              Tomar Foto
+            </>
+          )}
+        </button>
+      </div>
     </div>
   );
 };

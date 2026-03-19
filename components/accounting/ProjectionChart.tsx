@@ -23,8 +23,20 @@ export const ProjectionChart: React.FC<ProjectionChartProps> = ({ data }) => {
   const lastMonth = data[data.length - 1];
   const projectionData = [
     ...data,
-    { month: 'Nov (Est)', income: lastMonth.income * 1.05, expenses: lastMonth.expenses * 1.02, isProjection: true },
-    { month: 'Dec (Est)', income: lastMonth.income * 1.15, expenses: lastMonth.expenses * 1.05, isProjection: true },
+    { 
+      month: 'Próx. Mes (Est)', 
+      income: lastMonth.income * 1.05, 
+      expenses: lastMonth.expenses * 1.02, 
+      purchases: (lastMonth.purchases || 0) * 1.05,
+      isProjection: true 
+    },
+    { 
+      month: 'Mes 2 (Est)', 
+      income: lastMonth.income * 1.15, 
+      expenses: lastMonth.expenses * 1.05, 
+      purchases: (lastMonth.purchases || 0) * 1.10,
+      isProjection: true 
+    },
   ];
 
   return (
@@ -56,12 +68,20 @@ export const ProjectionChart: React.FC<ProjectionChartProps> = ({ data }) => {
           <Line 
             type="monotone" 
             dataKey="expenses" 
-            name="Egresos" 
+            name="Gastos Operativos" 
             stroke="#f43f5e" 
             strokeWidth={3} 
             dot={{ r: 4, fill: '#f43f5e', strokeWidth: 2, stroke: '#fff' }}
           />
-          <ReferenceLine x="Oct" stroke="#94a3b8" strokeDasharray="3 3" label={{ value: 'Hoy', position: 'top', fill: '#94a3b8', fontSize: 12 }} />
+          <Line 
+            type="monotone" 
+            dataKey="purchases" 
+            name="Inversión Inventario" 
+            stroke="#3b82f6" 
+            strokeWidth={3} 
+            dot={{ r: 4, fill: '#3b82f6', strokeWidth: 2, stroke: '#fff' }}
+          />
+          <ReferenceLine x={lastMonth.month} stroke="#94a3b8" strokeDasharray="3 3" label={{ value: 'Hoy', position: 'top', fill: '#94a3b8', fontSize: 12 }} />
         </LineChart>
       </ResponsiveContainer>
     </div>

@@ -87,7 +87,7 @@ export const DeliveryModal: React.FC<DeliveryModalProps> = ({ finalPriceInput, s
       }));
 
       // FIX: OPEN WINDOW HERE (SYNCHRONOUSLY) TO PREVENT BLOCKING
-      const printWindow = window.open('', '_blank');
+      const printWindow = window.open('about:blank', '_blank');
       if (printWindow) {
           printWindow.document.write(`
             <html>

@@ -1,9 +1,12 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Loader2, Check, DollarSign, Upload, AlertCircle } from 'lucide-react';
+import { X, Loader2, Check, DollarSign, Upload, AlertCircle, Camera } from 'lucide-react';
 import { accountingService } from '../../services/accountingService';
-import { AccountingCategory } from '../../types';
+import { AccountingCategory, TransactionStatus, ActionType } from '../../types';
+import { auditService } from '../../services/auditService';
+import { useAuth } from '../../contexts/AuthContext';
 import { useDropzone, DropzoneOptions } from 'react-dropzone';
+import { format } from 'date-fns';
 
 interface NewIncomeModalProps {
   isOpen: boolean;
@@ -12,6 +15,7 @@ interface NewIncomeModalProps {
 }
 
 export const NewIncomeModal: React.FC<NewIncomeModalProps> = ({ isOpen, onClose, onSuccess }) => {
+  const { currentUser } = useAuth();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [categories, setCategories] = useState<AccountingCategory[]>([]);
@@ -27,19 +31,19 @@ export const NewIncomeModal: React.FC<NewIncomeModalProps> = ({ isOpen, onClose,
 
   const [formData, setFormData] = useState({
     amount: '',
-    date: new Date().toISOString().split('T')[0],
+    date: format(new Date(), 'yyyy-MM-dd'),
     source_name: '', // Vendor/Client
     description: '',
     category: '', 
-    source: 'MANUAL' as 'MANUAL' | 'STORE'
+    source: 'STORE' as 'MANUAL' | 'STORE'
   });
 
   // Set default category
   useEffect(() => {
     if (categories.length > 0 && !formData.category) {
         // Try to find a category that looks like income
-        const incomeCat = categories.find(c => c.name.toLowerCase().includes('venta') || c.name.toLowerCase().includes('ingreso') || c.name.toLowerCase().includes('servicio'));
-        setFormData(prev => ({ ...prev, category: incomeCat ? incomeCat.id : categories[0].id }));
+        const repuestosCat = categories.find(c => c.name.toLowerCase().includes('repuesto'));
+        setFormData(prev => ({ ...prev, category: repuestosCat ? repuestosCat.id : categories[0].id }));
     }
   }, [categories]);
 
@@ -71,16 +75,25 @@ export const NewIncomeModal: React.FC<NewIncomeModalProps> = ({ isOpen, onClose,
         description: formData.description,
         category_id: formData.category,
         source: formData.source,
-        status: 'COMPLETED',
+        status: TransactionStatus.COMPLETED,
         search_text: file ? `FILE_UPLOADED: ${file.name}` : '' // Simple search text for file presence
       }, file || undefined);
+
+      // Record audit log
+      if (currentUser) {
+        await auditService.recordLog(
+          currentUser,
+          ActionType.TRANSACTION_ADDED,
+          `Ingreso registrado: ${formData.source_name} - $${formData.amount} (${formData.description})`
+        );
+      }
       
       onSuccess();
       onClose();
       // Reset form
       setFormData({
         amount: '',
-        date: new Date().toISOString().split('T')[0],
+        date: format(new Date(), 'yyyy-MM-dd'),
         source_name: '',
         description: '',
         category: '',
@@ -132,31 +145,58 @@ export const NewIncomeModal: React.FC<NewIncomeModalProps> = ({ isOpen, onClose,
               )}
 
               {/* File Upload Area */}
-              <div 
-                {...getRootProps()} 
-                className={`border-2 border-dashed rounded-xl p-4 text-center cursor-pointer transition-colors ${
-                  isDragActive ? 'border-emerald-500 bg-emerald-50' : 'border-slate-200 hover:border-emerald-300 hover:bg-slate-50'
-                }`}
-              >
-                <input {...getInputProps()} />
-                {file ? (
-                  <div className="flex items-center justify-center gap-2 text-emerald-600">
-                    <Check className="w-5 h-5" />
-                    <span className="font-medium text-sm truncate max-w-[200px]">{file.name}</span>
-                    <button 
-                        type="button"
-                        onClick={(e) => { e.stopPropagation(); setFile(null); }}
-                        className="p-1 hover:bg-emerald-100 rounded-full"
-                    >
-                        <X className="w-4 h-4" />
-                    </button>
-                  </div>
-                ) : (
-                  <div className="flex flex-col items-center gap-1 text-slate-500">
-                    <Upload className="w-5 h-5 mb-1" />
-                    <p className="text-xs font-medium">Adjuntar comprobante (Opcional)</p>
-                  </div>
-                )}
+              <div className="flex flex-col gap-3">
+                <div 
+                  {...getRootProps()} 
+                  className={`border-2 border-dashed rounded-xl p-4 text-center cursor-pointer transition-colors ${
+                    isDragActive ? 'border-emerald-500 bg-emerald-50' : 'border-slate-200 hover:border-emerald-300 hover:bg-slate-50'
+                  }`}
+                >
+                  <input {...getInputProps()} />
+                  {file ? (
+                    <div className="flex items-center justify-center gap-2 text-emerald-600">
+                      <Check className="w-5 h-5" />
+                      <span className="font-medium text-sm truncate max-w-[200px]">{file.name}</span>
+                      <button 
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); setFile(null); }}
+                          className="p-1 hover:bg-emerald-100 rounded-full"
+                      >
+                          <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center gap-3">
+                      <div className="flex gap-4 w-full justify-center">
+                        <button 
+                          type="button"
+                          className="flex-1 flex flex-col items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white p-4 rounded-xl shadow-lg shadow-emerald-600/20 transition active:scale-95"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const input = document.createElement('input');
+                            input.type = 'file';
+                            input.accept = 'image/*';
+                            input.capture = 'environment';
+                            input.onchange = (e: any) => {
+                              if (e.target.files && e.target.files.length > 0) {
+                                onDrop(Array.from(e.target.files));
+                              }
+                            };
+                            input.click();
+                          }}
+                        >
+                          <Camera className="w-8 h-8" />
+                          <span className="font-bold">Tomar Foto</span>
+                        </button>
+                        <div className="flex-1 flex flex-col items-center justify-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-700 p-4 rounded-xl transition active:scale-95">
+                          <Upload className="w-8 h-8 text-slate-500" />
+                          <span className="font-bold">Subir Archivo</span>
+                        </div>
+                      </div>
+                      <p className="text-xs text-slate-500 mt-2">Adjuntar comprobante (Opcional)</p>
+                    </div>
+                  )}
+                </div>
               </div>
 
               {/* Form */}
@@ -236,7 +276,7 @@ export const NewIncomeModal: React.FC<NewIncomeModalProps> = ({ isOpen, onClose,
                           : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
                       }`}
                     >
-                      🛍️ Caja Tienda
+                      🛍️ Caja Tienda 1
                     </button>
                   </div>
                 </div>

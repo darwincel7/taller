@@ -1,22 +1,26 @@
 
 // ... (previous imports and code unchanged up to handleSubmit) ...
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useOrders } from '../contexts/OrderContext';
 import { useAuth } from '../contexts/AuthContext';
 import { RepairOrder, OrderType, PriorityLevel, OrderStatus } from '../types';
 import { useNavigate } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
+import { orderService } from '../services/orderService';
 import { 
   PlusCircle, User, Smartphone, Save, DollarSign, 
   ShoppingBag, Video, Sparkles, X, 
   Camera, Loader2, Play, Trash2, 
   BrainCircuit, FileVideo, Radio,
   XCircle, ChevronRight, ShieldCheck,
-  AlertTriangle, HardDrive, Palette, Lock, Headphones, Eye
+  AlertTriangle, HardDrive, Palette, Lock, Headphones, Eye, Search
 } from 'lucide-react';
 import { supabase } from '../services/supabase';
 import { analyzeVideoForIntake } from '../services/geminiService';
 import { CameraCapture } from '../components/CameraCapture';
 import { printInvoice } from '../services/invoiceService';
+import { CustomerSelectModal } from '../components/modals/CustomerSelectModal';
+import { Customer } from '../types';
 
 // ... (rest of helper functions and components) ...
 
@@ -95,7 +99,7 @@ const VideoRecorderModal = ({ onCapture, onClose }: { onCapture: (file: File) =>
 
 export const Intake = () => {
   const navigate = useNavigate();
-  const { addOrder, orders } = useOrders();
+  const { addOrder } = useOrders();
   const { currentUser } = useAuth();
   
   // UI States
@@ -108,20 +112,24 @@ export const Intake = () => {
   const [showAiChoices, setShowAiChoices] = useState(false);
   const [showVideoRecorder, setShowVideoRecorder] = useState(false);
   const [showCamera, setShowCamera] = useState(false);
+  const [showCustomerSelect, setShowCustomerSelect] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Form States
   const [deviceCategory, setDeviceCategory] = useState("Celular");
   const [deviceColor, setDeviceColor] = useState("");
   const [deviceStorage, setDeviceStorage] = useState("");
-  const [nextId, setNextId] = useState<number>(0);
 
   // Default Deadline (48h)
   const [deadlineInput, setDeadlineInput] = useState(() => {
       const now = new Date();
       now.setHours(now.getHours() + 48); 
-      const offset = now.getTimezoneOffset() * 60000;
-      return new Date(now.getTime() - offset).toISOString().slice(0, 16);
+      const year = now.getFullYear();
+      const month = String(now.getMonth() + 1).padStart(2, '0');
+      const day = String(now.getDate()).padStart(2, '0');
+      const hours = String(now.getHours()).padStart(2, '0');
+      const minutes = String(now.getMinutes()).padStart(2, '0');
+      return `${year}-${month}-${day}T${hours}:${minutes}`;
   });
 
   const [formData, setFormData] = useState<Partial<RepairOrder>>({
@@ -140,10 +148,82 @@ export const Intake = () => {
       devicePhoto: '',
   });
 
+  // Customer History Logic (Server-side)
+  const { data: historyData } = useQuery({
+    queryKey: ['customerHistory', formData.customer?.phone],
+    queryFn: () => orderService.getCustomerHistory(formData.customer!.phone),
+    enabled: !!formData.customer?.phone && formData.customer.phone.length >= 8
+  });
+
+  const customerHistory = useMemo(() => {
+      if (!historyData || historyData.length === 0) return null;
+      
+      const totalSpent = historyData.reduce((sum, o) => {
+          if (o.status === OrderStatus.RETURNED) {
+              return sum + (o.finalPrice || o.estimatedCost || 0);
+          }
+          return sum;
+      }, 0);
+
+      const thirtyDaysAgo = Date.now() - (30 * 24 * 60 * 60 * 1000);
+      const abandoned = historyData.filter(o => 
+          o.status !== OrderStatus.RETURNED && 
+          o.status !== OrderStatus.CANCELED && 
+          (o.createdAt || 0) < thirtyDaysAgo
+      );
+      
+      const active = historyData.filter(o => 
+          o.status !== OrderStatus.RETURNED && 
+          o.status !== OrderStatus.CANCELED &&
+          (o.createdAt || 0) >= thirtyDaysAgo
+      );
+
+      const mostRecentOrder = [...historyData].sort((a, b) => b.createdAt - a.createdAt)[0];
+
+      return {
+          visits: historyData.length,
+          totalSpent,
+          abandoned: abandoned.length,
+          active: active.length,
+          lastVisit: mostRecentOrder.createdAt,
+          suggestedName: mostRecentOrder.customer.name
+      };
+  }, [historyData]);
+
+  // Warranty Alert Logic (Server-side)
+  const { data: warrantyData } = useQuery({
+    queryKey: ['warrantyAlert', formData.imei],
+    queryFn: () => orderService.getWarrantyAlert(formData.imei!),
+    enabled: !!formData.imei && formData.imei.length >= 4
+  });
+
+  const warrantyAlert = useMemo(() => {
+      if (!warrantyData || warrantyData.length === 0) return null;
+
+      const lastOrder = warrantyData[0];
+      const sixtyDaysAgo = Date.now() - (60 * 24 * 60 * 60 * 1000);
+      
+      if (lastOrder.status === OrderStatus.RETURNED && (lastOrder.createdAt || 0) > sixtyDaysAgo) {
+          const daysAgo = Math.floor((Date.now() - (lastOrder.createdAt || 0)) / (1000 * 60 * 60 * 24));
+          return {
+              orderId: lastOrder.readable_id || lastOrder.id.slice(-4),
+              daysAgo,
+              issue: lastOrder.deviceIssue
+          };
+      }
+
+      return null;
+  }, [warrantyData]);
+
+  // Auto-fill customer name if found in history and current name is empty
   useEffect(() => {
-      const maxId = orders.reduce((max, o) => Math.max(max, o.readable_id || 0), 0);
-      setNextId(maxId + 1);
-  }, [orders]);
+      if (customerHistory?.suggestedName && !formData.customer?.name) {
+          setFormData(prev => ({
+              ...prev,
+              customer: { ...prev.customer!, name: customerHistory.suggestedName }
+          }));
+      }
+  }, [customerHistory?.suggestedName, formData.customer?.name]);
 
   // ... (processVideoInternal and extractFramesFromVideo functions omitted for brevity, assume they are here) ...
   const extractFramesFromVideo = async (file: File): Promise<string[]> => {
@@ -211,7 +291,7 @@ export const Intake = () => {
       if (!formData.deviceModel || !formData.deviceIssue) { alert("Modelo y Falla son obligatorios."); return; }
       
       // PRE-OPEN WINDOW TO PREVENT BLOCKING
-      const printWindow = window.open('', '_blank');
+      const printWindow = window.open('about:blank', '_blank');
       if (printWindow) {
           printWindow.document.write(`
             <html>
@@ -226,9 +306,38 @@ export const Intake = () => {
 
       setLoading(true);
       try {
-          const newOrder: RepairOrder = {
+          // 1. Check if customer exists by phone, or create a new one
+          let customerId = undefined;
+          if (orderType === OrderType.REPAIR || orderType === OrderType.WARRANTY) {
+              try {
+                  const { data: existingCustomers } = await supabase
+                      .from('customers')
+                      .select('id')
+                      .eq('phone', formData.customer!.phone)
+                      .limit(1);
+                  
+                  if (existingCustomers && existingCustomers.length > 0) {
+                      customerId = existingCustomers[0].id;
+                  } else {
+                      const newCustId = `CUST-${Math.floor(10000 + Math.random() * 90000)}`;
+                      await supabase.from('customers').insert([{
+                          id: newCustId,
+                          name: formData.customer!.name,
+                          phone: formData.customer!.phone,
+                          createdAt: Date.now()
+                      }]);
+                      customerId = newCustId;
+                  }
+              } catch (err) {
+                  console.error("Error managing customer directory:", err);
+                  // Non-blocking error, continue with order creation
+              }
+          }
+
+          const newOrder: any = {
               id: `INV-${Math.floor(10000 + Math.random() * 90000)}`,
               orderType,
+              customerId,
               customer: orderType === OrderType.REPAIR || orderType === OrderType.WARRANTY ? formData.customer! : { name: formData.deviceSource || 'STOCK', phone: '000' },
               deviceModel: `${deviceCategory} ${formData.deviceModel}`, // Include Category
               deviceIssue: formData.deviceIssue!,
@@ -241,8 +350,18 @@ export const Intake = () => {
               status: OrderStatus.PENDING,
               priority: formData.priority || PriorityLevel.NORMAL,
               createdAt: Date.now(),
-              deadline: new Date(deadlineInput).getTime(),
+              deadline: (() => {
+                  if (!deadlineInput) return Date.now() + 48 * 60 * 60 * 1000;
+                  const [datePart, timePart] = deadlineInput.split('T');
+                  if (datePart && timePart) {
+                      const [year, month, day] = datePart.split('-').map(Number);
+                      const [hours, minutes] = timePart.split(':').map(Number);
+                      return new Date(year, month - 1, day, hours, minutes).getTime();
+                  }
+                  return Date.now() + 48 * 60 * 60 * 1000;
+              })(),
               estimatedCost: formData.estimatedCost || 0, 
+              totalAmount: formData.totalAmount || formData.estimatedCost || 0,
               purchaseCost: formData.purchaseCost || 0,
               targetPrice: formData.targetPrice || 0,
               history: [{ date: new Date().toISOString(), status: OrderStatus.PENDING, note: "Orden creada", technician: currentUser?.name || 'Sistema' }],
@@ -311,6 +430,18 @@ export const Intake = () => {
 
       {showVideoRecorder && <VideoRecorderModal onCapture={processVideoInternal} onClose={() => setShowVideoRecorder(false)} />}
       {showCamera && <CameraCapture onCapture={(img) => setFormData({ ...formData, devicePhoto: img })} onClose={() => setShowCamera(false)} />}
+      {showCustomerSelect && (
+        <CustomerSelectModal
+          onSelect={(customer) => {
+            setFormData({
+              ...formData,
+              customer: { name: customer.name, phone: customer.phone }
+            });
+            setShowCustomerSelect(false);
+          }}
+          onClose={() => setShowCustomerSelect(false)}
+        />
+      )}
 
       {/* --- HEADER --- */}
       <div className="flex justify-between items-center mb-6">
@@ -321,8 +452,8 @@ export const Intake = () => {
             {orderType === OrderType.STORE ? 'Nuevo Recibido de Tienda' : orderType === OrderType.WARRANTY ? 'Ingreso por Garantía' : 'Nueva Reparación Cliente'}
         </h1>
         <div className="bg-slate-900 text-white px-4 py-2 rounded-lg text-right shadow-lg">
-            <p className="text-[10px] text-slate-400 font-bold uppercase">PRÓXIMO # DE ORDEN</p>
-            <p className="text-xl font-mono font-bold leading-none">#{nextId}</p>
+            <p className="text-[10px] text-slate-400 font-bold uppercase">NUEVO INGRESO</p>
+            <p className="text-xl font-mono font-bold leading-none">EQUIPO</p>
         </div>
       </div>
 
@@ -358,10 +489,22 @@ export const Intake = () => {
           {/* 1. CLIENT / SOURCE SECTION */}
           <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm relative overflow-hidden">
               <div className={`absolute top-0 left-0 w-1 h-full ${theme.bg}`}></div>
-              <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
-                  <User className={`w-4 h-4 ${theme.text}`}/> 
-                  {orderType === OrderType.STORE ? 'Procedencia (Vendedor/Origen)' : 'Datos del Cliente'}
-              </h3>
+              <div className="flex justify-between items-center mb-4">
+                  <h3 className="font-bold text-slate-800 flex items-center gap-2">
+                      <User className={`w-4 h-4 ${theme.text}`}/> 
+                      {orderType === OrderType.STORE ? 'Procedencia (Vendedor/Origen)' : 'Datos del Cliente'}
+                  </h3>
+                  {orderType !== OrderType.STORE && (
+                      <button
+                          type="button"
+                          onClick={() => setShowCustomerSelect(true)}
+                          className="text-xs font-bold text-blue-600 bg-blue-50 px-3 py-1.5 rounded-lg hover:bg-blue-100 transition-colors flex items-center gap-1"
+                      >
+                          <Search className="w-3 h-3" />
+                          Buscar Cliente
+                      </button>
+                  )}
+              </div>
               
               {orderType === OrderType.STORE ? (
                   <div>
@@ -377,6 +520,38 @@ export const Intake = () => {
                       <div>
                           <label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">TELÉFONO / WHATSAPP</label>
                           <input required className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl" value={formData.customer?.phone} onChange={e => setFormData({...formData, customer: { ...formData.customer!, phone: e.target.value }})} placeholder="Ej. 809-555-5555"/>
+                      </div>
+                  </div>
+              )}
+
+              {/* Customer History Summary */}
+              {orderType !== OrderType.STORE && customerHistory && (
+                  <div className="mt-4 p-4 bg-slate-50 border border-slate-200 rounded-xl flex flex-wrap gap-4 items-center justify-between animate-in fade-in slide-in-from-top-2">
+                      <div className="flex items-center gap-2">
+                          <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center text-blue-600">
+                              <User className="w-5 h-5" />
+                          </div>
+                          <div>
+                              <p className="text-xs font-bold text-slate-500 uppercase">Historial del Cliente</p>
+                              <p className="text-sm font-black text-slate-800">{customerHistory.visits} Visitas Registradas</p>
+                          </div>
+                      </div>
+                      
+                      <div className="flex gap-4">
+                          <div className="text-center px-4 border-r border-slate-200">
+                              <p className="text-[10px] font-bold text-slate-400 uppercase">Total Gastado</p>
+                              <p className="text-sm font-black text-green-600">${customerHistory.totalSpent.toLocaleString()}</p>
+                          </div>
+                          <div className="text-center px-4 border-r border-slate-200">
+                              <p className="text-[10px] font-bold text-slate-400 uppercase">Equipos Activos</p>
+                              <p className="text-sm font-black text-blue-600">{customerHistory.active}</p>
+                          </div>
+                          <div className="text-center px-4">
+                              <p className="text-[10px] font-bold text-slate-400 uppercase">Abandonados</p>
+                              <p className={`text-sm font-black ${customerHistory.abandoned > 0 ? 'text-red-600' : 'text-slate-600'}`}>
+                                  {customerHistory.abandoned}
+                              </p>
+                          </div>
                       </div>
                   </div>
               )}
@@ -440,6 +615,19 @@ export const Intake = () => {
                           <div>
                               <label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block text-red-500 flex items-center gap-1"><Smartphone className="w-3 h-3"/> IMEI / SERIE *</label>
                               <input required className="w-full p-2.5 bg-white border border-slate-200 rounded-xl text-sm font-mono uppercase placeholder:text-slate-300" value={formData.imei} onChange={e => setFormData({...formData, imei: e.target.value})} placeholder="OBLIGATORIO"/>
+                              
+                              {warrantyAlert && (
+                                  <div className="mt-2 p-2 bg-amber-50 border border-amber-200 rounded-lg flex items-start gap-2 animate-in fade-in">
+                                      <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+                                      <div>
+                                          <p className="text-[10px] font-bold text-amber-800 uppercase">Posible Garantía</p>
+                                          <p className="text-[10px] text-amber-700 leading-tight">
+                                              Reparado hace {warrantyAlert.daysAgo} días (Orden #{warrantyAlert.orderId}).<br/>
+                                              <span className="font-medium opacity-80">Falla anterior: {warrantyAlert.issue}</span>
+                                          </p>
+                                      </div>
+                                  </div>
+                              )}
                           </div>
                           <div>
                               <label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block flex items-center gap-1"><Lock className="w-3 h-3"/> CONTRASEÑA / PATRÓN</label>
@@ -512,16 +700,41 @@ export const Intake = () => {
                                       type="number" 
                                       className="w-full pl-6 p-3 bg-white border border-transparent rounded-xl text-2xl font-bold text-slate-700 outline-none focus:ring-2 focus:ring-opacity-50 shadow-sm"
                                       value={orderType === OrderType.STORE ? formData.purchaseCost : formData.estimatedCost}
-                                      onChange={e => setFormData(prev => ({
-                                          ...prev, 
-                                          [orderType === OrderType.STORE ? 'purchaseCost' : 'estimatedCost']: parseFloat(e.target.value) 
-                                      }))}
+                                      onChange={e => {
+                                          const val = parseFloat(e.target.value) || 0;
+                                          setFormData(prev => ({
+                                              ...prev, 
+                                              [orderType === OrderType.STORE ? 'purchaseCost' : 'estimatedCost']: val,
+                                              totalAmount: orderType === OrderType.REPAIR ? val : prev.totalAmount
+                                          }));
+                                      }}
                                       placeholder="0.00"
                                   />
                               </div>
                               <p className={`text-[10px] mt-1 ${orderType === OrderType.STORE ? 'text-red-500' : 'text-green-600'}`}>
                                   {orderType === OrderType.STORE ? 'Cuánto pagó el taller por este equipo. No afecta caja diaria.' : 'Deje en 0 si es a revisar.'}
                               </p>
+                              
+                              {orderType === OrderType.REPAIR && (
+                                  <div className="mt-4 pt-4 border-t border-green-100">
+                                      <label className="text-[10px] font-bold uppercase mb-1 block text-green-700">
+                                          TOTAL FINAL ESTIMADO (CON REPUESTOS)
+                                      </label>
+                                      <div className="relative">
+                                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold">$</span>
+                                          <input 
+                                              type="number" 
+                                              className="w-full pl-6 p-2 bg-white border border-green-200 rounded-lg text-lg font-bold text-slate-700 outline-none focus:ring-2 focus:ring-green-100"
+                                              value={formData.totalAmount || formData.estimatedCost}
+                                              onChange={e => setFormData(prev => ({
+                                                  ...prev, 
+                                                  totalAmount: parseFloat(e.target.value) || 0
+                                              }))}
+                                              placeholder="0.00"
+                                          />
+                                      </div>
+                                  </div>
+                              )}
                           </>
                       )}
                   </div>

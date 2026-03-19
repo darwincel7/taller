@@ -12,6 +12,7 @@ interface ExpensesAndPartsProps {
   canViewAccounting: boolean;
   canEdit: boolean;
   onAddExpense: (desc: string, amount: number) => Promise<void>;
+  onAddExpenses?: (expensesToAdd: {desc: string, amount: number, receiptUrl?: string, sharedReceiptId?: string}[]) => Promise<void>;
   onRemoveExpense: (id: string) => Promise<void>;
   onEditExpense: (id: string, desc: string, amount: number) => Promise<void>;
   handleUpdatePrice: (reason?: string) => void;
@@ -26,6 +27,7 @@ export const ExpensesAndParts: React.FC<ExpensesAndPartsProps> = ({
   canViewAccounting,
   canEdit,
   onAddExpense,
+  onAddExpenses,
   onRemoveExpense,
   onEditExpense,
   handleUpdatePrice
@@ -42,6 +44,7 @@ export const ExpensesAndParts: React.FC<ExpensesAndPartsProps> = ({
         setFinalPriceInput={setFinalPriceInput}
         isSaving={false}
         onAddExpense={onAddExpense}
+        onAddExpenses={onAddExpenses}
         onRemoveExpense={onRemoveExpense}
         onEditExpense={onEditExpense}
         canEdit={canEdit}

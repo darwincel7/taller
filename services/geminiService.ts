@@ -2,15 +2,10 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { RepairOrder, ChatMessage } from "../types";
 
-/* Fix: The API key must be obtained exclusively from the environment variable process.env.API_KEY. */
-const getApiKey = () => {
-    return "AIzaSyDpyxDaoeoYRyFTYStdszfmh7ZL4C6kUFo";
-};
-
 // Lazy initialization wrapper
 const getAiClient = () => {
-    const key = getApiKey();
-    if (!key) throw new Error("API Key not found. Please configure VITE_GEMINI_API_KEY.");
+    const key = process.env.GEMINI_API_KEY;
+    if (!key) throw new Error("API Key not found.");
     return new GoogleGenAI({ apiKey: key });
 };
 
@@ -65,6 +60,89 @@ export const transcribeAudio = async (base64Audio: string): Promise<string> => {
     } catch (e) {
         console.error(e);
         return "Error en transcripción";
+    }
+};
+
+export interface ExtractedArticle {
+  description: string;
+  amount: number;
+}
+
+export interface ExtractedInvoice {
+  invoiceNumber: string | null;
+  articles: ExtractedArticle[];
+}
+
+export const urlToBase64 = async (url: string): Promise<string> => {
+  const response = await fetch(url);
+  const blob = await response.blob();
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const base64String = reader.result as string;
+      resolve(base64String.split(',')[1]);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+};
+
+export const analyzeInvoiceImage = async (base64Image: string): Promise<ExtractedInvoice | null> => {
+    try {
+        const ai = getAiClient();
+        const prompt = `
+        Analiza esta imagen de una factura o recibo de forma detallada.
+        Extrae la siguiente información:
+        1. Número de factura (invoiceNumber): Busca un número de factura, recibo o código de facturación. Si no hay, retorna null.
+        2. Artículos (articles): Una lista completa de TODOS los artículos o servicios comprados que aparecen en la factura.
+           - Para cada artículo, extrae la descripción exacta (description) y el monto/precio total de ese artículo (amount).
+           - ¡IMPORTANTE! Debes desglosar la factura. Si hay 5 artículos, debes devolver 5 objetos en la lista de artículos.
+           - ¡IMPORTANTE! Pon especial énfasis en identificar costos de "combustible", "delivery", "envío", "mensajería" o "transporte".
+           - Si encuentras un costo de combustible/delivery/envío, DEBES SUMAR ese monto al precio del PRIMER artículo de la lista, y NO crear un artículo separado para el envío.
+           - Si solo hay un artículo de envío y nada más, entonces sí déjalo como un artículo.
+           - Si hay múltiples artículos, suma el costo de envío al primer artículo.
+        
+        Retorna un JSON exacto que refleje fielmente cada ítem de la factura para que el cajero solo tenga que revisar y aceptar.
+        `;
+
+        const response = await ai.models.generateContent({
+            model: 'gemini-3-flash-preview',
+            contents: {
+                parts: [
+                    { inlineData: { mimeType: 'image/jpeg', data: base64Image } },
+                    { text: prompt }
+                ]
+            },
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: {
+                    type: Type.OBJECT,
+                    properties: {
+                        invoiceNumber: { type: Type.STRING, description: "Número de factura o recibo. Null si no se encuentra." },
+                        articles: {
+                            type: Type.ARRAY,
+                            items: {
+                                type: Type.OBJECT,
+                                properties: {
+                                    description: { type: Type.STRING },
+                                    amount: { type: Type.NUMBER }
+                                },
+                                required: ["description", "amount"]
+                            }
+                        }
+                    },
+                    required: ["articles"]
+                }
+            }
+        });
+
+        const jsonStr = response.text?.trim();
+        if (!jsonStr) return null;
+        
+        return JSON.parse(jsonStr);
+    } catch (e) {
+        console.error("Error analyzing invoice:", e);
+        return null;
     }
 };
 
@@ -155,6 +233,31 @@ export const analyzeVideoForIntake = async (frameImages: string[]): Promise<any>
     } catch (e: any) {
         console.error("Error en Gemini Video Analysis:", e);
         throw new Error("Error analizando las imágenes. Intenta enfocar mejor el equipo.");
+    }
+};
+
+export const analyzeProfitability = async (profitabilityData: any[]): Promise<string> => {
+    try {
+        const ai = getAiClient();
+        const prompt = `Actúa como un consultor de negocios experto para un taller de reparación de celulares.
+    Analiza los siguientes datos de rentabilidad por modelo de este mes:
+    ${JSON.stringify(profitabilityData)}
+    
+    Provee un reporte breve (máximo 3 párrafos) en español que:
+    1. Identifique los modelos con menor margen de ganancia.
+    2. Sugiera ajustes de precios específicos (ej. "Sube un 10% en iPhone 13").
+    3. Mencione si algún costo está siendo inusualmente alto.
+    
+    Usa un tono profesional y accionable.`;
+
+        const response = await ai.models.generateContent({
+            model: 'gemini-3-flash-preview',
+            contents: { parts: [{ text: prompt }] }
+        });
+        return response.text || "No se pudo generar el análisis.";
+    } catch (e) {
+        console.error(e);
+        return "Error generando análisis de rentabilidad.";
     }
 };
 

@@ -1,26 +1,78 @@
 import React, { useState, useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { useOrders } from '../contexts/OrderContext';
 import { useAuth } from '../contexts/AuthContext';
-import { PartRequest, OrderType, RepairOrder } from '../types';
-import { Search, Filter, CheckCircle, XCircle, Clock, ShoppingBag, ArrowRight, Package, User, LayoutGrid, List } from 'lucide-react';
+import { PartRequest, OrderType, RepairOrder, OrderStatus, PriorityLevel, RequestStatus, LogType } from '../types';
+import { Search, Filter, CheckCircle, XCircle, Clock, ShoppingBag, ArrowRight, Package, User, LayoutGrid, List, Plus, Loader2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { orderService } from '../services/orderService';
 
 export const PartsPanel: React.FC = () => {
-    const { orders, resolvePartRequest } = useOrders();
+    const { resolvePartRequest, addOrder } = useOrders();
     const { currentUser } = useAuth();
     const navigate = useNavigate();
     
+    const { data: orders = [], isLoading } = useQuery({
+        queryKey: ['ordersWithPartRequests'],
+        queryFn: () => orderService.getOrdersWithPartRequests(),
+        refetchInterval: 1000 * 60 // Refetch every minute
+    });
+
     const [filter, setFilter] = useState<'ALL' | 'PENDING' | 'HISTORY'>('PENDING');
     const [viewMode, setViewMode] = useState<'PARTS' | 'ORDERS'>('PARTS');
     const [searchTerm, setSearchTerm] = useState('');
     const [selectedRequest, setSelectedRequest] = useState<PartRequest | null>(null);
     const [showResolveModal, setShowResolveModal] = useState(false);
-    const [resolveStatus, setResolveStatus] = useState<'FOUND' | 'NOT_FOUND'>('FOUND');
+    const [resolveStatus, setResolveStatus] = useState<RequestStatus.FOUND | RequestStatus.NOT_FOUND>(RequestStatus.FOUND);
     
     // Resolve Form
     const [source, setSource] = useState('');
     const [price, setPrice] = useState('');
     const [notes, setNotes] = useState('');
+
+    // Independent Part Request Form
+    const [showIndependentModal, setShowIndependentModal] = useState(false);
+    const [independentPartName, setIndependentPartName] = useState('');
+    const [independentNotes, setIndependentNotes] = useState('');
+
+    const handleCreateIndependentPart = async () => {
+        if (!independentPartName.trim() || !currentUser) return;
+
+        const orderId = `ind-${Date.now()}`;
+        const newOrder: RepairOrder = {
+            id: orderId,
+            orderType: OrderType.PART_ONLY,
+            customer: { name: 'Taller Interno', phone: '0000000000', id: 'taller' },
+            deviceModel: 'Pieza Independiente',
+            deviceIssue: independentPartName,
+            deviceCondition: 'N/A',
+            status: OrderStatus.PENDING,
+            priority: PriorityLevel.NORMAL,
+            createdAt: Date.now(),
+            deadline: Date.now() + 7 * 24 * 60 * 60 * 1000,
+            estimatedCost: 0,
+            history: [{
+                date: new Date().toISOString(),
+                status: OrderStatus.PENDING,
+                note: `Pieza solicitada: ${independentPartName}`,
+                technician: currentUser.name,
+                logType: LogType.INFO
+            }],
+            partRequests: [{
+                id: `pr-${Date.now()}`,
+                orderId: orderId,
+                partName: independentPartName,
+                requestedBy: currentUser.name,
+                requestedAt: Date.now(),
+                status: RequestStatus.PENDING
+            }]
+        };
+
+        await addOrder(newOrder);
+        setShowIndependentModal(false);
+        setIndependentPartName('');
+        setIndependentNotes('');
+    };
 
     // Aggregate all requests
     const allRequests = useMemo(() => {
@@ -33,7 +85,8 @@ export const PartsPanel: React.FC = () => {
                         ...req,
                         orderReadableId: order.readable_id?.toString() || order.id.slice(0, 6),
                         orderModel: order.deviceModel,
-                        orderType: order.orderType
+                        orderType: order.orderType,
+                        imei: order.imei
                     });
                 });
             }
@@ -46,25 +99,29 @@ export const PartsPanel: React.FC = () => {
     }, [orders, filter]);
 
     const filteredRequests = useMemo(() => {
+        const term = searchTerm.toLowerCase();
         return allRequests.filter(req => {
-            const matchesSearch = req.partName.toLowerCase().includes(searchTerm.toLowerCase()) || 
-                                  req.orderModel?.toLowerCase().includes(searchTerm.toLowerCase());
+            const matchesSearch = req.partName.toLowerCase().includes(term) || 
+                                  req.orderModel?.toLowerCase().includes(term) ||
+                                  (req.orderId && req.orderId.toLowerCase().includes(term)) ||
+                                  (req.orderReadableId && req.orderReadableId.toLowerCase().includes(term)) ||
+                                  (req.imei && req.imei.toLowerCase().includes(term));
             
-            if (filter === 'PENDING') return req.status === 'PENDING' && matchesSearch;
-            if (filter === 'HISTORY') return req.status !== 'PENDING' && matchesSearch;
+            if (filter === 'PENDING') return req.status === RequestStatus.PENDING && matchesSearch;
+            if (filter === 'HISTORY') return req.status !== RequestStatus.PENDING && matchesSearch;
             return matchesSearch;
         });
     }, [allRequests, filter, searchTerm]);
 
     const ordersWaitingForParts = useMemo(() => {
         return orders.filter(o => 
-            o.partRequests?.some(r => r.status === 'PENDING')
+            o.partRequests?.some(r => r.status === RequestStatus.PENDING)
         );
     }, [orders]);
 
-    const pendingCount = allRequests.filter(r => r.status === 'PENDING').length;
+    const pendingCount = allRequests.filter(r => r.status === RequestStatus.PENDING).length;
 
-    const handleResolveClick = (req: PartRequest, status: 'FOUND' | 'NOT_FOUND') => {
+    const handleResolveClick = (req: PartRequest, status: RequestStatus.FOUND | RequestStatus.NOT_FOUND) => {
         setSelectedRequest(req);
         setResolveStatus(status);
         setSource('');
@@ -76,13 +133,15 @@ export const PartsPanel: React.FC = () => {
     const confirmResolve = async () => {
         if (!selectedRequest || !currentUser) return;
         
+        const numericPrice = parseFloat(price);
+        
         await resolvePartRequest(
             selectedRequest.orderId, 
             selectedRequest.id, 
             resolveStatus, 
             { 
-                source: resolveStatus === 'FOUND' ? source : undefined, 
-                price: resolveStatus === 'FOUND' ? parseFloat(price) : 0, 
+                source: resolveStatus === RequestStatus.FOUND ? source : undefined, 
+                price: resolveStatus === RequestStatus.FOUND ? (isNaN(numericPrice) ? 0 : numericPrice) : 0, 
                 notes 
             },
             currentUser.name
@@ -94,6 +153,7 @@ export const PartsPanel: React.FC = () => {
         switch(type) {
             case OrderType.STORE: return <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-purple-100 text-purple-700 border border-purple-200">STORE</span>;
             case OrderType.WARRANTY: return <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-orange-100 text-orange-700 border border-orange-200">GARANTÍA</span>;
+            case OrderType.PART_ONLY: return <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-slate-100 text-slate-700 border border-slate-200">INDEPENDIENTE</span>;
             default: return <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-blue-100 text-blue-700 border border-blue-200">CLIENTE</span>;
         }
     };
@@ -160,6 +220,14 @@ export const PartsPanel: React.FC = () => {
                             </button>
                         </div>
                     </div>
+                    
+                    <button
+                        onClick={() => setShowIndependentModal(true)}
+                        className="px-4 py-2.5 bg-blue-600 text-white rounded-xl font-bold shadow-sm hover:bg-blue-700 transition flex items-center gap-2"
+                    >
+                        <Plus className="w-4 h-4" />
+                        Solicitar Pieza
+                    </button>
                 </div>
             </div>
 
@@ -192,8 +260,8 @@ export const PartsPanel: React.FC = () => {
                             <div key={req.id} className="bg-white rounded-xl p-3 shadow-sm border border-slate-100 hover:shadow-md transition-all group relative overflow-hidden">
                                 {/* Status Stripe */}
                                 <div className={`absolute left-0 top-0 bottom-0 w-1 ${
-                                    req.status === 'PENDING' ? 'bg-blue-500' : 
-                                    req.status === 'FOUND' ? 'bg-green-500' : 'bg-red-500'
+                                    req.status === RequestStatus.PENDING ? 'bg-blue-500' : 
+                                    req.status === RequestStatus.FOUND ? 'bg-green-500' : 'bg-red-500'
                                 }`} />
 
                                 <div className="flex flex-col md:flex-row justify-between gap-3 pl-3">
@@ -218,11 +286,11 @@ export const PartsPanel: React.FC = () => {
                                         </div>
                                         
                                         {/* RESOLUTION DETAILS */}
-                                        {req.status !== 'PENDING' && (
+                                        {req.status !== RequestStatus.PENDING && (
                                             <div className={`mt-2 text-[10px] font-bold px-2 py-1 rounded-lg inline-flex items-center gap-1 ${
-                                                req.status === 'FOUND' ? 'bg-green-50 text-green-700 border border-green-100' : 'bg-red-50 text-red-700 border border-red-100'
+                                                req.status === RequestStatus.FOUND ? 'bg-green-50 text-green-700 border border-green-100' : 'bg-red-50 text-red-700 border border-red-100'
                                             }`}>
-                                                {req.status === 'FOUND' ? (
+                                                {req.status === RequestStatus.FOUND ? (
                                                     <><CheckCircle className="w-3 h-3" /> Encontrado en {req.source} (${req.price})</>
                                                 ) : (
                                                     <><XCircle className="w-3 h-3" /> No Encontrado</>
@@ -234,17 +302,17 @@ export const PartsPanel: React.FC = () => {
 
                                     {/* RIGHT: ACTIONS */}
                                     <div className="flex flex-col gap-1.5 min-w-[130px]">
-                                        {req.status === 'PENDING' ? (
+                                        {req.status === RequestStatus.PENDING ? (
                                             <div className="flex gap-1.5">
                                                 <button 
-                                                    onClick={() => handleResolveClick(req, 'FOUND')}
+                                                    onClick={() => handleResolveClick(req, RequestStatus.FOUND)}
                                                     className="flex-1 bg-green-50 text-green-700 hover:bg-green-100 border border-green-200 font-bold py-1.5 px-2 rounded-lg flex items-center justify-center gap-1 transition text-xs"
                                                     title="Marcar como Encontrada"
                                                 >
                                                     <CheckCircle className="w-3.5 h-3.5" />
                                                 </button>
                                                 <button 
-                                                    onClick={() => handleResolveClick(req, 'NOT_FOUND')}
+                                                    onClick={() => handleResolveClick(req, RequestStatus.NOT_FOUND)}
                                                     className="flex-1 bg-red-50 text-red-700 hover:bg-red-100 border border-red-200 font-bold py-1.5 px-2 rounded-lg flex items-center justify-center gap-1 transition text-xs"
                                                     title="Marcar como No Existe"
                                                 >
@@ -297,7 +365,7 @@ export const PartsPanel: React.FC = () => {
                                         </div>
                                         {/* Pending Parts Badge */}
                                         <div className="absolute bottom-3 left-3 bg-blue-600/90 backdrop-blur px-2 py-1 rounded-lg text-[10px] font-bold text-white shadow-sm uppercase tracking-wide">
-                                            {item.partRequests?.filter(r => r.status === 'PENDING').length} Piezas Pendientes
+                                            {item.partRequests?.filter(r => r.status === RequestStatus.PENDING).length} Piezas Pendientes
                                         </div>
                                     </div>
                                     <div className="p-5 flex-1 flex flex-col">
@@ -330,10 +398,10 @@ export const PartsPanel: React.FC = () => {
             {showResolveModal && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
                     <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden scale-100 animate-in zoom-in-95 duration-200">
-                        <div className={`p-4 flex items-center justify-between ${resolveStatus === 'FOUND' ? 'bg-green-600' : 'bg-red-600'}`}>
+                        <div className={`p-4 flex items-center justify-between ${resolveStatus === RequestStatus.FOUND ? 'bg-green-600' : 'bg-red-600'}`}>
                             <h3 className="text-white font-black text-lg flex items-center gap-2">
-                                {resolveStatus === 'FOUND' ? <CheckCircle className="w-6 h-6"/> : <XCircle className="w-6 h-6"/>}
-                                {resolveStatus === 'FOUND' ? 'Marcar como Encontrada' : 'Marcar como No Encontrada'}
+                                {resolveStatus === RequestStatus.FOUND ? <CheckCircle className="w-6 h-6"/> : <XCircle className="w-6 h-6"/>}
+                                {resolveStatus === RequestStatus.FOUND ? 'Marcar como Encontrada' : 'Marcar como No Encontrada'}
                             </h3>
                             <button onClick={() => setShowResolveModal(false)} className="text-white/80 hover:text-white"><XCircle className="w-6 h-6"/></button>
                         </div>
@@ -344,8 +412,8 @@ export const PartsPanel: React.FC = () => {
                                 <p className="font-black text-slate-800 text-lg">{selectedRequest?.partName}</p>
                                 <p className="text-sm text-slate-500">{selectedRequest?.orderModel}</p>
                             </div>
-
-                            {resolveStatus === 'FOUND' && (
+ 
+                            {resolveStatus === RequestStatus.FOUND && (
                                 <>
                                     <div>
                                         <label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Lugar de Compra / Fuente</label>
@@ -375,7 +443,7 @@ export const PartsPanel: React.FC = () => {
                                     </div>
                                 </>
                             )}
-
+ 
                             <div>
                                 <label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Notas Adicionales (Opcional)</label>
                                 <textarea 
@@ -386,17 +454,67 @@ export const PartsPanel: React.FC = () => {
                                     onChange={e => setNotes(e.target.value)}
                                 />
                             </div>
-
+ 
                             <button 
                                 onClick={confirmResolve}
-                                disabled={resolveStatus === 'FOUND' && (!source || !price)}
+                                disabled={resolveStatus === RequestStatus.FOUND && (!source || !price)}
                                 className={`w-full py-4 rounded-xl font-black text-white shadow-lg transform active:scale-95 transition-all ${
-                                    resolveStatus === 'FOUND' 
+                                    resolveStatus === RequestStatus.FOUND 
                                     ? 'bg-green-600 hover:bg-green-700 shadow-green-200' 
                                     : 'bg-red-600 hover:bg-red-700 shadow-red-200'
                                 } disabled:opacity-50 disabled:cursor-not-allowed`}
                             >
                                 Confirmar y Guardar
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            {/* INDEPENDENT PART MODAL */}
+            {showIndependentModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+                    <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden scale-100 animate-in zoom-in-95 duration-200">
+                        <div className="p-4 flex items-center justify-between bg-blue-600">
+                            <h3 className="text-white font-black text-lg flex items-center gap-2">
+                                <Package className="w-6 h-6"/>
+                                Solicitar Pieza Independiente
+                            </h3>
+                            <button onClick={() => setShowIndependentModal(false)} className="text-white/80 hover:text-white"><XCircle className="w-6 h-6"/></button>
+                        </div>
+                        
+                        <div className="p-6 space-y-4">
+                            <p className="text-sm text-slate-500 mb-4">
+                                Usa esta opción para pedir repuestos para stock del taller o herramientas que no estén ancladas a una orden de cliente específica.
+                            </p>
+
+                            <div>
+                                <label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Nombre de la Pieza / Herramienta</label>
+                                <input 
+                                    autoFocus
+                                    className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-medium outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                                    placeholder="Ej: Pantalla iPhone 13 Pro Max..."
+                                    value={independentPartName}
+                                    onChange={e => setIndependentPartName(e.target.value)}
+                                />
+                            </div>
+
+                            <div>
+                                <label className="text-xs font-bold text-slate-500 uppercase mb-1 block">Notas Adicionales (Opcional)</label>
+                                <textarea 
+                                    className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-medium outline-none focus:ring-2 focus:ring-slate-200"
+                                    placeholder="Detalles, proveedor sugerido, urgencia..."
+                                    rows={3}
+                                    value={independentNotes}
+                                    onChange={e => setIndependentNotes(e.target.value)}
+                                />
+                            </div>
+
+                            <button 
+                                onClick={handleCreateIndependentPart}
+                                disabled={!independentPartName.trim()}
+                                className="w-full py-4 rounded-xl font-black text-white shadow-lg transform active:scale-95 transition-all bg-blue-600 hover:bg-blue-700 shadow-blue-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                                Crear Solicitud
                             </button>
                         </div>
                     </div>

@@ -1,67 +1,128 @@
 
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState, useCallback } from 'react';
 import { useOrders } from '../contexts/OrderContext';
 import { useAuth } from '../contexts/AuthContext';
-import { UserRole, RepairOrder, OrderStatus, PriorityLevel, OrderType, DashboardStats } from '../types';
+import { UserRole, OrderStatus, DashboardStats } from '../types';
 import { 
   Trophy, Star, AlertCircle, LayoutDashboard, 
   ShoppingBag, CheckCircle2, 
   Clock, DollarSign, Activity, X, ChevronRight, FileSearch, Wrench, User, ArrowRightLeft, Eye, XCircle, TrendingUp, CalendarClock, Target, BellRing, MessageSquare, Split, HandCoins, Reply, ShieldCheck, Crown, Zap, Rocket, BarChart3, PieChart as PieIcon, ExternalLink, LineChart, Users, Building2, CalendarDays, CalendarRange, Loader2
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
+import { supabase } from '../services/supabase';
 import { 
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, 
   BarChart, Bar, Legend, PieChart, Pie, Cell, ComposedChart, Line
 } from 'recharts';
-import { fetchRealDashboardStats, fetchRevenueChartData, fetchAdvancedDashboardData, fetchTechnicianLeaderboard, fetchTechnicianPointsDetails } from '../services/analytics';
+import { 
+  fetchRealDashboardStats, 
+  fetchRevenueChartData, 
+  fetchAdvancedDashboardData, 
+  fetchTechnicianLeaderboard, 
+  fetchTechnicianPointsDetails,
+  fetchTechnicianPerformance,
+  fetchWarrantyReport,
+  fetchTopModels,
+  fetchProfitabilityData
+} from '../services/analytics';
+import { analyzeProfitability } from '../services/geminiService';
+import { orderService } from '../services/orderService';
+import Markdown from 'react-markdown';
 
 const DashboardComponent: React.FC = () => {
   const navigate = useNavigate();
-  const { orders } = useOrders(); // Still need orders for specific lists/alerts
-  const { currentUser, users } = useAuth();
+  const { users, currentUser } = useAuth();
   
-  // STATE FOR REAL DATA
-  const [realStats, setRealStats] = useState<DashboardStats>({
-      total: 0, priorities: 0, pending: 0, inRepair: 0, repaired: 0, returned: 0, storeStock: 0, 
-      totalRevenue: 0, totalExpenses: 0, totalProfit: 0, revenueByBranch: { t1: 0, t4: 0 } 
+  // Queries
+  const { data: realStats, isLoading: loadingStats } = useQuery({
+    queryKey: ['dashboard-stats'],
+    queryFn: fetchRealDashboardStats,
+    refetchInterval: 300000, // 5 minutes
   });
-  const [revenueChartData, setRevenueChartData] = useState<any[]>([]);
-  const [advancedData, setAdvancedData] = useState<any>(null);
-  const [leaderboard, setLeaderboard] = useState<{techId: string, points: number}[]>([]);
-  const [loadingStats, setLoadingStats] = useState(true);
+
+  const { data: branchCounts, isLoading: loadingBranchCounts } = useQuery({
+    queryKey: ['orderCounts', currentUser?.id, currentUser?.branch, currentUser?.role],
+    queryFn: () => {
+      if (!currentUser) return null;
+      return orderService.getOrderTabCounts(currentUser.id, currentUser.branch || 'T4', currentUser.role);
+    },
+    enabled: !!currentUser,
+    refetchInterval: 30000 // Refresh every 30 seconds
+  });
+
+  const { data: floatingExpensesCount = 0 } = useQuery({
+    queryKey: ['floating-expenses-count'],
+    queryFn: async () => {
+      const { count, error } = await supabase
+        .from('floating_expenses')
+        .select('*', { count: 'exact', head: true })
+        .neq('description', 'RECEIPT_UPLOAD_TRIGGER');
+      if (error) throw error;
+      return count || 0;
+    },
+    refetchInterval: 60000, // 1 minute
+  });
+
+  const { data: revenueChartData } = useQuery({
+    queryKey: ['revenue-chart'],
+    queryFn: fetchRevenueChartData,
+  });
+
+  const { data: advancedData } = useQuery({
+    queryKey: ['advanced-dashboard'],
+    queryFn: fetchAdvancedDashboardData,
+  });
+
+  const { data: leaderboard = [] } = useQuery({
+    queryKey: ['leaderboard'],
+    queryFn: fetchTechnicianLeaderboard,
+  });
+
+  const { data: techPerformance = [] } = useQuery({
+    queryKey: ['tech-performance'],
+    queryFn: fetchTechnicianPerformance,
+  });
+
+  const { data: warrantyReport = [] } = useQuery({
+    queryKey: ['warranty-report'],
+    queryFn: fetchWarrantyReport,
+  });
+
+  const { data: topModels = [] } = useQuery({
+    queryKey: ['top-models'],
+    queryFn: fetchTopModels,
+  });
+
+  const { data: profitabilityData = [] } = useQuery({
+    queryKey: ['profitability-data'],
+    queryFn: fetchProfitabilityData,
+  });
+
+  const isAdmin = currentUser?.role === UserRole.ADMIN;
+  const isSubAdmin = currentUser?.role === UserRole.SUB_ADMIN;
+  const isMonitor = currentUser?.role === UserRole.MONITOR;
+  const canViewFinancials = isAdmin || currentUser?.permissions?.canViewAccounting;
+  const canViewOperationalStats = isAdmin || isSubAdmin || isMonitor;
+
+  const { data: aiAnalysis, isLoading: loadingAiAnalysis } = useQuery({
+    queryKey: ['ai-profitability-analysis', profitabilityData],
+    queryFn: () => analyzeProfitability(profitabilityData),
+    enabled: !!profitabilityData && profitabilityData.length > 0 && canViewFinancials,
+  });
 
   // MODAL STATE FOR TECH POINTS
   const [selectedTechForPoints, setSelectedTechForPoints] = useState<string | null>(null);
-  const [techPointsDetails, setTechPointsDetails] = useState<any[]>([]);
-  const [loadingTechPoints, setLoadingTechPoints] = useState(false);
 
-  // FETCH ON MOUNT
-  useEffect(() => {
-      const loadData = async () => {
-          setLoadingStats(true);
-          const stats = await fetchRealDashboardStats();
-          const chart = await fetchRevenueChartData();
-          const adv = await fetchAdvancedDashboardData();
-          const lb = await fetchTechnicianLeaderboard();
-          
-          setRealStats(stats);
-          setRevenueChartData(chart);
-          setAdvancedData(adv);
-          setLeaderboard(lb);
-          setLoadingStats(false);
-      };
-      loadData();
-  }, []);
-
-  const isAdmin = currentUser?.role === UserRole.ADMIN;
+  const { data: techPointsDetails = [], isLoading: loadingTechPoints } = useQuery({
+    queryKey: ['tech-points', selectedTechForPoints],
+    queryFn: () => fetchTechnicianPointsDetails(selectedTechForPoints!),
+    enabled: !!selectedTechForPoints,
+  });
   
-  const handleTechClick = async (techId: string) => {
+  const handleTechClick = useCallback((techId: string) => {
       setSelectedTechForPoints(techId);
-      setLoadingTechPoints(true);
-      const details = await fetchTechnicianPointsDetails(techId);
-      setTechPointsDetails(details);
-      setLoadingTechPoints(false);
-  };
+  }, []);
   
   // NOTE: Keep existing `orders` logic for specific alerts/lists (like "My Tech Alerts") 
   // because those usually involve recent/active orders which ARE in the context.
@@ -81,6 +142,27 @@ const DashboardComponent: React.FC = () => {
             </div>
         </div>
       </div>
+
+      {/* FLOATING EXPENSES ALERT */}
+      {canViewFinancials && floatingExpensesCount > 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex items-center justify-between animate-in fade-in slide-in-from-top-4 duration-500">
+          <div className="flex items-center gap-4">
+            <div className="bg-amber-100 p-3 rounded-xl text-amber-600">
+              <HandCoins className="w-6 h-6" />
+            </div>
+            <div>
+              <h3 className="font-bold text-amber-900">Gastos Pendientes de Asignar</h3>
+              <p className="text-sm text-amber-700">Hay <span className="font-black">{floatingExpensesCount}</span> gastos en el "Limbo" esperando ser asignados a una orden.</p>
+            </div>
+          </div>
+          <button 
+            onClick={() => navigate('/orders')}
+            className="bg-amber-600 hover:bg-amber-700 text-white px-4 py-2 rounded-xl text-sm font-bold transition-colors flex items-center gap-2"
+          >
+            Ver Órdenes <ChevronRight className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {/* --- LEADERBOARD (VISIBLE TO ALL) --- */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -108,6 +190,8 @@ const DashboardComponent: React.FC = () => {
                               const rankColor = index === 0 ? 'text-yellow-400' : index === 1 ? 'text-slate-300' : index === 2 ? 'text-amber-600' : 'text-slate-500';
                               const bgColor = index === 0 ? 'bg-yellow-500/10 border-yellow-500/50' : index === 1 ? 'bg-slate-500/10 border-slate-500/50' : index === 2 ? 'bg-amber-600/10 border-amber-600/50' : 'bg-slate-800/50 border-slate-700';
                               
+                              const techPerf = techPerformance.find(p => p.techId === entry.techId);
+                              
                               return (
                                   <div 
                                       key={entry.techId} 
@@ -119,7 +203,15 @@ const DashboardComponent: React.FC = () => {
                                       </div>
                                       <div className="flex-1">
                                           <p className="font-bold text-white truncate">{user?.name || 'Técnico'}</p>
-                                          <p className="text-xs text-slate-400">{user?.role || 'N/A'}</p>
+                                          <div className="flex items-center gap-2 mt-1">
+                                              <span className="text-[10px] text-slate-400 uppercase tracking-wider">{user?.role || 'N/A'}</span>
+                                              {techPerf && (
+                                                  <>
+                                                      <span className="text-slate-600">•</span>
+                                                      <span className="text-[10px] text-green-400 font-bold">{Math.floor(techPerf.successRate)}% Éxito</span>
+                                                  </>
+                                              )}
+                                          </div>
                                       </div>
                                       <div className="text-right">
                                           <p className="text-2xl font-black text-white">{entry.points}</p>
@@ -139,31 +231,33 @@ const DashboardComponent: React.FC = () => {
           </div>
       </div>
 
-      {/* --- ADMIN DASHBOARD --- */}
-      {isAdmin && (
+      {/* --- ADMIN & MANAGEMENT DASHBOARD --- */}
+      {(canViewFinancials || canViewOperationalStats) && (
       <div className="space-y-8">
           {/* 1. KEY METRICS (NOW USING REAL DB STATS) */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 md:gap-6">
             <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 flex flex-col justify-between">
                 <div className="flex justify-between items-start mb-2"><div className="bg-red-50 p-2 rounded-lg text-red-600"><ShoppingBag className="w-5 h-5"/></div><span className="text-xs font-bold text-red-600 uppercase tracking-wider bg-red-50 px-2 py-1 rounded">RECIBIDOS</span></div>
-                <div className="text-3xl font-bold text-slate-800">{loadingStats ? '...' : realStats.storeStock}</div><p className="text-xs text-slate-500">Equipos en Venta</p>
+                <div className="text-3xl font-bold text-slate-800">{loadingBranchCounts ? '...' : branchCounts?.store || 0}</div><p className="text-xs text-slate-500">Equipos en Venta</p>
             </div>
             <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 flex flex-col justify-between border-l-4 border-l-orange-500">
                 <div className="flex justify-between items-start mb-2"><div className="bg-orange-50 p-2 rounded-lg text-orange-600"><Clock className="w-5 h-5"/></div><span className="text-xs font-black text-orange-600 uppercase tracking-widest">PENDIENTES...</span></div>
-                <div className="text-3xl font-bold text-slate-800">{loadingStats ? '...' : realStats.pending}</div><p className="text-xs text-slate-500">Por Revisar</p>
+                <div className="text-3xl font-bold text-slate-800">{loadingBranchCounts ? '...' : branchCounts?.pending || 0}</div><p className="text-xs text-slate-500">Por Revisar</p>
             </div>
             <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 flex flex-col justify-between">
                 <div className="flex justify-between items-start mb-2"><div className="bg-indigo-50 p-2 rounded-lg text-indigo-600"><Wrench className="w-5 h-5"/></div><span className="text-xs font-bold text-slate-400 uppercase">Reparación</span></div>
-                <div className="text-3xl font-bold text-slate-800">{loadingStats ? '...' : realStats.inRepair}</div><p className="text-xs text-slate-500">En Proceso</p>
+                <div className="text-3xl font-bold text-slate-800">{loadingBranchCounts ? '...' : branchCounts?.inRepair || 0}</div><p className="text-xs text-slate-500">En Proceso</p>
             </div>
-            <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 flex flex-col justify-between">
-                <div className="flex justify-between items-start mb-2"><div className="bg-green-50 p-2 rounded-lg text-green-600"><CheckCircle2 className="w-5 h-5"/></div><span className="text-xs font-bold text-slate-400 uppercase">Ingresos Hist.</span></div>
-                <div className="text-3xl font-bold text-slate-800 tracking-tight">{loadingStats ? '...' : `$${realStats.totalRevenue.toLocaleString()}`}</div><p className="text-xs text-slate-500">Total Facturado</p>
-            </div>
+            {canViewFinancials && (
+              <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 flex flex-col justify-between">
+                  <div className="flex justify-between items-start mb-2"><div className="bg-green-50 p-2 rounded-lg text-green-600"><CheckCircle2 className="w-5 h-5"/></div><span className="text-xs font-bold text-slate-400 uppercase">Ingresos Hist.</span></div>
+                  <div className="text-3xl font-bold text-slate-800 tracking-tight">{loadingStats ? '...' : `$${realStats?.totalRevenue.toLocaleString()}`}</div><p className="text-xs text-slate-500">Total Facturado</p>
+              </div>
+            )}
           </div>
 
           {/* 2. SALES PERFORMANCE & PROJECTIONS */}
-          {advancedData && (
+          {canViewFinancials && advancedData && (
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
               {[
                   { label: 'Ventas Hoy', data: advancedData.sales.day, icon: CalendarDays, color: 'blue' },
@@ -191,6 +285,22 @@ const DashboardComponent: React.FC = () => {
                               <span className="text-3xl font-black text-slate-800">${Math.floor(item.data.current).toLocaleString()}</span>
                               <span className="text-xs font-bold text-slate-400">actual</span>
                           </div>
+                          
+                          {idx === 0 && (item.data as any).t1 !== undefined && (item.data as any).t4 !== undefined && (
+                              <div className="flex gap-4 mb-3 text-xs">
+                                  <div className="flex items-center gap-1">
+                                      <span className="w-2 h-2 rounded-full bg-blue-500"></span>
+                                      <span className="text-slate-500">T1:</span>
+                                      <span className="font-bold text-slate-700">${Math.floor((item.data as any).t1).toLocaleString()}</span>
+                                  </div>
+                                  <div className="flex items-center gap-1">
+                                      <span className="w-2 h-2 rounded-full bg-indigo-500"></span>
+                                      <span className="text-slate-500">T4:</span>
+                                      <span className="font-bold text-slate-700">${Math.floor((item.data as any).t4).toLocaleString()}</span>
+                                  </div>
+                              </div>
+                          )}
+
                           <div className="flex items-center gap-2 mb-4">
                               <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
                                   <div 
@@ -216,7 +326,7 @@ const DashboardComponent: React.FC = () => {
           )}
 
           {/* 3. ORDER FLOW (IN vs OUT) */}
-          {advancedData && (
+          {canViewOperationalStats && advancedData && (
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
               {[
                   { label: 'Flujo Hoy', data: advancedData.flow.day, icon: ArrowRightLeft, color: 'emerald' },
@@ -280,8 +390,135 @@ const DashboardComponent: React.FC = () => {
           </div>
           )}
 
-          {/* 4. CHARTS SECTION (REAL DATA) */}
-          {loadingStats ? (
+          {/* 4. NEW ANALYTICS: TOP MODELS & WARRANTIES */}
+          {canViewOperationalStats && (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* TOP MODELS */}
+              <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                  <div className="flex items-center justify-between mb-6">
+                      <h3 className="font-bold text-slate-800 flex items-center gap-2">
+                          <Rocket className="w-5 h-5 text-blue-500" />
+                          Top 3 Modelos (Este Mes)
+                      </h3>
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Volumen de Entrada</span>
+                  </div>
+                  <div className="space-y-4">
+                      {topModels.length > 0 ? topModels.map((m, i) => (
+                          <div key={i} className="flex items-center gap-4 p-3 rounded-xl bg-slate-50 border border-slate-100">
+                              <div className={`w-10 h-10 rounded-lg flex items-center justify-center font-black text-lg ${i === 0 ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-600'}`}>
+                                  {i + 1}
+                              </div>
+                              <div className="flex-1">
+                                  <p className="font-bold text-slate-800">{m.model}</p>
+                                  <p className="text-xs text-slate-500">{m.count} ingresos este mes</p>
+                              </div>
+                              <div className="text-right">
+                                  <div className="text-xl font-black text-slate-800">{m.count}</div>
+                                  <div className="text-[9px] font-bold text-slate-400 uppercase">Órdenes</div>
+                              </div>
+                          </div>
+                      )) : (
+                          <p className="text-center py-8 text-slate-400 italic">No hay datos suficientes este mes.</p>
+                      )}
+                  </div>
+              </div>
+
+              {/* WARRANTY REPORT */}
+              <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                  <div className="flex items-center justify-between mb-6">
+                      <h3 className="font-bold text-slate-800 flex items-center gap-2">
+                          <ShieldCheck className="w-5 h-5 text-red-500" />
+                          Reporte de Garantías
+                      </h3>
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Calidad de Reparación</span>
+                  </div>
+                  <div className="space-y-4">
+                      {warrantyReport.length > 0 ? warrantyReport.slice(0, 3).map((w, i) => {
+                          const user = users.find(u => u.id === w.techId);
+                          return (
+                              <div key={i} className="flex items-center gap-4 p-3 rounded-xl bg-slate-50 border border-slate-100">
+                                  <div className="w-10 h-10 rounded-full bg-slate-200 flex items-center justify-center overflow-hidden">
+                                      {user?.avatar ? <img src={user.avatar} alt="" className="w-full h-full object-cover" /> : <User className="w-5 h-5 text-slate-400" />}
+                                  </div>
+                                  <div className="flex-1">
+                                      <p className="font-bold text-slate-800">{user?.name || 'Técnico'}</p>
+                                      <div className="flex items-center gap-2 mt-1">
+                                          <div className="flex-1 h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                                              <div 
+                                                  className={`h-full rounded-full ${w.warrantyRate > 10 ? 'bg-red-500' : 'bg-green-500'}`}
+                                                  style={{ width: `${Math.min(100, w.warrantyRate * 5)}%` }}
+                                              />
+                                          </div>
+                                          <span className={`text-[10px] font-black ${w.warrantyRate > 10 ? 'text-red-600' : 'text-green-600'}`}>
+                                              {w.warrantyRate.toFixed(1)}%
+                                          </span>
+                                      </div>
+                                  </div>
+                                  <div className="text-right">
+                                      <div className="text-xl font-black text-slate-800">{w.totalWarranties}</div>
+                                      <div className="text-[9px] font-bold text-slate-400 uppercase">Garantías</div>
+                                  </div>
+                              </div>
+                          );
+                      }) : (
+                          <p className="text-center py-8 text-slate-400 italic">No hay garantías registradas.</p>
+                      )}
+                  </div>
+              </div>
+          </div>
+          )}
+
+          {/* 5. AI PROFITABILITY ANALYSIS */}
+          {canViewFinancials && aiAnalysis && (
+          <div className="bg-gradient-to-br from-indigo-600 to-purple-700 rounded-3xl p-8 text-white shadow-2xl relative overflow-hidden">
+              <div className="absolute top-0 right-0 p-12 opacity-10">
+                  <Zap className="w-64 h-64" />
+              </div>
+              <div className="relative z-10">
+                  <div className="flex items-center gap-3 mb-6">
+                      <div className="p-3 bg-white/20 rounded-2xl backdrop-blur-md">
+                          <Rocket className="w-8 h-8 text-white" />
+                      </div>
+                      <div>
+                          <h2 className="text-2xl font-black">Análisis de Rentabilidad IA</h2>
+                          <p className="text-indigo-100 text-sm">Reporte mensual generado por Darwin AI</p>
+                      </div>
+                  </div>
+
+                  <div className="bg-white/10 backdrop-blur-md rounded-2xl p-6 border border-white/20">
+                      {loadingAiAnalysis ? (
+                          <div className="flex flex-col items-center justify-center py-12">
+                              <Loader2 className="w-10 h-10 animate-spin mb-4" />
+                              <p className="font-bold animate-pulse">Darwin está analizando tus márgenes...</p>
+                          </div>
+                      ) : aiAnalysis ? (
+                          <div className="prose prose-invert max-w-none">
+                              <div className="markdown-body bg-transparent text-white">
+                                  <Markdown>{aiAnalysis}</Markdown>
+                              </div>
+                          </div>
+                      ) : (
+                          <p className="text-center py-8 text-indigo-200 italic">No hay suficientes datos de ventas este mes para realizar un análisis.</p>
+                      )}
+                  </div>
+
+                  <div className="mt-6 flex flex-wrap gap-4">
+                      {profitabilityData.slice(0, 3).map((p, i) => (
+                          <div key={i} className="bg-white/5 rounded-xl px-4 py-2 border border-white/10">
+                              <span className="text-[10px] font-bold text-indigo-200 uppercase block">{p.model}</span>
+                              <span className={`text-sm font-black ${p.margin < 20 ? 'text-red-300' : 'text-green-300'}`}>
+                                  Margen: {p.margin.toFixed(1)}%
+                              </span>
+                          </div>
+                      ))}
+                  </div>
+              </div>
+          </div>
+          )}
+
+          {/* 6. CHARTS SECTION (REAL DATA) */}
+          {canViewFinancials && (
+          loadingStats ? (
             <div className="flex justify-center items-center h-64 w-full">
                 <Loader2 className="w-8 h-8 text-blue-500 animate-spin" />
             </div>
@@ -315,10 +552,10 @@ const DashboardComponent: React.FC = () => {
                           <PieChart>
                               <Pie
                                   data={[
-                                      { name: 'Pendiente', value: realStats.pending, color: '#ef4444' },
-                                      { name: 'En Reparación', value: realStats.inRepair, color: '#3b82f6' },
-                                      { name: 'En Tienda', value: realStats.storeStock, color: '#8b5cf6' },
-                                      { name: 'Reparado', value: realStats.repaired || 0, color: '#22c55e' }
+                                      { name: 'Pendiente', value: branchCounts?.pending || 0, color: '#ef4444' },
+                                      { name: 'En Reparación', value: branchCounts?.inRepair || 0, color: '#3b82f6' },
+                                      { name: 'En Tienda', value: branchCounts?.store || 0, color: '#8b5cf6' },
+                                      { name: 'Reparado', value: branchCounts?.repaired || 0, color: '#22c55e' }
                                   ]}
                                   cx="50%"
                                   cy="50%"
@@ -328,10 +565,10 @@ const DashboardComponent: React.FC = () => {
                                   dataKey="value"
                               >
                                   {[
-                                      { name: 'Pendiente', value: realStats.pending, color: '#ef4444' },
-                                      { name: 'En Reparación', value: realStats.inRepair, color: '#3b82f6' },
-                                      { name: 'En Tienda', value: realStats.storeStock, color: '#8b5cf6' },
-                                      { name: 'Reparado', value: realStats.repaired || 0, color: '#22c55e' }
+                                      { name: 'Pendiente', value: branchCounts?.pending || 0, color: '#ef4444' },
+                                      { name: 'En Reparación', value: branchCounts?.inRepair || 0, color: '#3b82f6' },
+                                      { name: 'En Tienda', value: branchCounts?.store || 0, color: '#8b5cf6' },
+                                      { name: 'Reparado', value: branchCounts?.repaired || 0, color: '#22c55e' }
                                   ].map((entry, index) => (
                                       <Cell key={`cell-${index}`} fill={entry.color} />
                                   ))}
@@ -343,17 +580,18 @@ const DashboardComponent: React.FC = () => {
                   </div>
               </div>
           </div>
+            )
           )}
 
-          {!loadingStats && (
+          {canViewFinancials && !loadingStats && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
                   <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2"><BarChart3 className="w-5 h-5 text-orange-500"/> Ingresos por Sucursal</h3>
                   <div className="h-64 w-full" style={{ minHeight: '250px' }}>
                       <ResponsiveContainer width="100%" height="100%">
                           <BarChart data={[
-                              { name: 'T4 (Principal)', value: realStats.revenueByBranch.t4 },
-                              { name: 'T1 (Secundaria)', value: realStats.revenueByBranch.t1 }
+                              { name: 'T4 (Principal)', value: realStats?.revenueByBranch?.t4 || 0 },
+                              { name: 'T1 (Secundaria)', value: realStats?.revenueByBranch?.t1 || 0 }
                           ]}>
                               <CartesianGrid strokeDasharray="3 3" vertical={false} />
                               <XAxis dataKey="name" fontSize={12} />

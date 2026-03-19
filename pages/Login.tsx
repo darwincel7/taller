@@ -39,13 +39,15 @@ create extension if not exists "pgcrypto";
 
 -- 1. CREACIÓN DE TABLAS (Si no existen)
 create table if not exists users (id text primary key, name text, role text, avatar text, permissions jsonb, active boolean default true, branch text, phone text, specialization text, created_at bigint);
-create table if not exists orders (id text primary key, "orderType" text, customer jsonb, "deviceModel" text, "deviceIssue" text, "deviceCondition" text, "devicePassword" text, accessories text, imei text, "devicePhoto" text, status text, priority text, "createdAt" bigint, deadline bigint, history jsonb, "technicianNotes" text, "assignedTo" text, pending_assignment_to text, "isValidated" boolean, "estimatedCost" numeric, expenses jsonb, "partsCost" numeric, "finalPrice" numeric, "isRepairSuccessful" boolean, "purchaseCost" numeric, "targetPrice" numeric, "deviceSource" text, "deviceStorage" text, "batteryHealth" text, "unlockStatus" text, "currentBranch" text, "originBranch" text, "transferTarget" text, "transferStatus" text, "payments" jsonb, "refundRequest" jsonb, "pointsAwarded" numeric, "pointRequest" jsonb, "completedAt" bigint, "relatedOrderId" text, "tempVideoId" text, "repairOutcomeReason" text, "isDiagnosticFee" boolean, "proposedEstimate" text, "returnRequest" jsonb);
+create table if not exists orders (id text primary key, "orderType" text, customer jsonb, "deviceModel" text, "deviceIssue" text, "deviceCondition" text, "devicePassword" text, accessories text, imei text, "devicePhoto" text, status text, priority text, "createdAt" bigint, deadline bigint, history jsonb, "technicianNotes" text, "assignedTo" text, pending_assignment_to text, "isValidated" boolean, "estimatedCost" numeric, expenses jsonb, "partsCost" numeric, "finalPrice" numeric, "isRepairSuccessful" boolean, "purchaseCost" numeric, "targetPrice" numeric, "deviceSource" text, "deviceStorage" text, "batteryHealth" text, "unlockStatus" text, "currentBranch" text, "originBranch" text, "transferTarget" text, "transferStatus" text, "payments" jsonb, "refundRequest" jsonb, "pointsAwarded" numeric, "pointRequest" jsonb, "completedAt" bigint, "relatedOrderId" text, "tempVideoId" text, "repairOutcomeReason" text, "isDiagnosticFee" boolean, "proposedEstimate" text, "returnRequest" jsonb, "pointsSplit" jsonb, "proposalType" text, "holdReason" text, "customerId" text);
 create table if not exists inventory_parts (id uuid default gen_random_uuid() primary key, name text, stock int, min_stock int, cost numeric, price numeric, category text);
 create table if not exists wiki_articles (id uuid default gen_random_uuid() primary key, title text, model text, issue text, solution text, author text, created_at bigint);
 create table if not exists audit_logs (id uuid default gen_random_uuid() primary key, user_id text, user_name text, action text, details text, order_id text, created_at bigint);
 create table if not exists intake_sessions (id uuid default gen_random_uuid() primary key, created_at timestamp with time zone default now(), status text, video_url text, ai_data jsonb);
 create table if not exists cash_closings (id text primary key, "cashierId" text, "adminId" text, timestamp bigint, "systemTotal" numeric, "actualTotal" numeric, difference numeric, note text);
 create table if not exists debt_logs (id text primary key, "cashierId" text, amount numeric, type text, timestamp bigint, "adminId" text, note text, "closingId" text);
+create table if not exists customers (id text primary key, name text not null, phone text not null, email text, address text, notes text, "createdAt" bigint);
+create table if not exists floating_expenses (id uuid default gen_random_uuid() primary key, description text, amount numeric, receipt_url text, shared_receipt_id text, created_by text, branch_id text, created_at timestamp with time zone default now());
 
 -- 2. MIGRACIÓN DE COLUMNAS FALTANTES (Para arreglar errores de "Column not found")
 alter table orders add column if not exists "proposedEstimate" text;
@@ -55,6 +57,15 @@ alter table orders add column if not exists "isDiagnosticFee" boolean;
 alter table orders add column if not exists "tempVideoId" text;
 alter table orders add column if not exists "relatedOrderId" text;
 alter table orders add column if not exists "proposalType" text; -- Nueva Columna Aprobación
+alter table orders add column if not exists "pointsSplit" jsonb;
+alter table orders add column if not exists "holdReason" text;
+alter table orders add column if not exists "customerId" text;
+alter table orders add column if not exists "customerNotes" text;
+alter table orders add column if not exists "totalAmount" numeric;
+alter table orders add column if not exists "partRequests" jsonb;
+alter table orders add column if not exists "externalRepair" jsonb;
+alter table orders add column if not exists "approvalAckPending" boolean;
+alter table orders add column if not exists "techMessage" jsonb;
 
 -- 3. NUMERACIÓN SECUENCIAL (readable_id)
 -- Esto crea una secuencia automática para dar números únicos cortos (Ej. #1001)
@@ -69,6 +80,8 @@ alter table audit_logs enable row level security; drop policy if exists "Public 
 alter table intake_sessions enable row level security; drop policy if exists "Public Select Intake" on intake_sessions; create policy "Public Select Intake" on intake_sessions for select using (true); create policy "Public Insert Intake" on intake_sessions for insert with check (true); create policy "Public Update Intake" on intake_sessions for update using (true);
 alter table cash_closings enable row level security; drop policy if exists "Public Closings" on cash_closings; create policy "Public Closings" on cash_closings for all using (true);
 alter table debt_logs enable row level security; drop policy if exists "Public DebtLogs" on debt_logs; create policy "Public DebtLogs" on debt_logs for all using (true);
+alter table customers enable row level security; drop policy if exists "Public Customers" on customers; create policy "Public Customers" on customers for all using (true);
+alter table floating_expenses enable row level security; drop policy if exists "Public Floating Expenses" on floating_expenses; create policy "Public Floating Expenses" on floating_expenses for all using (true);
 
 -- 5. CONFIGURACIÓN STORAGE
 insert into storage.buckets (id, name, public) values ('temp-videos', 'temp-videos', true) on conflict (id) do nothing;
@@ -76,7 +89,7 @@ drop policy if exists "Public Upload Videos" on storage.objects; create policy "
 drop policy if exists "Public Select Videos" on storage.objects; create policy "Public Select Videos" on storage.objects for select using ( bucket_id = 'temp-videos' );
 
 -- 6. USUARIO ADMIN POR DEFECTO (Si no existe)
-insert into users (id, name, role, avatar, permissions, active, branch) values ('admin-01', 'Darwin (Dueño)', 'Admin', '👨‍💼', '{"canViewAccounting": true, "canEditExpenses": true, "canValidateOrders": true, "canAssignOrders": true, "canDeleteOrders": true, "canManageInventory": true, "canViewInventoryCost": true, "canManageTeam": true, "canCreateOrders": true, "canEditOrderDetails": true, "canChangePriority": true, "canViewActivityLog": true, "canTransferStore": true, "canDeliverOrder": true}', true, 'T4') on conflict (id) do nothing;`;
+insert into users (id, name, role, avatar, permissions, active, branch) values ('admin-01', 'Darwin (Dueño)', '${UserRole.ADMIN}', '👨‍💼', '{"canViewAccounting": true, "canEditExpenses": true, "canValidateOrders": true, "canAssignOrders": true, "canDeleteOrders": true, "canManageInventory": true, "canViewInventoryCost": true, "canManageTeam": true, "canCreateOrders": true, "canEditOrderDetails": true, "canChangePriority": true, "canViewActivityLog": true, "canTransferStore": true, "canDeliverOrder": true}', true, 'T4') on conflict (id) do nothing;`;
 
     navigator.clipboard.writeText(fullSql);
     setCopied(true);

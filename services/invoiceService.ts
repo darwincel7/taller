@@ -1,8 +1,8 @@
 
-import { RepairOrder, OrderStatus, OrderType, Payment, InventoryPart } from '../types';
+import { RepairOrder, OrderStatus, OrderType, Payment, InventoryPart, RequestStatus } from '../types';
 
 const openPrintWindow = () => {
-    const printWindow = window.open('', '_blank');
+    const printWindow = window.open('about:blank', '_blank');
     if (!printWindow) {
         alert("Por favor permite ventanas emergentes para imprimir la factura.");
         return null;
@@ -418,7 +418,7 @@ export const printInvoice = (order: RepairOrder, targetWindow?: Window | null) =
   let printWindow = targetWindow;
   
   if (!printWindow) {
-      printWindow = window.open('', '_blank');
+      printWindow = window.open('about:blank', '_blank');
   }
 
   if (!printWindow) {
@@ -431,7 +431,7 @@ export const printInvoice = (order: RepairOrder, targetWindow?: Window | null) =
 
   const isFinal = order.status === OrderStatus.REPAIRED || order.status === OrderStatus.RETURNED;
   // LOGIC FOR RETURNS
-  const isReturn = order.returnRequest?.status === 'APPROVED' || (order.isRepairSuccessful === false && isFinal);
+  const isReturn = order.returnRequest?.status === RequestStatus.APPROVED || (order.isRepairSuccessful === false && isFinal);
   
   let docTitle = isFinal ? "FACTURA FINAL" : "RECIBO DE INGRESO";
   if (isReturn) docTitle = "COMPROBANTE DE DEVOLUCIÓN";
@@ -580,6 +580,10 @@ export const printAuditReport = (report: any) => {
   const missingItems = discrepancies.filter((d: any) => d.status === 'MISSING' || (!d.status && !d.resolved));
   const reviewItems = discrepancies.filter((d: any) => d.status === 'REVIEW' || d.status === 'PENDING');
   const foundItems = discrepancies.filter((d: any) => d.status === 'FOUND' || d.resolved);
+  const waitingResponseItems = discrepancies.filter((d: any) => d.status === 'WAITING_RESPONSE');
+  const waitingPartItems = discrepancies.filter((d: any) => d.status === 'WAITING_PART');
+  const readyItems = discrepancies.filter((d: any) => d.status === 'READY');
+  const alreadyLeftItems = discrepancies.filter((d: any) => d.status === 'ALREADY_LEFT');
   
   const renderTable = (title: string, items: any[], color: string) => {
       if (items.length === 0) return '';
@@ -620,7 +624,7 @@ export const printAuditReport = (report: any) => {
         body { font-family: sans-serif; font-size: 12px; padding: 20px; }
         h1 { margin-bottom: 5px; }
         .header { margin-bottom: 20px; border-bottom: 1px solid #ccc; padding-bottom: 10px; }
-        .stats { display: flex; gap: 20px; margin-bottom: 20px; }
+        .stats { display: flex; gap: 20px; margin-bottom: 20px; flex-wrap: wrap; }
         .stat-box { border: 1px solid #ccc; padding: 10px; border-radius: 5px; min-width: 100px; text-align: center; }
         .stat-val { font-size: 18px; font-weight: bold; }
         .stat-label { font-size: 10px; text-transform: uppercase; color: #666; }
@@ -656,11 +660,35 @@ export const printAuditReport = (report: any) => {
                 <div class="stat-val" style="color: #ef4444;">${report.total_missing}</div>
                 <div class="stat-label">Faltantes</div>
             </div>
+            <div class="stat-box" style="border-color: #f59e0b; background: #fffbeb;">
+                <div class="stat-val" style="color: #f59e0b;">${reviewItems.length}</div>
+                <div class="stat-label">Revisar</div>
+            </div>
+            <div class="stat-box" style="border-color: #3b82f6; background: #eff6ff;">
+                <div class="stat-val" style="color: #3b82f6;">${waitingResponseItems.length}</div>
+                <div class="stat-label">Espera Resp.</div>
+            </div>
+            <div class="stat-box" style="border-color: #a855f7; background: #faf5ff;">
+                <div class="stat-val" style="color: #a855f7;">${waitingPartItems.length}</div>
+                <div class="stat-label">Espera Pieza</div>
+            </div>
+            <div class="stat-box" style="border-color: #14b8a6; background: #f0fdfa;">
+                <div class="stat-val" style="color: #14b8a6;">${readyItems.length}</div>
+                <div class="stat-label">Listos</div>
+            </div>
+            <div class="stat-box" style="border-color: #f97316; background: #fff7ed;">
+                <div class="stat-val" style="color: #f97316;">${alreadyLeftItems.length}</div>
+                <div class="stat-label">Ya Salió</div>
+            </div>
         </div>
         
         ${renderTable('⚠️ EQUIPOS FALTANTES', missingItems, '#ef4444')}
-        ${renderTable('🟠 EQUIPOS EN REVISIÓN', reviewItems, '#f97316')}
+        ${renderTable('🟠 EQUIPOS EN REVISIÓN', reviewItems, '#f59e0b')}
         ${renderTable('✅ EQUIPOS ENCONTRADOS', foundItems, '#22c55e')}
+        ${renderTable('⏳ ESPERA RESPUESTA', waitingResponseItems, '#3b82f6')}
+        ${renderTable('🧩 ESPERA PIEZA', waitingPartItems, '#a855f7')}
+        ${renderTable('🎉 LISTOS', readyItems, '#14b8a6')}
+        ${renderTable('🚀 YA SALIÓ', alreadyLeftItems, '#f97316')}
         
         <div style="margin-top: 40px; border-top: 1px solid #000; width: 200px; padding-top: 5px; text-align: center;">
             Firma Auditor

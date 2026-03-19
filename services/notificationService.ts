@@ -62,26 +62,47 @@ export const sendWhatsAppNotification = async (
     }
 
     try {
-        // 1. INTENTO AUTOMÁTICO (Supabase Edge Function)
-        // Solo intentar si Supabase está configurado
-        if (supabase) {
-            const { data, error } = await supabase.functions.invoke('send-whatsapp', {
-                body: { phone, message }
-            });
+        // 1. INTENTO AUTOMÁTICO (Backend API)
+        const response = await fetch('/api/notifications/whatsapp', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                phone,
+                message,
+                orderId: order.id
+            })
+        });
 
-            if (error || !data?.success) {
-                // Falla silenciosa para pasar al fallback
-                console.warn("API Error (or function not deployed):", error);
-            } else {
-                return { success: true, method: 'API' };
-            }
+        const result = await response.json();
+
+        if (result.success) {
+            return { success: true, method: 'API' };
         }
+        
+        console.warn("Backend API Error:", result.error);
 
     } catch (error) {
-        console.warn("Fallo envío automático, usando método manual:", error);
+        console.warn("Fallo envío automático vía Backend, intentando Supabase:", error);
+        
+        // 2. INTENTO SUPABASE (Legacy/Secondary)
+        try {
+            if (supabase) {
+                const { data, error: sbError } = await supabase.functions.invoke('send-whatsapp', {
+                    body: { phone, message }
+                });
+
+                if (!sbError && data?.success) {
+                    return { success: true, method: 'API' };
+                }
+            }
+        } catch (sbErr) {
+            console.warn("Fallo Supabase también:", sbErr);
+        }
     }
 
-    // 2. FALLBACK MANUAL (WhatsApp Web)
+    // 3. FALLBACK MANUAL (WhatsApp Web)
     // Si el servidor falla o no existe, abrimos la ventana
     const url = `https://wa.me/${phone}?text=${encodeURIComponent(message)}`;
     

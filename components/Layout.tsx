@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { NavLink, Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, PlusCircle, List, UserCheck, Smartphone, LogOut, Users, Activity, ShoppingBag, Package, Book, Wifi, WifiOff, CheckCircle2, XCircle, MapPin, ChevronDown, Wallet, Moon, Sun, ClipboardCheck } from 'lucide-react';
+import { LayoutDashboard, PlusCircle, List, UserCheck, Smartphone, LogOut, Users, Activity, ShoppingBag, Package, Book, Wifi, WifiOff, CheckCircle2, XCircle, MapPin, ChevronDown, Wallet, Moon, Sun, ClipboardCheck, Shield, Calculator } from 'lucide-react';
 import { PriorityAlert } from './PriorityAlert';
 import { FloatingBackButton } from './FloatingBackButton';
 import { useAuth } from '../contexts/AuthContext';
 import { useOrders } from '../contexts/OrderContext';
 import { UserRole } from '../types';
+import { useQuery } from '@tanstack/react-query';
+import { supabase } from '../services/supabase';
 
 interface LayoutProps {
     children?: React.ReactNode;
@@ -16,6 +18,19 @@ const LayoutComponent: React.FC<LayoutProps> = ({ children }) => {
   const { isConnected, notifications, clearNotification } = useOrders(); 
   const location = useLocation();
   const isClientView = location.pathname === '/client';
+
+  const { data: floatingExpensesCount = 0 } = useQuery({
+    queryKey: ['floating-expenses-count'],
+    queryFn: async () => {
+      const { count, error } = await supabase
+        .from('floating_expenses')
+        .select('*', { count: 'exact', head: true })
+        .neq('description', 'RECEIPT_UPLOAD_TRIGGER');
+      if (error) throw error;
+      return count || 0;
+    },
+    refetchInterval: 60000, // 1 minute
+  });
   
   // MOBILE MENU STATE
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -107,22 +122,42 @@ const LayoutComponent: React.FC<LayoutProps> = ({ children }) => {
           </Link>
           
           {canSeeCash && (
+            <>
+              <Link to="/pos" className={getNavLinkClass('/pos')}>
+                <Calculator className="w-4 h-4" />
+                Punto de Venta
+              </Link>
               <Link to="/cash" className={getNavLinkClass('/cash')}>
                 <Wallet className="w-4 h-4" />
                 Caja y Pagos
               </Link>
+            </>
           )}
 
           <div className="pt-3 pb-1 text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest pl-2">Finanzas</div>
           {canSeeCash && (
-            <Link to="/finance" className={getNavLinkClass('/finance')}>
-              <Activity className="w-4 h-4" />
-              Dashboard Financiero
-            </Link>
+            <>
+              <Link to="/finance" className={getNavLinkClass('/finance')}>
+                <Activity className="w-4 h-4" />
+                Dashboard Financiero
+              </Link>
+            </>
           )}
 
           <div className="pt-3 pb-1 text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest pl-2">Operaciones</div>
           
+          <Link to="/customers" className={getNavLinkClass('/customers')}>
+            <Users className="w-4 h-4" />
+            Directorio Clientes
+          </Link>
+
+          {currentUser?.role === UserRole.ADMIN && (
+            <Link to="/crm" className={getNavLinkClass('/crm')}>
+              <Users className="w-4 h-4" />
+              CRM & Marketing
+            </Link>
+          )}
+
           {/* HIDE INTAKE FOR TECHNICIANS */}
           {!isTech && (
             <Link to="/intake" className={getNavLinkClass('/intake')}>
@@ -132,8 +167,17 @@ const LayoutComponent: React.FC<LayoutProps> = ({ children }) => {
           )}
           
           <Link to="/orders" className={getNavLinkClass('/orders')}>
-            <List className="w-4 h-4" />
-            Lista de Órdenes
+            <div className="flex items-center justify-between w-full">
+              <div className="flex items-center gap-3">
+                <List className="w-4 h-4" />
+                Lista de Órdenes
+              </div>
+              {floatingExpensesCount > 0 && (
+                <span className="bg-amber-500 text-white text-[10px] font-black px-1.5 py-0.5 rounded-full animate-pulse shadow-sm" title="Gastos pendientes de asignar">
+                  {floatingExpensesCount}
+                </span>
+              )}
+            </div>
           </Link>
           
           <div className="pt-3 pb-1 text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest pl-2">Herramientas</div>

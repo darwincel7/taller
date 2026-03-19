@@ -7,7 +7,7 @@ interface DetailedHistoryProps {
   history: RepairOrder['history'];
 }
 
-type FilterType = 'ALL' | 'NOTES' | 'STATUS' | 'FINANCIAL';
+type FilterType = 'ALL' | 'MANUAL' | 'STATUS' | 'FINANCIAL';
 
 export const DetailedHistory: React.FC<DetailedHistoryProps> = ({ history }) => {
   const [filter, setFilter] = useState<FilterType>('ALL');
@@ -30,7 +30,11 @@ export const DetailedHistory: React.FC<DetailedHistoryProps> = ({ history }) => 
 
   const filteredHistory = history.filter(log => {
       if (filter === 'ALL') return true;
-      if (filter === 'NOTES') return log.action_type?.includes('NOTE') || log.action_type === 'LEGACY_LOG';
+      if (filter === 'MANUAL') {
+          // Exclude logs where technician is "Sistema" or "System" or empty, unless it's explicitly a NOTE_ADDED
+          const isSystem = !log.technician || log.technician.toLowerCase() === 'sistema' || log.technician.toLowerCase() === 'system';
+          return !isSystem || log.action_type === 'NOTE_ADDED';
+      }
       if (filter === 'STATUS') return log.action_type?.includes('STATUS') || log.action_type?.includes('ORDER_CREATED') || log.action_type?.includes('RETURNED');
       if (filter === 'FINANCIAL') return log.action_type?.includes('PAYMENT') || log.action_type?.includes('EXPENSE') || log.action_type?.includes('COST');
       return true;
@@ -46,7 +50,7 @@ export const DetailedHistory: React.FC<DetailedHistoryProps> = ({ history }) => 
         {/* FILTERS */}
         <div className="flex bg-slate-100 p-1 rounded-lg">
             <button onClick={() => setFilter('ALL')} className={`px-2 py-1 rounded text-[10px] font-bold transition ${filter === 'ALL' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}>TODOS</button>
-            <button onClick={() => setFilter('NOTES')} className={`px-2 py-1 rounded text-[10px] font-bold transition ${filter === 'NOTES' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}>NOTAS</button>
+            <button onClick={() => setFilter('MANUAL')} className={`px-2 py-1 rounded text-[10px] font-bold transition ${filter === 'MANUAL' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}>MANUALES</button>
             <button onClick={() => setFilter('STATUS')} className={`px-2 py-1 rounded text-[10px] font-bold transition ${filter === 'STATUS' ? 'bg-white text-purple-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}>ESTADOS</button>
             <button onClick={() => setFilter('FINANCIAL')} className={`px-2 py-1 rounded text-[10px] font-bold transition ${filter === 'FINANCIAL' ? 'bg-white text-green-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}>$$$</button>
         </div>
@@ -63,11 +67,19 @@ export const DetailedHistory: React.FC<DetailedHistoryProps> = ({ history }) => 
             let borderClass = 'border-slate-100';
             let bgClass = 'bg-slate-50 text-slate-600';
 
-            if (log.logType === 'DANGER' || log.action_type?.includes('REJECTED') || log.action_type?.includes('DELETED')) {
+            if (log.action_type?.includes('EXPENSE')) {
+                dotColor = 'bg-red-500';
+                borderClass = 'border-red-200';
+                bgClass = 'bg-gradient-to-r from-red-50 to-red-100 text-red-800';
+            } else if (log.action_type?.includes('PAYMENT') || log.action_type?.includes('DEPOSIT')) {
+                dotColor = 'bg-green-500';
+                borderClass = 'border-green-200';
+                bgClass = 'bg-green-50 text-green-800';
+            } else if (log.logType === 'DANGER' || log.action_type?.includes('REJECTED') || log.action_type?.includes('DELETED')) {
                 dotColor = 'bg-red-500';
                 borderClass = 'border-red-100';
                 bgClass = 'bg-red-50 text-red-700';
-            } else if (log.logType === 'SUCCESS' || log.action_type?.includes('APPROVED') || log.action_type?.includes('COMPLETED') || log.action_type === 'PAYMENT_ADDED') {
+            } else if (log.logType === 'SUCCESS' || log.action_type?.includes('APPROVED') || log.action_type?.includes('COMPLETED')) {
                 dotColor = 'bg-green-500';
                 borderClass = 'border-green-100';
                 bgClass = 'bg-green-50 text-green-700';

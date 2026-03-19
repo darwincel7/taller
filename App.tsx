@@ -15,10 +15,14 @@ import { StoreStock } from './pages/StoreStock';
 import { Inventory } from './pages/Inventory';
 import { KnowledgeBase } from './pages/KnowledgeBase';
 import { CashRegister } from './pages/CashRegister';
+import { BillingPOS } from './pages/BillingPOS';
 import { WorkshopAudit } from './pages/WorkshopAudit';
 import { PartsPanel } from './pages/PartsPanel';
 import { MobileVideoUpload } from './pages/MobileVideoUpload';
 import { FinancialDashboard } from './pages/FinancialDashboard';
+import { StrategicVault } from './pages/StrategicVault';
+import { CRM } from './pages/CRM';
+import { Customers } from './pages/Customers';
 import { OrderProvider } from './contexts/OrderContext';
 import { InventoryProvider } from './contexts/InventoryContext'; 
 import { CashProvider } from './contexts/CashContext'; 
@@ -61,6 +65,9 @@ const App: React.FC = () => {
                   
                   <Route path="/" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
                   <Route path="/finance" element={<ProtectedRoute><FinancialDashboard /></ProtectedRoute>} />
+                  <Route path="/vault" element={<ProtectedRoute><StrategicVault /></ProtectedRoute>} />
+                  <Route path="/crm" element={<ProtectedRoute><CRM /></ProtectedRoute>} />
+                  <Route path="/customers" element={<ProtectedRoute><Customers /></ProtectedRoute>} />
                   <Route path="/store" element={<ProtectedRoute><StoreStock /></ProtectedRoute>} />
                   <Route path="/intake" element={<ProtectedRoute><Intake /></ProtectedRoute>} />
                   <Route path="/orders" element={<ProtectedRoute><OrderList /></ProtectedRoute>} />
@@ -71,6 +78,7 @@ const App: React.FC = () => {
                   <Route path="/parts" element={<ProtectedRoute><PartsPanel /></ProtectedRoute>} />
                   <Route path="/wiki" element={<ProtectedRoute><KnowledgeBase /></ProtectedRoute>} />
                   <Route path="/cash" element={<ProtectedRoute><CashRegister /></ProtectedRoute>} />
+                  <Route path="/pos" element={<ProtectedRoute><BillingPOS /></ProtectedRoute>} />
                   <Route path="/audit" element={<ProtectedRoute><WorkshopAudit /></ProtectedRoute>} />
                   
                   <Route path="*" element={<Navigate to="/" replace />} />

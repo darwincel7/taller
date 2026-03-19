@@ -1,21 +1,25 @@
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
+import { format } from 'date-fns';
+import { orderService } from '../services/orderService';
 import { useOrders } from '../contexts/OrderContext';
 import { useAuth } from '../contexts/AuthContext';
 import { 
-  RepairOrder, OrderStatus, UserRole, PriorityLevel, OrderType, Expense, PointSplit, LogType
+  RepairOrder, OrderStatus, UserRole, PriorityLevel, OrderType, Expense, PointSplit, LogType, HistoryLog, ActionType, RequestStatus, TransferStatus, TransactionStatus, ApprovalStatus, ExpenseDestination
 } from '../types';
 import { 
   ArrowLeft, Printer, MessageCircle, AlertTriangle, 
   CheckCircle2, XCircle, Wrench, User, Calendar, 
   Smartphone, Lock, Share2, Save, Trash2, Reply, ShieldAlert,
   ThumbsUp, UserCheck, MapPin, Truck, History, ArrowRightLeft, DollarSign, Wallet, FileText,
-  Maximize2, X, AlertCircle, HandCoins, Crown, Split, Ban, ArrowRight, Users, Check, Hand, BellRing, Minus, Plus, Trophy, Tag, Send, Loader2, Sparkles, Zap, Phone, MessageSquare, ShieldCheck, ShoppingBag, Package
+  Maximize2, X, AlertCircle, HandCoins, Crown, Split, Ban, ArrowRight, Users, Check, Hand, BellRing, Minus, Plus, Trophy, Tag, Send, Loader2, Sparkles, Zap, Phone, MessageSquare, ShieldCheck, ShoppingBag, Package, RotateCcw
 } from 'lucide-react';
 import { StatusTimeline } from '../components/StatusTimeline';
 import { OrderFinancials } from '../components/OrderFinancials';
 import { OrderInfoEdit } from '../components/OrderInfoEdit';
+import { PreDeliveryCheckModal } from '../components/modals/PreDeliveryCheckModal';
 import { DeliveryModal } from '../components/DeliveryModal';
 import { ProposalModal } from '../components/ProposalModal';
 import { printInvoice, printSticker } from '../services/invoiceService';
@@ -23,6 +27,8 @@ import { sendWhatsAppNotification } from '../services/notificationService';
 import { chatWithDarwin } from '../services/geminiService';
 import { finalizeDelivery } from '../services/deliveryService';
 import { accountingService } from '../services/accountingService';
+import { auditService } from '../services/auditService';
+import { supabase } from '../services/supabase';
 
 // --- CANONICAL ROOT IMPORTS ---
 import { ControlPanel } from '../components/ControlPanel'; 
@@ -31,422 +37,93 @@ import { StageBar } from '../components/orders/StageBar';
 import { ProgressNotes } from '../components/orders/ProgressNotes';
 import { ExpensesAndParts } from '../components/orders/ExpensesAndParts';
 import { DetailedHistory } from '../components/orders/DetailedHistory';
+import { CustomerHistorySummary } from '../components/orders/CustomerHistorySummary';
+import { OrderBanners } from '../components/orders/OrderBanners';
 
 import { ConfirmApprovalModal } from '../components/ConfirmApprovalModal';
-
-// --- MODAL: UNREPAIRABLE (ENHANCED) ---
-const UnrepairableModal = ({ onConfirm, onCancel }: any) => {
-    const [reason, setReason] = useState(''); 
-    const [fee, setFee] = useState('');
-    const [chargeFee, setChargeFee] = useState(false);
-    
-    // Motivos comunes para agilizar la escritura
-    const commonReasons = [
-        "Irreparable (Placa base)",
-        "No hay repuesto disponible",
-        "Costo muy elevado",
-        "Cliente no aceptó precio",
-        "Cliente retiró equipo"
-    ];
-
-    return (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-300" onClick={onCancel}>
-            <div 
-                className="bg-slate-50 rounded-3xl shadow-2xl w-full max-w-md overflow-hidden relative animate-in zoom-in-95 duration-300 border border-white/20 ring-1 ring-black/5" 
-                onClick={e => e.stopPropagation()}
-            >
-                {/* Header */}
-                <div className="bg-white p-6 border-b border-slate-100 flex justify-between items-center relative overflow-hidden">
-                    <div className="absolute top-0 left-0 w-1 h-full bg-red-500"></div>
-                    <div className="flex items-center gap-3 relative z-10">
-                        <div className="bg-red-50 p-2.5 rounded-2xl text-red-600 shadow-sm border border-red-100">
-                            <Reply className="w-6 h-6" />
-                        </div>
-                        <div>
-                            <h3 className="text-xl font-black text-slate-800 tracking-tight leading-none mb-1">Solicitar Devolución</h3>
-                            <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">Proceso de salida sin reparación</p>
-                        </div>
-                    </div>
-                    <button onClick={onCancel} className="p-2 text-slate-300 hover:text-slate-500 hover:bg-slate-100 rounded-full transition-colors">
-                        <X className="w-6 h-6" />
-                    </button>
-                </div>
-
-                {/* Body */}
-                <div className="p-6 space-y-6">
-                    
-                    {/* Quick Tags */}
-                    <div>
-                        <label className="text-[10px] font-bold text-slate-400 uppercase mb-2 flex items-center gap-1">
-                            <Tag className="w-3 h-3"/> Motivos Rápidos
-                        </label>
-                        <div className="flex flex-wrap gap-2">
-                            {commonReasons.map((r) => (
-                                <button 
-                                    key={r}
-                                    onClick={() => setReason(r)}
-                                    className={`text-[10px] font-bold px-3 py-1.5 rounded-lg border transition-all active:scale-95 ${reason === r ? 'bg-slate-800 text-white border-slate-800 shadow-md' : 'bg-white text-slate-500 border-slate-200 hover:border-blue-300 hover:text-blue-600'}`}
-                                >
-                                    {r}
-                                </button>
-                            ))}
-                        </div>
-                    </div>
-
-                    {/* Reason Textarea - WHITE BACKGROUND */}
-                    <div className="relative group">
-                        <label className="text-[10px] font-bold text-slate-500 uppercase mb-1.5 block ml-1">Detalle / Razón</label>
-                        <textarea 
-                            className="w-full bg-white border-2 border-slate-200 rounded-2xl p-4 text-slate-700 font-medium focus:border-red-400 focus:ring-4 focus:ring-red-50 outline-none transition-all resize-none shadow-sm placeholder:text-slate-300 text-sm" 
-                            placeholder="Escribe aquí por qué se devuelve el equipo..." 
-                            rows={3}
-                            value={reason} 
-                            onChange={e => setReason(e.target.value)}
-                            autoFocus
-                        />
-                    </div>
-
-                    {/* Fee Input - WHITE BACKGROUND */}
-                    <div>
-                        <div className="flex items-center justify-between mb-2">
-                             <label className="text-[10px] font-bold text-slate-500 uppercase block ml-1">Costo por Diagnóstico / Chequeo</label>
-                             <label className="flex items-center gap-2 cursor-pointer">
-                                 <span className="text-[10px] font-bold text-slate-400 uppercase">¿Cobrar?</span>
-                                 <input type="checkbox" checked={chargeFee} onChange={e => setChargeFee(e.target.checked)} className="w-4 h-4 rounded border-slate-300 text-red-600 focus:ring-red-500" />
-                             </label>
-                        </div>
-                        
-                        {chargeFee && (
-                            <div className="relative group animate-in slide-in-from-top-2 fade-in">
-                                <div className="absolute left-4 top-1/2 -translate-y-1/2 bg-slate-100 text-slate-500 p-1.5 rounded-lg">
-                                    <DollarSign className="w-4 h-4" />
-                                </div>
-                                <input 
-                                    type="number" 
-                                    className="w-full bg-white border-2 border-slate-200 rounded-2xl pl-14 pr-4 py-3.5 font-black text-xl text-slate-800 outline-none focus:border-green-400 focus:ring-4 focus:ring-green-50 transition-all shadow-sm placeholder:text-slate-300" 
-                                    placeholder="0.00" 
-                                    value={fee} 
-                                    onChange={e => setFee(e.target.value)}
-                                />
-                            </div>
-                        )}
-                        <p className="text-[10px] text-slate-400 mt-2 ml-1">
-                            * Si el cliente paga por la revisión, marque la casilla e ingrese el monto.
-                        </p>
-                    </div>
-                </div>
-
-                {/* Footer */}
-                <div className="p-4 bg-white border-t border-slate-100 flex gap-3">
-                    <button 
-                        onClick={onCancel} 
-                        className="flex-1 py-3.5 text-slate-500 font-bold hover:bg-slate-50 rounded-xl transition-colors text-xs uppercase tracking-wide"
-                    >
-                        Cancelar
-                    </button>
-                    <button 
-                        onClick={() => onConfirm(reason, chargeFee ? (parseFloat(fee) || 0) : 0)} 
-                        disabled={!reason}
-                        className="flex-[2] bg-gradient-to-r from-red-600 to-red-500 text-white py-3.5 rounded-xl font-bold shadow-lg shadow-red-200 hover:shadow-xl hover:from-red-500 hover:to-red-400 transition-all active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 text-xs uppercase tracking-wide"
-                    >
-                        Confirmar Devolución <ArrowRight className="w-4 h-4" />
-                    </button>
-                </div>
-            </div>
-        </div>
-    );
-};
-
-// --- MODAL: POINTS REQUEST (REDESIGNED) ---
-const PointsRequestModal = ({ users, currentUser, onConfirm, onCancel, isSubmitting }: any) => {
-    // ... (Code remains same as provided in previous turn) ...
-    const [pts, setPts] = useState(1);
-    const [isSplit, setIsSplit] = useState(false);
-    const [partnerId, setPartnerId] = useState('');
-    const [myShare, setMyShare] = useState(1); 
-    const [reason, setReason] = useState('');
-
-    const availablePartners = users.filter((u: any) => u.role === UserRole.TECHNICIAN && u.id !== currentUser.id);
-
-    useEffect(() => {
-        if (pts < 2) {
-            setIsSplit(false);
-            setReason('');
-        }
-        if (pts >= 2 && !isSplit) {
-            setMyShare(Math.floor(pts / 2));
-        }
-    }, [pts]);
-
-    const handleConfirm = () => {
-        if (pts >= 2 && !reason.trim()) {
-            alert("Por favor indica la razón para solicitar 2 o más puntos.");
-            return;
-        }
-
-        if (isSplit && partnerId) {
-            const splitData: PointSplit = {
-                primaryTechId: currentUser.id,
-                primaryPoints: myShare,
-                secondaryTechId: partnerId,
-                secondaryPoints: pts - myShare
-            };
-            onConfirm(pts, reason || "Reparación Colaborativa", splitData);
-        } else {
-            const finalReason = pts === 0 ? "Reparación sin costo/puntos" : (reason || "Reparación Estándar");
-            onConfirm(pts, finalReason);
-        }
-    };
-
-    return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in zoom-in" onClick={onCancel}>
-            <div className="bg-white rounded-3xl p-8 max-w-md w-full shadow-2xl relative" onClick={e=>e.stopPropagation()}>
-                <button onClick={onCancel} className="absolute top-4 right-4 p-2 bg-slate-100 rounded-full hover:bg-slate-200 transition"><X className="w-5 h-5 text-slate-500"/></button>
-                
-                <div className="text-center mb-6">
-                    <h3 className="text-2xl font-black text-slate-800 flex items-center justify-center gap-2">
-                        {pts === 0 ? '🚫 Sin Puntos' : '¡Reparación Lista!'}
-                    </h3>
-                    <p className="text-slate-500 text-sm">¿Cuántos puntos exige este trabajo?</p>
-                </div>
-
-                <div className="flex items-center justify-center gap-6 mb-8">
-                    <button onClick={() => setPts(Math.max(0, pts - 1))} className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center hover:bg-slate-200 text-slate-600 transition active:scale-90 border border-slate-200 shadow-sm"><Minus className="w-6 h-6"/></button>
-                    <div className="w-24 text-center">
-                        <span className="text-6xl font-black text-blue-600">{pts}</span>
-                    </div>
-                    <button onClick={() => setPts(pts + 1)} className="w-12 h-12 rounded-full bg-blue-50 flex items-center justify-center hover:bg-blue-100 text-blue-600 transition active:scale-90 border border-blue-200 shadow-sm"><Plus className="w-6 h-6"/></button>
-                </div>
-
-                {pts >= 2 && (
-                    <div className="mb-6 space-y-4">
-                        <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200">
-                            <label className="text-xs font-bold text-slate-500 uppercase mb-2 block">Razón de la solicitud ({pts} puntos)</label>
-                            <textarea
-                                className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-blue-200 resize-none"
-                                placeholder="Explica por qué esta reparación requiere más puntos..."
-                                rows={2}
-                                value={reason}
-                                onChange={(e) => setReason(e.target.value)}
-                            />
-                        </div>
-
-                        <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200">
-                            <label className="flex items-center justify-between cursor-pointer group">
-                                <span className="flex items-center gap-2 font-bold text-slate-700 text-sm"><Split className="w-4 h-4 text-purple-500"/> Dividir con compañero</span>
-                                <div className={`w-12 h-6 rounded-full p-1 transition-colors duration-300 ${isSplit ? 'bg-purple-600' : 'bg-slate-300'}`} onClick={() => setIsSplit(!isSplit)}>
-                                    <div className={`w-4 h-4 bg-white rounded-full shadow-md transform transition-transform duration-300 ${isSplit ? 'translate-x-6' : 'translate-x-0'}`}/>
-                                </div>
-                            </label>
-
-                            {isSplit && (
-                                <div className="mt-4 animate-in slide-in-from-top-2">
-                                    <div className="mb-3">
-                                        <label className="text-xs font-bold text-slate-400 uppercase mb-1 block">Compañero</label>
-                                        <select 
-                                            className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-purple-200"
-                                            value={partnerId}
-                                            onChange={(e) => setPartnerId(e.target.value)}
-                                        >
-                                            <option value="">Seleccionar...</option>
-                                            {availablePartners.map((u: any) => (
-                                                <option key={u.id} value={u.id}>{u.name}</option>
-                                            ))}
-                                        </select>
-                                    </div>
-                                    {partnerId && (
-                                        <div>
-                                            <div className="flex justify-between text-xs font-bold mb-2">
-                                                <span className="text-blue-600">Yo: {myShare}</span>
-                                                <span className="text-purple-600">El: {pts - myShare}</span>
-                                            </div>
-                                            <input 
-                                                type="range" 
-                                                min="1" 
-                                                max={pts - 1} 
-                                                value={myShare} 
-                                                onChange={(e) => setMyShare(parseInt(e.target.value))}
-                                                className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
-                                            />
-                                        </div>
-                                    )}
-                                </div>
-                            )}
-                        </div>
-                    </div>
-                )}
-
-                <div className="flex gap-3">
-                    <button onClick={onCancel} disabled={isSubmitting} className="flex-1 py-4 text-slate-500 font-bold hover:bg-slate-50 rounded-xl transition disabled:opacity-50">Cancelar</button>
-                    <button 
-                        onClick={handleConfirm}
-                        disabled={(isSplit && !partnerId) || isSubmitting || (pts >= 2 && !reason.trim())}
-                        className={`flex-[2] py-4 rounded-xl text-white font-bold shadow-lg transition active:scale-95 flex items-center justify-center gap-2 ${pts === 0 ? 'bg-slate-700 hover:bg-slate-800' : 'bg-green-600 hover:bg-green-700'} disabled:opacity-50 disabled:cursor-not-allowed`}
-                    >
-                        {isSubmitting ? <Loader2 className="w-5 h-5 animate-spin" /> : (pts === 0 ? 'Reparación sin Costo' : `Confirmar (${pts} pts)`)}
-                    </button>
-                </div>
-
-
-            </div>
-        </div>
-    );
-};
-
-// --- MODAL: SEND TECH MESSAGE (ENHANCED) ---
-const SendTechMessageModal = ({ techName, onSend, onClose }: any) => {
-    // ... (Code remains same as provided in previous turn) ...
-    const [msg, setMsg] = useState('');
-    const [isSending, setIsSending] = useState(false);
-
-    const quickMsg = (text: string) => setMsg(text);
-
-    const handleSend = () => {
-        if(!msg.trim()) return;
-        setIsSending(true);
-        setTimeout(() => {
-            onSend(msg);
-        }, 600);
-    };
-
-    return (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-slate-900/70 backdrop-blur-md p-4 animate-in fade-in duration-300" onClick={onClose}>
-            <div
-                className="bg-slate-50 rounded-[32px] shadow-2xl w-full max-w-md relative overflow-hidden animate-in zoom-in-95 duration-300 border border-white/20"
-                onClick={e => e.stopPropagation()}
-            >
-                <div className="bg-gradient-to-r from-blue-600 to-indigo-600 p-6 pt-8 pb-10 text-white relative">
-                    <div className="absolute top-0 right-0 p-3 opacity-20">
-                        <MessageCircle className="w-24 h-24 -mr-6 -mt-6 rotate-12" />
-                    </div>
-                    <button onClick={onClose} className="absolute top-4 right-4 p-2 bg-white/20 hover:bg-white/30 rounded-full text-white transition backdrop-blur-sm">
-                        <X className="w-5 h-5" />
-                    </button>
-                    <h3 className="text-3xl font-black tracking-tight mb-1 flex items-center gap-2">
-                        Mensaje Rápido
-                    </h3>
-                    <p className="text-blue-100 font-medium flex items-center gap-2 text-sm opacity-90">
-                        Para: <span className="bg-white/20 px-2 py-0.5 rounded-lg font-bold text-white shadow-sm border border-white/10 uppercase tracking-wider">{techName}</span>
-                    </p>
-                </div>
-
-                <div className="relative -mt-6 px-6 pb-6">
-                    <div className="bg-white rounded-2xl shadow-xl border border-slate-100 p-1">
-                        <div className="flex gap-2 overflow-x-auto p-3 pb-1 no-scrollbar">
-                            <button onClick={() => quickMsg("⚡ Prioridad Urgente, por favor revisar.")} className="whitespace-nowrap px-3 py-1.5 bg-yellow-50 text-yellow-700 rounded-lg text-[10px] font-bold border border-yellow-100 hover:bg-yellow-100 transition active:scale-95 flex items-center gap-1"><Zap className="w-3 h-3"/> Urgente</button>
-                            <button onClick={() => quickMsg("📞 Llámame cuando puedas.")} className="whitespace-nowrap px-3 py-1.5 bg-green-50 text-green-700 rounded-lg text-[10px] font-bold border border-green-100 hover:bg-green-100 transition active:scale-95 flex items-center gap-1"><Phone className="w-3 h-3"/> Llámame</button>
-                            <button onClick={() => quickMsg("👀 ¿En qué estado está esto?")} className="whitespace-nowrap px-3 py-1.5 bg-blue-50 text-blue-700 rounded-lg text-[10px] font-bold border border-blue-100 hover:bg-blue-100 transition active:scale-95 flex items-center gap-1"><Sparkles className="w-3 h-3"/> Status</button>
-                        </div>
-                        <div className="p-3">
-                            <textarea
-                                className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl p-4 text-slate-700 font-medium focus:bg-white focus:border-blue-400 focus:ring-4 focus:ring-blue-50 outline-none transition-all resize-none text-sm leading-relaxed placeholder:text-slate-300 shadow-inner"
-                                placeholder="Escribe tu mensaje aquí..."
-                                rows={4}
-                                value={msg}
-                                onChange={e => setMsg(e.target.value)}
-                                autoFocus
-                            />
-                        </div>
-                    </div>
-                    <div className="mt-6">
-                        <button
-                            onClick={handleSend}
-                            disabled={!msg.trim() || isSending}
-                            className={`w-full py-4 rounded-2xl font-black text-sm uppercase tracking-widest shadow-lg flex items-center justify-center gap-3 transition-all transform active:scale-95 ${
-                                isSending
-                                ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
-                                : 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:shadow-blue-200 hover:-translate-y-1'
-                            }`}
-                        >
-                            {isSending ? (
-                                <>Enviando <Loader2 className="w-4 h-4 animate-spin"/></>
-                            ) : (
-                                <>Enviar Nota <Send className="w-4 h-4" /></>
-                            )}
-                        </button>
-                    </div>
-                </div>
-            </div>
-        </div>
-    );
-};
-
-// --- MODAL: CONFIRM APPROVAL ---
-// ... (ConfirmApprovalModal, AssignTechModal, ExternalRepairModal remain same) ...
-const AssignTechModal = ({ users, onClose, onConfirm }: any) => (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
-        <div className="bg-white rounded-lg p-6 max-w-sm w-full" onClick={e=>e.stopPropagation()}>
-            <h3 className="font-bold mb-4">Asignar Técnico</h3>
-            {users.map((u:any) => <div key={u.id} onClick={()=>onConfirm(u.id, u.name)} className="p-2 hover:bg-slate-100 cursor-pointer">{u.name}</div>)}
-        </div>
-    </div>
-);
-const ExternalRepairModal = ({ onClose, onConfirm }: any) => (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
-        <div className="bg-white rounded-lg p-6 max-w-sm w-full" onClick={e=>e.stopPropagation()}>
-            <h3 className="font-bold mb-4">Envío Externo</h3>
-            <div className="space-y-2">
-                <button onClick={()=>onConfirm("BRENY NIZAO", "Reparación Externa")} className="bg-purple-600 text-white p-3 rounded w-full font-bold text-sm">BRENI NIZAO</button>
-                <button onClick={()=>onConfirm("JUNIOR BARON", "Reparación Externa")} className="bg-indigo-600 text-white p-3 rounded w-full font-bold text-sm">JUNIOR BARON</button>
-            </div>
-            <button onClick={onClose} className="mt-4 text-slate-500 text-xs w-full text-center hover:underline">Cancelar</button>
-        </div>
-    </div>
-);
-
-const RequestPartModal = ({ onClose, onConfirm }: any) => {
-    const [partName, setPartName] = useState('');
-    return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" onClick={onClose}>
-            <div className="bg-white rounded-2xl p-6 max-w-sm w-full shadow-2xl animate-in zoom-in-95" onClick={e=>e.stopPropagation()}>
-                <div className="flex items-center gap-3 mb-4 text-slate-800">
-                    <div className="bg-blue-50 p-2 rounded-lg text-blue-600"><ShoppingBag className="w-6 h-6"/></div>
-                    <h3 className="font-black text-xl">Solicitar Pieza</h3>
-                </div>
-                
-                <div className="mb-4">
-                    <label className="text-xs font-bold text-slate-400 uppercase mb-1 block">Nombre de la Pieza / Repuesto</label>
-                    <input 
-                        autoFocus
-                        className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-medium outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400 text-slate-800"
-                        placeholder="Ej: Pantalla iPhone 11, Batería..."
-                        value={partName}
-                        onChange={e => setPartName(e.target.value)}
-                    />
-                </div>
-
-                <div className="flex gap-2">
-                    <button onClick={onClose} className="flex-1 py-3 text-slate-500 font-bold hover:bg-slate-50 rounded-xl transition">Cancelar</button>
-                    <button 
-                        onClick={() => onConfirm(partName)}
-                        disabled={!partName.trim()}
-                        className="flex-[2] bg-blue-600 text-white py-3 rounded-xl font-bold shadow-lg shadow-blue-200 hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                        Solicitar
-                    </button>
-                </div>
-            </div>
-        </div>
-    );
-};
+import { UnrepairableModal } from '../components/modals/UnrepairableModal';
+import { PointsRequestModal } from '../components/modals/PointsRequestModal';
+import { SendTechMessageModal } from '../components/modals/SendTechMessageModal';
+import { AssignTechModal } from '../components/modals/AssignTechModal';
+import { ExternalRepairModal } from '../components/modals/ExternalRepairModal';
+import { RequestPartModal } from '../components/modals/RequestPartModal';
+import { DbFixModal } from '../components/DbFixModal';
+import { CustomerSelectModal } from '../components/modals/CustomerSelectModal';
+import { WarrantyReasonModal } from '../components/modals/WarrantyReasonModal';
 
 export const OrderDetails: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const [showDbFixModal, setShowDbFixModal] = useState(false);
   const { 
-    orders, updateOrderDetails, updateOrderStatus, addOrderLog, showNotification, 
+    orders,
+    updateOrderDetails, updateOrderStatus, addOrderLog, showNotification, 
     addPayments, resolveReturn, deleteOrder, initiateTransfer, assignOrder, requestExternalRepair,
     resolveAssignmentRequest, validateOrder, confirmTransfer, resolveExternalRepair, receiveFromExternal,
-    fetchOrderById, sendTechMessage, resolveTechMessage, debatePoints, recordOrderLog, requestAssignment,
-    addPartRequest
+    sendTechMessage, resolveTechMessage, debatePoints, recordOrderLog, requestAssignment,
+    addPartRequest, createWarrantyOrder
   } = useOrders();
   
   const { currentUser, users } = useAuth();
 
-  const order = orders.find(o => o.id === id);
+  // Fetch specific order data
+  const { data: order, isLoading: isLoadingOrder } = useQuery({
+    queryKey: ['order', id],
+    queryFn: () => orderService.getOrderById(id!),
+    enabled: !!id,
+  });
 
-  // States
+  // Customer History Logic (Server-side)
+  const { data: historyData, isLoading: isLoadingHistory } = useQuery({
+    queryKey: ['customerHistory', order?.customer?.phone],
+    queryFn: () => orderService.getCustomerHistory(order!.customer.phone),
+    enabled: !!order?.customer?.phone && order.customer.phone.length >= 8
+  });
+
+  const customerHistory = useMemo(() => {
+      if (!historyData || historyData.length === 0) return null;
+      
+      const totalSpent = historyData.reduce((sum, o) => {
+          if (o.status === OrderStatus.RETURNED) {
+              return sum + (o.finalPrice || o.estimatedCost || 0);
+          }
+          return sum;
+      }, 0);
+
+      const thirtyDaysAgo = Date.now() - (30 * 24 * 60 * 60 * 1000);
+      const abandoned = historyData.filter(o => 
+          o.status !== OrderStatus.RETURNED && 
+          o.status !== OrderStatus.CANCELED && 
+          (o.createdAt || 0) < thirtyDaysAgo
+      );
+      
+      const active = historyData.filter(o => 
+          o.status !== OrderStatus.RETURNED && 
+          o.status !== OrderStatus.CANCELED &&
+          (o.createdAt || 0) >= thirtyDaysAgo
+      );
+
+      return {
+          visits: historyData.length,
+          totalSpent,
+          abandoned: abandoned.length,
+          active: active.length
+      };
+  }, [historyData]);
+
   const [isEditing, setIsEditing] = useState(false);
+
+  // Handlers with useCallback
+  const handleSaveDetails = useCallback(async (updates: Partial<RepairOrder>) => {
+    if (!id) return;
+    try {
+      await updateOrderDetails(id, updates);
+      setIsEditing(false);
+      showNotification('success', 'Detalles actualizados');
+    } catch (error) {
+      showNotification('error', 'Error al guardar detalles');
+    }
+  }, [id, updateOrderDetails, showNotification]);
   const [showDeliveryModal, setShowDeliveryModal] = useState(false);
   const [showProposalModal, setShowProposalModal] = useState(false);
   const [showReturnModal, setShowReturnModal] = useState(false);
@@ -459,6 +136,10 @@ export const OrderDetails: React.FC = () => {
   const [showTechMsgModal, setShowTechMsgModal] = useState(false);
   const [isSubmittingPoints, setIsSubmittingPoints] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [showPreDeliveryCheckModal, setShowPreDeliveryCheckModal] = useState(false);
+  const [showCustomerSelect, setShowCustomerSelect] = useState(false);
+  const [showWarrantyModal, setShowWarrantyModal] = useState(false);
+  const [warrantyType, setWarrantyType] = useState<'WARRANTY' | 'QUALITY'>('WARRANTY');
   
   // Edit Form State
   const [editForm, setEditForm] = useState<any>({});
@@ -479,7 +160,15 @@ export const OrderDetails: React.FC = () => {
               deviceIssue: order.deviceIssue,
               deviceCondition: order.deviceCondition,
               priority: order.priority,
-              deadline: order.deadline ? new Date(order.deadline - (new Date().getTimezoneOffset() * 60000)).toISOString().slice(0, 16) : '',
+              deadline: order.deadline ? (() => {
+                  const d = new Date(order.deadline);
+                  const year = d.getFullYear();
+                  const month = String(d.getMonth() + 1).padStart(2, '0');
+                  const day = String(d.getDate()).padStart(2, '0');
+                  const hours = String(d.getHours()).padStart(2, '0');
+                  const minutes = String(d.getMinutes()).padStart(2, '0');
+                  return `${year}-${month}-${day}T${hours}:${minutes}`;
+              })() : '',
               imei: order.imei,
               deviceStorage: order.deviceStorage,
               batteryHealth: order.batteryHealth,
@@ -488,28 +177,27 @@ export const OrderDetails: React.FC = () => {
               devicePassword: order.devicePassword
           });
           setExpenses(order.expenses || []);
-          const price = order.finalPrice > 0 ? order.finalPrice : order.estimatedCost;
+          let price = order.finalPrice > 0 ? order.finalPrice : order.estimatedCost;
+          if (order.finalPrice === 0 && order.orderType === OrderType.STORE && order.targetPrice) {
+              price = order.targetPrice;
+          }
           setFinalPriceInput(isNaN(price) ? '0' : price.toString());
       }
   }, [order]);
 
   const assignedUser = useMemo(() => users.find(u => u.id === order?.assignedTo), [order, users]);
 
-  // Loading check removed
-  if (!order) return <div className="p-8 text-center text-red-500">Orden no encontrada.</div>;
-
   // Permissions & Variables
   const isTech = currentUser?.role === UserRole.TECHNICIAN;
   const isAdmin = currentUser?.role === UserRole.ADMIN;
   const isMonitor = currentUser?.role === UserRole.MONITOR;
   const canEdit = currentUser?.permissions?.canEditOrderDetails || isAdmin;
-  const canDeliver = currentUser?.permissions?.canDeliverOrder || isAdmin;
-  // Everyone can view accounting details now
-  const canViewAccounting = true; 
+  const canDeliver = (currentUser?.permissions?.canDeliverOrder || isAdmin) && !isMonitor;
+  const canViewAccounting = currentUser?.permissions?.canViewAccounting || isAdmin; 
   const canEditExpenses = currentUser?.permissions?.canEditExpenses || isAdmin;
 
   // Check for Pending Points Request
-  const pendingPointRequest = order.pointRequest && order.pointRequest.status === 'PENDING';
+  const pendingPointRequest = order?.pointRequest && order.pointRequest.status === RequestStatus.PENDING;
   const canApprovePoints = isAdmin || isMonitor;
 
   // --- RESTORED HANDLERS ---
@@ -518,15 +206,44 @@ export const OrderDetails: React.FC = () => {
   const hasPendingRequests = useMemo(() => {
       if (!order) return false;
       return (
-          (order.pointRequest && order.pointRequest.status === 'PENDING') ||
-          (order.returnRequest && order.returnRequest.status === 'PENDING') ||
-          (order.externalRepair && order.externalRepair.status === 'PENDING') ||
-          order.status === OrderStatus.WAITING_APPROVAL ||
-          order.approvalAckPending
+          (order.pointRequest && order.pointRequest.status === RequestStatus.PENDING) ||
+          (order.returnRequest && order.returnRequest.status === RequestStatus.PENDING) ||
+          (order.externalRepair && order.externalRepair.status === RequestStatus.PENDING) ||
+          order.status === OrderStatus.WAITING_APPROVAL
+          // Removed order.approvalAckPending from here because it blocks payments/deposits unnecessarily.
+          // It's only meant to block the technician from starting repair until they acknowledge.
       );
   }, [order]);
 
+  if (isLoadingOrder) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+      </div>
+    );
+  }
+
+  if (!order) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen p-4">
+        <AlertTriangle className="w-12 h-12 text-amber-500 mb-4" />
+        <h2 className="text-xl font-semibold mb-2">Orden no encontrada</h2>
+        <button onClick={() => navigate('/dashboard')} className="text-blue-600 hover:underline">
+          Volver al Dashboard
+        </button>
+      </div>
+    );
+  }
+
   const handleStatusChange = async (newStatus: OrderStatus) => {
+      if (order.status === OrderStatus.CANCELED) {
+          alert("🚫 Esta orden está Cancelada y no puede cambiar de estado.");
+          return;
+      }
+      if (newStatus === OrderStatus.RETURNED) {
+          handleDeliverCheck();
+          return;
+      }
       if (newStatus === OrderStatus.REPAIRED) {
           setShowPointsModal(true);
           return;
@@ -535,7 +252,7 @@ export const OrderDetails: React.FC = () => {
           setShowProposalModal(true);
           return;
       }
-      await updateOrderStatus(order.id, newStatus);
+      await updateOrderStatus(order.id, newStatus, `🔄 Estado cambiado a ${newStatus} por ${currentUser?.name}`, currentUser?.name);
       showNotification('success', `Estado cambiado a ${newStatus}`);
   };
 
@@ -547,15 +264,15 @@ export const OrderDetails: React.FC = () => {
           
           // Construct the log manually to avoid stale state race conditions
           const logMessage = isAutoApproved ? `✅ Finalizado. ${points} pts (Automático).` : `⚠️ Solicitud de ${points} pts enviada a revisión.`;
-          const logType = isAutoApproved ? 'SUCCESS' : 'WARNING';
+          const logType = isAutoApproved ? LogType.SUCCESS : LogType.WARNING;
           
-          const newLog = {
+          const newLog: HistoryLog = {
               date: new Date().toISOString(),
               status: isAutoApproved ? OrderStatus.REPAIRED : order.status,
               note: logMessage,
               technician: currentUser?.name || 'Sistema',
               logType: logType,
-              action_type: isAutoApproved ? 'POINTS_AUTO_APPROVED' : 'POINTS_REQUESTED',
+              action_type: isAutoApproved ? ActionType.POINTS_AUTO_APPROVED : ActionType.POINTS_REQUESTED,
               metadata: { points, reason, split }
           };
 
@@ -570,7 +287,7 @@ export const OrderDetails: React.FC = () => {
                   requestedPoints: points,
                   reason,
                   splitProposal: split,
-                  status: isAutoApproved ? 'APPROVED' : 'PENDING',
+                  status: isAutoApproved ? RequestStatus.APPROVED : RequestStatus.PENDING,
                   approvedBy: isAutoApproved ? 'Sistema' : undefined,
                   requestedAt: Date.now()
               },
@@ -595,10 +312,78 @@ export const OrderDetails: React.FC = () => {
       }
   };
 
-  const handleAddExpense = async (desc: string, amount: number) => { 
-      const newExp: Expense = { id: Date.now().toString(), description: desc, amount, date: Date.now() };
-      const newExpenses = [...expenses, newExp];
-      await updateOrderDetails(order.id, { expenses: newExpenses }); 
+  const handleAddExpenses = async (expensesToAdd: {desc: string, amount: number, receiptUrl?: string, sharedReceiptId?: string, readableId?: number, isExternal?: boolean, closingId?: string, createdAt?: string, invoiceNumber?: string, isDuplicate?: boolean}[]) => {
+      const newExps: Expense[] = [];
+      
+      for (const [index, exp] of expensesToAdd.entries()) {
+          let readableId: number | undefined = exp.readableId;
+          
+          try {
+            let catId = await accountingService.getCategoryIdByName('Repuestos');
+            if (!catId) {
+                catId = await accountingService.getCategoryIdByName('Compras');
+            }
+
+            const transaction = await accountingService.addTransaction({
+              readable_id: readableId,
+              amount: -Math.abs(exp.amount),
+              transaction_date: exp.createdAt ? format(new Date(exp.createdAt), 'yyyy-MM-dd') : format(new Date(), 'yyyy-MM-dd'),
+              description: `[Orden #${order.readable_id || order.id.slice(0,6)}] ${exp.desc}`,
+              category_id: catId || undefined, 
+              vendor: 'Taller',
+              status: TransactionStatus.PENDING,
+              approval_status: exp.isExternal ? ApprovalStatus.APPROVED : ApprovalStatus.PENDING,
+              expense_destination: ExpenseDestination.WORKSHOP,
+              source: 'ORDER',
+              order_id: order.id,
+              created_by: currentUser?.id,
+              receipt_url: exp.receiptUrl,
+              shared_receipt_id: exp.sharedReceiptId,
+              closing_id: exp.closingId,
+              created_at: exp.createdAt,
+              invoice_number: exp.invoiceNumber,
+              is_duplicate: exp.isDuplicate
+            });
+            
+            if (transaction && transaction.readable_id) {
+                readableId = transaction.readable_id;
+            }
+          } catch (e) {
+            console.error("Error syncing expense to accounting:", e);
+          }
+          
+          newExps.push({
+              id: (Date.now() + index).toString(),
+              readable_id: readableId,
+              description: exp.desc,
+              amount: exp.amount,
+              date: Date.now(),
+              receiptUrl: exp.receiptUrl,
+              sharedReceiptId: exp.sharedReceiptId,
+              invoiceNumber: exp.invoiceNumber,
+              addedBy: currentUser?.name,
+              isExternal: exp.isExternal,
+              is_duplicate: exp.isDuplicate
+          });
+      }
+
+      const newExpenses = [...expenses, ...newExps];
+      await updateOrderDetails(order.id, { expenses: newExpenses });
+
+      for (const exp of newExps) {
+          await recordOrderLog(
+              order.id,
+              ActionType.EXPENSE_ADDED,
+              `💸 GASTO AGREGADO: ${exp.description} ($${exp.amount})${exp.readable_id ? ` #${exp.readable_id}` : ''}`,
+              { description: exp.description, amount: exp.amount, receiptUrl: exp.receiptUrl, sharedReceiptId: exp.sharedReceiptId, readableId: exp.readable_id },
+              LogType.INFO,
+              currentUser?.name
+          );
+      }
+  };
+
+  const handleAddExpense = async (desc: string, amount: number, receiptUrl?: string, sharedReceiptId?: string, providedReadableId?: number, isExternal?: boolean, closingId?: string, createdAt?: string, invoiceNumber?: string, isDuplicate?: boolean) => { 
+      let readableId: number | undefined = providedReadableId;
       
       // --- NEW ACCOUNTING LOGIC ---
       try {
@@ -608,28 +393,122 @@ export const OrderDetails: React.FC = () => {
             catId = await accountingService.getCategoryIdByName('Compras');
         }
 
-        await accountingService.addTransaction({
+        const transaction = await accountingService.addTransaction({
+          readable_id: readableId,
           amount: -Math.abs(amount), // Expense is negative
-          transaction_date: new Date().toISOString().split('T')[0],
+          transaction_date: createdAt ? format(new Date(createdAt), 'yyyy-MM-dd') : format(new Date(), 'yyyy-MM-dd'),
           description: `[Orden #${order.readable_id || order.id.slice(0,6)}] ${desc}`,
           category_id: catId || undefined, 
           vendor: 'Taller',
-          status: 'PENDING',
+          status: TransactionStatus.PENDING,
+          approval_status: isExternal ? ApprovalStatus.APPROVED : ApprovalStatus.PENDING,
+          expense_destination: ExpenseDestination.WORKSHOP,
           source: 'ORDER',
           order_id: order.id,
-          created_by: currentUser?.id
+          created_by: currentUser?.id,
+          receipt_url: receiptUrl, // Add receipt URL to accounting transaction if supported
+          shared_receipt_id: sharedReceiptId,
+          closing_id: closingId,
+          created_at: createdAt,
+          invoice_number: invoiceNumber,
+          is_duplicate: isDuplicate
         });
+        
+        if (transaction && transaction.readable_id) {
+            readableId = transaction.readable_id;
+        }
       } catch (e) {
         console.error("Error syncing expense to accounting:", e);
       }
+
+      const newExp: Expense = { 
+          id: Date.now().toString(), 
+          readable_id: readableId,
+          description: desc, 
+          amount, 
+          date: Date.now(),
+          receiptUrl,
+          sharedReceiptId,
+          invoiceNumber,
+          addedBy: currentUser?.name,
+          isExternal,
+          is_duplicate: isDuplicate
+      };
+      const newExpenses = [...expenses, newExp];
+      await updateOrderDetails(order.id, { expenses: newExpenses }); 
+      
+      await recordOrderLog(
+          order.id,
+          ActionType.EXPENSE_ADDED,
+          `💸 GASTO AGREGADO: ${desc} ($${amount})${readableId ? ` #${readableId}` : ''}`,
+          { description: desc, amount, receiptUrl, sharedReceiptId, readableId },
+          LogType.INFO,
+          currentUser?.name
+      );
   };
   const handleRemoveExpense = async (eid: string) => { 
+      const expenseToRemove = expenses.find(e => e.id === eid);
       const newExpenses = expenses.filter(e => e.id !== eid);
       await updateOrderDetails(order.id, { expenses: newExpenses }); 
+      
+      if (expenseToRemove) {
+          // Delete from accounting
+          try {
+            const accountingDesc = `[Orden #${order.readable_id || order.id.slice(0,6)}] ${expenseToRemove.description}`;
+            const deletedTx = await accountingService.deleteTransactionByOrderExpense(order.id, accountingDesc, expenseToRemove.amount);
+            
+            // Return to floating expenses (gastos en espera) ONLY if it was originally a floating expense
+            if (expenseToRemove.isExternal) {
+                await supabase.from('floating_expenses').insert([{
+                  description: expenseToRemove.description,
+                  amount: expenseToRemove.amount,
+                  receipt_url: expenseToRemove.receiptUrl || null,
+                  shared_receipt_id: expenseToRemove.sharedReceiptId || null,
+                  created_by: currentUser?.id || null,
+                  branch_id: order.currentBranch || 'T4',
+                  approval_status: 'APPROVED', // Ya estaba aprobado si estaba en la orden
+                  closing_id: deletedTx?.closing_id || null,
+                  created_at: deletedTx?.created_at || new Date().toISOString()
+                }]);
+            }
+          } catch (e) {
+            console.error("Error deleting expense from accounting or returning to floating:", e);
+          }
+
+          await recordOrderLog(
+              order.id,
+              ActionType.EXPENSE_REMOVED,
+              `🗑️ GASTO ELIMINADO: ${expenseToRemove.description} ($${expenseToRemove.amount})`,
+              { expense: expenseToRemove },
+              LogType.DANGER,
+              currentUser?.name
+          );
+      }
   };
   const handleEditExpense = async (eid: string, desc: string, amount: number) => { 
+      const oldExpense = expenses.find(e => e.id === eid);
       const newExpenses = expenses.map(e => e.id === eid ? { ...e, description: desc, amount } : e);
       await updateOrderDetails(order.id, { expenses: newExpenses }); 
+      
+      if (oldExpense && (oldExpense.description !== desc || oldExpense.amount !== amount)) {
+          // Update in accounting
+          try {
+            const oldAccountingDesc = `[Orden #${order.readable_id || order.id.slice(0,6)}] ${oldExpense.description}`;
+            const newAccountingDesc = `[Orden #${order.readable_id || order.id.slice(0,6)}] ${desc}`;
+            await accountingService.updateTransactionByOrderExpense(order.id, oldAccountingDesc, oldExpense.amount, newAccountingDesc, amount);
+          } catch (e) {
+            console.error("Error updating expense in accounting:", e);
+          }
+
+          await recordOrderLog(
+              order.id,
+              ActionType.EXPENSE_EDITED,
+              `✏️ GASTO EDITADO: ${oldExpense.description} ($${oldExpense.amount}) ➔ ${desc} ($${amount})`,
+              { oldExpense, newDesc: desc, newAmount: amount },
+              LogType.INFO,
+              currentUser?.name
+          );
+      }
   };
   const handleUpdatePrice = async (reason?: string) => { 
       const newPrice = parseFloat(finalPriceInput);
@@ -640,10 +519,10 @@ export const OrderDetails: React.FC = () => {
       if (newPrice !== oldPrice) {
           await recordOrderLog(
               order.id, 
-              'PRICE_UPDATED', 
+              ActionType.PRICE_UPDATED, 
               `💰 PRECIO ACTUALIZADO: $${oldPrice} ➔ $${newPrice}. Razón: ${reason || 'Ajuste manual'}`, 
               { oldPrice, newPrice, reason }, 
-              'WARNING', 
+              LogType.WARNING, 
               currentUser?.name
           );
       }
@@ -667,7 +546,7 @@ export const OrderDetails: React.FC = () => {
           diagnosticFee: fee,
           requestedBy: currentUser?.name || 'Técnico',
           requestedAt: Date.now(),
-          status: 'PENDING' as 'PENDING'
+          status: RequestStatus.PENDING
       };
       // Si hay cobro de chequeo, actualizamos el precio final de una vez (o lo dejamos para la aprobación)
       // La instrucción dice: "Al solicitar devolución, el técnico debe indicar si se cobra chequeo y el monto".
@@ -675,7 +554,7 @@ export const OrderDetails: React.FC = () => {
       // Así que aquí solo guardamos la solicitud.
       
       await updateOrderDetails(order.id, { returnRequest: request });
-      await addOrderLog(order.id, order.status, `⚠️ SOLICITUD DEVOLUCIÓN: ${reason}. Chequeo: $${fee}`, currentUser?.name, 'WARNING');
+      await addOrderLog(order.id, order.status, `⚠️ SOLICITUD DEVOLUCIÓN: ${reason}. Chequeo: $${fee}`, currentUser?.name, LogType.WARNING);
       setShowReturnModal(false);
       showNotification('success', 'Solicitud enviada a supervisión');
   };
@@ -687,7 +566,7 @@ export const OrderDetails: React.FC = () => {
       } else {
           setIsProcessing(true);
           try {
-              await updateOrderStatus(order.id, OrderStatus.DIAGNOSIS, `❌ Presupuesto RECHAZADO por ${currentUser.name}.`);
+              await updateOrderStatus(order.id, OrderStatus.DIAGNOSIS, `❌ Presupuesto RECHAZADO por ${currentUser.name}.`, currentUser.name);
           } finally {
               setIsProcessing(false);
           }
@@ -707,8 +586,8 @@ export const OrderDetails: React.FC = () => {
               status: OrderStatus.IN_REPAIR,
               note: `✅ APROBADO: Presupuesto $${finalAmount}. Notas: ${instructions || 'Ninguna'}`,
               technician: currentUser.name,
-              logType: 'SUCCESS' as LogType,
-              action_type: 'BUDGET_APPROVED',
+              logType: LogType.SUCCESS,
+              action_type: ActionType.BUDGET_APPROVED,
               metadata: { amount: finalAmount, instructions }
           };
 
@@ -719,6 +598,7 @@ export const OrderDetails: React.FC = () => {
               status: OrderStatus.IN_REPAIR,
               estimatedCost: !isNaN(newEstimate) ? newEstimate : order.estimatedCost,
               finalPrice: !isNaN(newEstimate) ? newEstimate : order.finalPrice,
+              totalAmount: !isNaN(newEstimate) ? newEstimate : (order.totalAmount || order.estimatedCost),
               technicianNotes: updatedNotes,
               approvalAckPending: true,
               history: newHistory
@@ -744,8 +624,8 @@ export const OrderDetails: React.FC = () => {
                   status: OrderStatus.REPAIRED,
                   note: `✅ Puntos APROBADOS (${order.pointRequest.requestedPoints}) por ${currentUser.name}.`,
                   technician: currentUser.name,
-                  logType: 'SUCCESS' as LogType,
-                  action_type: 'POINTS_APPROVED',
+                  logType: LogType.SUCCESS,
+                  action_type: ActionType.POINTS_APPROVED,
                   metadata: { points: order.pointRequest.requestedPoints }
               };
               
@@ -754,7 +634,7 @@ export const OrderDetails: React.FC = () => {
 
               const updates: Partial<RepairOrder> = { 
                   pointsAwarded: order.pointRequest.requestedPoints, 
-                  pointRequest: { ...order.pointRequest, status: 'APPROVED', approvedBy: currentUser.name },
+                  pointRequest: { ...order.pointRequest, status: RequestStatus.APPROVED, approvedBy: currentUser.name },
                   status: OrderStatus.REPAIRED,
                   history: newHistory
               };
@@ -767,8 +647,8 @@ export const OrderDetails: React.FC = () => {
                   status: order.status,
                   note: `❌ Solicitud de puntos RECHAZADA por ${currentUser.name}.`,
                   technician: currentUser.name,
-                  logType: 'DANGER' as LogType,
-                  action_type: 'POINTS_REJECTED',
+                  logType: LogType.DANGER,
+                  action_type: ActionType.POINTS_REJECTED,
                   metadata: { requested: order.pointRequest.requestedPoints }
               };
               
@@ -777,7 +657,7 @@ export const OrderDetails: React.FC = () => {
 
               await updateOrderDetails(order.id, { 
                   pointsAwarded: 0, 
-                  pointRequest: { ...order.pointRequest, status: 'REJECTED', approvedBy: currentUser.name },
+                  pointRequest: { ...order.pointRequest, status: RequestStatus.REJECTED, approvedBy: currentUser.name },
                   history: newHistory
               });
           }
@@ -793,7 +673,7 @@ export const OrderDetails: React.FC = () => {
           // a) marcar la alerta como resuelta
           await updateOrderDetails(order.id, { approvalAckPending: false });
           // b) registrar historial
-          await recordOrderLog(order.id, 'APPROVAL_ACKNOWLEDGED', `🤓 TÉCNICO CONFIRMÓ INSTRUCCIONES: El técnico ${currentUser.name} ha leído y aceptado la aprobación.`, { technician: currentUser.name }, 'INFO', currentUser.name);
+          await recordOrderLog(order.id, ActionType.APPROVAL_ACKNOWLEDGED, `🤓 TÉCNICO CONFIRMÓ INSTRUCCIONES: El técnico ${currentUser.name} ha leído y aceptado la aprobación.`, { technician: currentUser.name }, LogType.INFO, currentUser.name);
           // c) permitir continuar a la etapa siguiente (reparación) según lógica actual
           // (La lógica actual ya permite editar/avanzar si el estado es IN_REPAIR, que ya debería estar seteado al aprobar presupuesto)
           showNotification('success', 'Confirmado');
@@ -810,7 +690,7 @@ export const OrderDetails: React.FC = () => {
   };
 
   const handleReadMessage = async () => {
-      await resolveTechMessage(order.id);
+      await resolveTechMessage(order.id, currentUser.name);
       showNotification('success', 'Mensaje marcado como leído');
   };
 
@@ -837,6 +717,17 @@ export const OrderDetails: React.FC = () => {
       } else {
           // Admin or self-assign (or other roles) can force assignment
           await assignOrder(order!.id, userId, name);
+          
+          // Record audit log
+          if (currentUser) {
+              await auditService.recordLog(
+                  { id: currentUser.id, name: currentUser.name },
+                  ActionType.ORDER_ASSIGNED,
+                  `Orden #${order!.readable_id || order!.id} asignada a ${name}`,
+                  order!.id
+              );
+          }
+
           setShowAssignModal(false);
           showNotification('success', `Asignado a ${name}`);
       }
@@ -850,6 +741,17 @@ export const OrderDetails: React.FC = () => {
       const target = order.currentBranch === 'T1' ? 'T4' : 'T1';
       if(confirm(`¿Iniciar traslado hacia ${target}? El equipo quedará en tránsito.`)) {
           await initiateTransfer(order.id, target, currentUser?.name || 'Sistema');
+          
+          // Record audit log
+          if (currentUser) {
+              await auditService.recordLog(
+                  { id: currentUser.id, name: currentUser.name },
+                  ActionType.ORDER_TRANSFERRED,
+                  `Orden #${order.readable_id || order.id} transferida hacia ${target}`,
+                  order.id
+              );
+          }
+
           showNotification('success', 'Traslado iniciado');
       }
   };
@@ -865,10 +767,10 @@ export const OrderDetails: React.FC = () => {
       if (!confirm("¿Rechazar el traslado de este equipo?")) return;
       
       await updateOrderDetails(order.id, { 
-          transferStatus: 'NONE', 
+          transferStatus: TransferStatus.NONE, 
           transferTarget: null 
       });
-      await recordOrderLog(order.id, 'TRANSFER_REJECTED', `🚫 TRASLADO RECHAZADO por ${currentUser.name}.`, {}, 'DANGER', currentUser.name);
+      await recordOrderLog(order.id, ActionType.TRANSFER_REJECTED, `🚫 TRASLADO RECHAZADO por ${currentUser.name}.`, {}, LogType.DANGER, currentUser.name);
       showNotification('success', 'Traslado rechazado.');
   };
 
@@ -876,7 +778,7 @@ export const OrderDetails: React.FC = () => {
       if (!order || !currentUser) return;
       if (confirm("¿Reclamar esta orden y asignártela?")) {
           await updateOrderDetails(order.id, { assignedTo: currentUser.id });
-          await addOrderLog(order.id, order.status, `Orden reclamada por ${currentUser.name}`, currentUser.name, 'INFO');
+          await addOrderLog(order.id, order.status, `Orden reclamada por ${currentUser.name}`, currentUser.name, LogType.INFO);
           showNotification('success', 'Orden reclamada exitosamente');
       }
   };
@@ -892,8 +794,8 @@ export const OrderDetails: React.FC = () => {
               status: OrderStatus.REPAIRED,
               note: `✅ DEVOLUCIÓN APROBADA por ${currentUser.name}. Costo Chequeo: $${fee}`,
               technician: currentUser.name,
-              logType: 'SUCCESS' as LogType,
-              action_type: 'RETURN_APPROVED',
+              logType: LogType.SUCCESS,
+              action_type: ActionType.RETURN_APPROVED,
               metadata: { fee }
           };
           
@@ -904,7 +806,8 @@ export const OrderDetails: React.FC = () => {
           await updateOrderDetails(order.id, { 
               status: OrderStatus.REPAIRED,
               finalPrice: fee,
-              returnRequest: { ...order.returnRequest, status: 'APPROVED', approvedBy: currentUser.name },
+              totalAmount: fee,
+              returnRequest: { ...order.returnRequest, status: RequestStatus.APPROVED, approvedBy: currentUser.name },
               history: newHistory
           });
           showNotification('success', 'Devolución aprobada. Orden lista para entregar.');
@@ -914,8 +817,8 @@ export const OrderDetails: React.FC = () => {
               status: order.status,
               note: `❌ Devolución RECHAZADA por ${currentUser.name}.`,
               technician: currentUser.name,
-              logType: 'DANGER' as LogType,
-              action_type: 'RETURN_REJECTED',
+              logType: LogType.DANGER,
+              action_type: ActionType.RETURN_REJECTED,
               metadata: {}
           };
           
@@ -923,7 +826,7 @@ export const OrderDetails: React.FC = () => {
           const newHistory = [...currentHistory, newLog];
 
           await updateOrderDetails(order.id, { 
-              returnRequest: { ...order.returnRequest, status: 'REJECTED', approvedBy: currentUser.name },
+              returnRequest: { ...order.returnRequest, status: RequestStatus.REJECTED, approvedBy: currentUser.name },
               history: newHistory
           });
           showNotification('success', 'Solicitud de devolución rechazada.');
@@ -967,12 +870,42 @@ export const OrderDetails: React.FC = () => {
           devicePassword: editForm.devicePassword
       };
       
+      // Update customer directory if linked
+      if (order.customerId) {
+          try {
+              await supabase.from('customers').update({
+                  name: editForm.customerName,
+                  phone: editForm.customerPhone
+              }).eq('id', order.customerId);
+          } catch (err) {
+              console.error("Error updating customer directory:", err);
+          }
+      }
+
       // LOG CHANGE OF DEADLINE
       if (editForm.deadline) {
-          const dl = new Date(editForm.deadline).getTime();
-          if (!isNaN(dl) && dl !== order.deadline) {
-              updates.deadline = dl;
-              // Auto-log handled in updateOrderDetails
+          const [datePart, timePart] = editForm.deadline.split('T');
+          if (datePart && timePart) {
+              const [year, month, day] = datePart.split('-').map(Number);
+              const [hours, minutes] = timePart.split(':').map(Number);
+              const dl = new Date(year, month - 1, day, hours, minutes).getTime();
+              
+              if (!isNaN(dl) && dl !== order.deadline) {
+                  updates.deadline = dl;
+                  
+                  // Log the change
+                  const oldDate = order.deadline ? new Date(order.deadline).toLocaleString('es-ES', { dateStyle: 'short', timeStyle: 'short' }) : 'Sin fecha';
+                  const newDate = new Date(dl).toLocaleString('es-ES', { dateStyle: 'short', timeStyle: 'short' });
+                  
+                  await recordOrderLog(
+                      order.id,
+                      ActionType.DEADLINE_CHANGED,
+                      `⏳ Tiempo límite actualizado: ${oldDate} ➔ ${newDate}`,
+                      { oldDeadline: order.deadline, newDeadline: dl },
+                      LogType.WARNING,
+                      currentUser?.name
+                  );
+              }
           }
       }
 
@@ -980,10 +913,10 @@ export const OrderDetails: React.FC = () => {
       if (editForm.customerPhone !== order.customer.phone) {
           await recordOrderLog(
               order.id, 
-              'PHONE_UPDATED', 
+              ActionType.PHONE_UPDATED, 
               `📞 TELÉFONO ACTUALIZADO: ${order.customer.phone} ➔ ${editForm.customerPhone}`, 
               { oldPhone: order.customer.phone, newPhone: editForm.customerPhone }, 
-              'INFO', 
+              LogType.INFO, 
               currentUser?.name
           );
       }
@@ -994,10 +927,6 @@ export const OrderDetails: React.FC = () => {
   };
 
   const handleDeposit = () => {
-      if (hasPendingRequests) {
-          alert("🚫 ACCIÓN BLOQUEADA\n\nNo se puede procesar pagos/abonos porque la orden tiene solicitudes pendientes. Resuélvelas primero.");
-          return;
-      }
       setIsDepositMode(true);
       setShowDeliveryModal(true);
   };
@@ -1008,12 +937,21 @@ export const OrderDetails: React.FC = () => {
       const newNote = note.trim();
       if (newNote === oldNote) return;
       await updateOrderDetails(order.id, { technicianNotes: newNote });
-      await recordOrderLog(order.id, 'NOTE_ADDED', `📝 NOTA BITÁCORA: ${newNote}`, { note: newNote }, 'INFO', currentUser?.name);
+      await recordOrderLog(order.id, ActionType.NOTE_ADDED, `📝 NOTA BITÁCORA: ${newNote}`, { note: newNote }, LogType.INFO, currentUser?.name);
       showNotification('success', 'Bitácora guardada');
   };
 
   const handleDelete = async () => {
       if(confirm('¿ESTÁ SEGURO? Esta acción es irreversible y eliminará todo el historial.')) {
+          // Record audit log BEFORE deletion
+          if (currentUser) {
+              await auditService.recordLog(
+                  { id: currentUser.id, name: currentUser.name },
+                  ActionType.ORDER_DELETED,
+                  `Orden eliminada: #${order.readable_id || order.id} (${order.deviceModel} - ${order.customer.name})`,
+                  order.id
+              );
+          }
           await deleteOrder(order.id);
           navigate('/orders');
       }
@@ -1021,19 +959,37 @@ export const OrderDetails: React.FC = () => {
 
   const handleReopen = async (type: 'WARRANTY' | 'QUALITY') => {
       if (!order || !currentUser) return;
-      if (!confirm(`¿Reingresar este equipo a taller por ${type === 'WARRANTY' ? 'GARANTÍA' : 'CALIDAD'}?`)) return;
-      const logMsg = type === 'WARRANTY' ? '🛡️ REINGRESO POR GARANTÍA' : '✨ REINGRESO POR CALIDAD/MEJORA';
-      await updateOrderDetails(order.id, { status: OrderStatus.DIAGNOSIS, assignedTo: null });
-      await addOrderLog(order.id, OrderStatus.DIAGNOSIS, `${logMsg}: Orden reactivada por ${currentUser.name}.`, currentUser.name, 'WARNING');
-      showNotification('success', 'Orden reactivada en Taller');
+      setWarrantyType(type);
+      setShowWarrantyModal(true);
+  };
+
+  const handleConfirmWarranty = async (reason: string) => {
+      if (!order || !currentUser) return;
+      try {
+          const newOrderId = await createWarrantyOrder(order, reason, warrantyType, currentUser.name);
+          setShowWarrantyModal(false);
+          showNotification('success', 'Nueva orden de reingreso creada correctamente');
+          navigate(`/orders/${newOrderId}`);
+      } catch (error: any) {
+          console.error("Error creating warranty order:", error);
+          showNotification('error', `Error al crear orden de reingreso: ${error.message}`);
+      }
+  };
+
+  const handleStoreDelivery = async () => {
+      if (!order || !currentUser) return;
+      try {
+          const updatedOrder = await finalizeDelivery(order, [], currentUser, addPayments, recordOrderLog);
+          showNotification('success', 'Equipo entregado a tienda exitosamente');
+          navigate('/taller');
+      } catch (error: any) {
+          console.error("Error entregando equipo a tienda:", error);
+          showNotification('error', error.message || 'Error desconocido');
+      }
   };
 
   const handleDeliverCheck = () => {
-      if (hasPendingRequests) {
-          alert("🚫 ACCIÓN BLOQUEADA\n\nNo se puede entregar/facturar la orden porque tiene solicitudes pendientes. Resuélvelas primero.");
-          return;
-      }
-      setShowDeliveryModal(true);
+      setShowPreDeliveryCheckModal(true);
   };
 
   return (
@@ -1058,6 +1014,21 @@ export const OrderDetails: React.FC = () => {
                 onClose={() => setShowTechMsgModal(false)} 
             />
         )}
+        {showPreDeliveryCheckModal && (
+            <PreDeliveryCheckModal
+                order={order}
+                hasPendingRequests={hasPendingRequests}
+                onClose={() => setShowPreDeliveryCheckModal(false)}
+                onProceed={() => {
+                    setShowPreDeliveryCheckModal(false);
+                    if (order.orderType === OrderType.STORE) {
+                        handleStoreDelivery();
+                    } else {
+                        setShowDeliveryModal(true);
+                    }
+                }}
+            />
+        )}
         {showDeliveryModal && (
             <DeliveryModal 
                 finalPriceInput={finalPriceInput}
@@ -1071,8 +1042,18 @@ export const OrderDetails: React.FC = () => {
                         if (isDepositMode) {
                             // Handle Deposit (Abono)
                             await addPayments(order.id, payments);
-                            await addOrderLog(order.id, order.status, `💰 ABONO RECIBIDO: $${payments.reduce((s,p)=>s+p.amount,0)}`, currentUser?.name, 'SUCCESS');
                             
+                            // Record audit log
+                            if (currentUser) {
+                                const totalAmount = payments.reduce((sum, p) => sum + p.amount, 0);
+                                await auditService.recordLog(
+                                    { id: currentUser.id, name: currentUser.name },
+                                    ActionType.PAYMENT_ADDED,
+                                    `Abono registrado para Orden #${order.readable_id || order.id}: $${totalAmount}`,
+                                    order.id
+                                );
+                            }
+
                             orderToPrint = { ...order, payments: [...(order.payments || []), ...payments] };
                             showNotification('success', 'Abono registrado');
                             
@@ -1086,6 +1067,17 @@ export const OrderDetails: React.FC = () => {
                             // CRITICAL DELIVERY FLOW
                             const updatedOrder = await finalizeDelivery(order, payments, currentUser!, addPayments, recordOrderLog);
                             
+                            // Record audit log
+                            if (currentUser) {
+                                const totalAmount = payments.reduce((sum, p) => sum + p.amount, 0);
+                                await auditService.recordLog(
+                                    { id: currentUser.id, name: currentUser.name },
+                                    ActionType.PAYMENT_ADDED,
+                                    `Pago final y entrega para Orden #${order.readable_id || order.id}: $${totalAmount}`,
+                                    order.id
+                                );
+                            }
+
                             // Construct temp order for printing (since we navigate away)
                             const allPayments = updatedOrder.payments?.length > (order.payments?.length || 0) 
                                 ? updatedOrder.payments 
@@ -1116,6 +1108,9 @@ export const OrderDetails: React.FC = () => {
                     } catch (error: any) {
                         console.error("Error en proceso de entrega (onConfirm):", error);
                         showNotification('error', error.message || 'Error desconocido');
+                        if (error.message && (error.message.includes('row-level security') || error.message.includes('RLS'))) {
+                            setShowDbFixModal(true);
+                        }
                     } finally {
                          console.log("--- FIN onConfirm ---");
                     }
@@ -1146,12 +1141,24 @@ export const OrderDetails: React.FC = () => {
         <div className="flex items-center gap-4 mb-6">
             <button onClick={() => navigate(-1)} className="p-2 bg-white rounded-full shadow-sm hover:bg-slate-100"><ArrowLeft className="w-5 h-5"/></button>
             <div>
-                <h1 className="text-3xl font-black text-slate-800 flex items-center gap-2">
+                <h1 className="text-3xl font-black text-slate-800 flex items-center gap-2 flex-wrap">
                     #{order.readable_id || order.id.slice(-4)}
                     {order.orderType === OrderType.STORE && <span className="bg-red-600 text-white px-2 py-1 rounded text-xs font-bold uppercase shadow-sm">RECIBIDO</span>}
+                    {order.orderType === OrderType.PART_ONLY && <span className="bg-slate-600 text-white px-2 py-1 rounded text-xs font-bold uppercase shadow-sm">PIEZA INDEPENDIENTE</span>}
+                    {order.orderType === OrderType.WARRANTY && <span className="bg-yellow-500 text-yellow-900 px-2 py-1 rounded text-xs font-bold uppercase shadow-sm">GARANTÍA</span>}
+                    {order.relatedOrderId && order.orderType === OrderType.REPAIR && order.technicianNotes?.includes('[REVISIÓN/CALIDAD]') && <span className="bg-purple-600 text-white px-2 py-1 rounded text-xs font-bold uppercase shadow-sm">REVISIÓN DE CALIDAD</span>}
                     <span className="text-sm font-medium text-slate-400">/ {order.deviceModel}</span>
+                    
+                    {order.relatedOrderId && (
+                        <button 
+                            onClick={() => navigate(`/orders/${order.relatedOrderId}`)}
+                            className="ml-2 bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-1.5 rounded-full text-xs font-bold uppercase shadow-sm border border-slate-300 flex items-center gap-1.5 transition-colors"
+                        >
+                            <RotateCcw className="w-3.5 h-3.5" /> Ver Orden Original
+                        </button>
+                    )}
                 </h1>
-                <div className="flex items-center gap-3 text-sm mt-1">
+                <div className="flex items-center gap-3 text-sm mt-2 flex-wrap">
                     <span className="font-bold text-slate-500 uppercase">CLIENTE: {order.customer.name}</span>
                     <div className="flex items-center gap-1.5 bg-slate-800 px-3 py-1 rounded-full border border-slate-700 shadow-md">
                         <span className="font-black text-white uppercase text-xs tracking-wider">ORIGEN: {order.originBranch || order.currentBranch || 'T4'}</span>
@@ -1177,6 +1184,21 @@ export const OrderDetails: React.FC = () => {
             </div>
         </div>
 
+        {/* Customer History Summary */}
+        {order.orderType !== OrderType.STORE && order.orderType !== OrderType.PART_ONLY && (
+            isLoadingHistory ? (
+                <div className="bg-white rounded-2xl p-4 border border-slate-200 flex items-center gap-3 animate-pulse">
+                    <Loader2 className="w-5 h-5 animate-spin text-blue-500" />
+                    <span className="text-sm font-medium text-slate-500">Cargando historial del cliente...</span>
+                </div>
+            ) : customerHistory && customerHistory.visits > 1 ? (
+                <CustomerHistorySummary 
+                    customerName={order.customer.name}
+                    history={customerHistory}
+                />
+            ) : null
+        )}
+
         {/* Layout Grid */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
             
@@ -1190,7 +1212,9 @@ export const OrderDetails: React.FC = () => {
                     setEditForm={setEditForm}
                     isAdmin={isAdmin}
                     canEdit={canEdit}
+                    canChangeDeadline={currentUser?.permissions?.canChangeDeadline}
                     onSave={handleSaveChanges}
+                    onSearchCustomer={() => setShowCustomerSelect(true)}
                 />
 
                 <ControlPanel 
@@ -1219,376 +1243,34 @@ export const OrderDetails: React.FC = () => {
             {/* RIGHT COLUMN (9/12) */}
             <div className="lg:col-span-9 space-y-6">
                 
-                {/* -2. TRANSFER ALERT BANNER (NEW) */}
-                {order.transferStatus === 'PENDING' && (currentUser?.role === UserRole.ADMIN || order.transferTarget === (currentUser?.branch || 'T4')) && (
-                    <div className="bg-blue-600 text-white p-4 rounded-2xl shadow-lg shadow-blue-200 mb-4 flex flex-col md:flex-row justify-between items-center gap-4 animate-in slide-in-from-top-4 border-2 border-white/20 relative overflow-hidden">
-                        <div className="absolute top-0 right-0 p-4 opacity-10 rotate-12">
-                            <ArrowRightLeft className="w-32 h-32 text-white" />
-                        </div>
-                        <div className="relative z-10 flex items-center gap-4">
-                            <div className="bg-white/20 p-3 rounded-xl shadow-inner backdrop-blur-sm animate-pulse">
-                                <ArrowRightLeft className="w-6 h-6 text-white" />
-                            </div>
-                            <div>
-                                <div className="flex items-center gap-2 mb-0.5">
-                                    <span className="bg-white text-blue-600 px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-widest shadow-sm">Acción Requerida</span>
-                                    <span className="text-blue-100 text-[10px] font-bold uppercase tracking-wider opacity-80">Traslado Entrante</span>
-                                </div>
-                                <h3 className="text-xl font-black text-white tracking-tight leading-none mb-1">
-                                    Recibir Equipo
-                                </h3>
-                                <p className="text-blue-100 font-medium text-xs max-w-md leading-snug opacity-90">
-                                    Este equipo viene trasladado desde otra sucursal. Confirma la recepción.
-                                </p>
-                            </div>
-                        </div>
-                        <div className="relative z-10 flex gap-2 w-full md:w-auto">
-                            <button 
-                                onClick={handleTransferReject} 
-                                className="flex-1 md:flex-none px-4 py-2 bg-white/10 border border-white/20 text-white rounded-xl font-black text-[10px] uppercase hover:bg-white/20 transition active:scale-95 flex flex-col items-center justify-center gap-0.5"
-                            >
-                                <XCircle className="w-4 h-4 opacity-80"/> Rechazar
-                            </button>
-                            <button 
-                                onClick={handleTransferReceive} 
-                                className="flex-[2] md:flex-none px-5 py-2.5 bg-white text-blue-600 rounded-xl font-black text-xs uppercase shadow-md hover:bg-blue-50 transition active:scale-95 flex flex-col items-center justify-center gap-0.5 hover:shadow-lg hover:-translate-y-0.5 transform duration-200"
-                            >
-                                <CheckCircle2 className="w-4 h-4 text-blue-600"/> Recibir Ahora
-                            </button>
-                        </div>
-                    </div>
-                )}
-
-                {/* -1.9. PENDING PART REQUEST BANNER */}
-                {order.partRequests?.some(req => req.status === 'PENDING') && (
-                    <div className="bg-amber-500 text-white p-4 rounded-2xl shadow-lg shadow-amber-200 mb-4 flex flex-col md:flex-row justify-between items-center gap-4 animate-in slide-in-from-top-4 border-2 border-white/20 relative overflow-hidden">
-                        <div className="absolute top-0 right-0 p-4 opacity-10 rotate-12">
-                            <Package className="w-32 h-32 text-white" />
-                        </div>
-                        <div className="relative z-10 flex items-center gap-4">
-                            <div className="bg-white/20 p-3 rounded-xl shadow-inner backdrop-blur-sm animate-pulse">
-                                <Package className="w-6 h-6 text-white" />
-                            </div>
-                            <div>
-                                <h3 className="text-xl font-black text-white tracking-tight leading-none mb-1">
-                                    Orden Detenida
-                                </h3>
-                                <p className="text-amber-100 font-medium text-xs max-w-md leading-snug opacity-90">
-                                    Esperando que la pieza difícil de encontrar sea conseguida.
-                                </p>
-                            </div>
-                        </div>
-                    </div>
-                )}
-
-                {/* -1.8. TECH MESSAGE BANNER (MOVED TO TOP) */}
-                {order.techMessage && order.techMessage.pending && (currentUser?.id === order.assignedTo) && (
-                    <div className="bg-blue-600 text-white p-4 rounded-2xl shadow-lg shadow-blue-200 mb-4 flex flex-col md:flex-row justify-between items-center gap-4 animate-in slide-in-from-top-4 border-2 border-white/20 relative overflow-hidden">
-                        <div className="absolute top-0 right-0 p-4 opacity-10 rotate-12">
-                            <MessageSquare className="w-32 h-32 text-white" />
-                        </div>
-                        <div className="relative z-10 flex items-center gap-4">
-                            <div className="bg-white/20 p-3 rounded-xl shadow-inner backdrop-blur-sm animate-pulse">
-                                <MessageSquare className="w-6 h-6 text-white" />
-                            </div>
-                            <div>
-                                <div className="flex items-center gap-2 mb-0.5">
-                                    <span className="bg-white text-blue-600 px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-widest shadow-sm">Mensaje Nuevo</span>
-                                    <span className="text-blue-100 text-[10px] font-bold uppercase tracking-wider opacity-80">De: {order.techMessage.sender}</span>
-                                </div>
-                                <h3 className="text-lg font-black text-white tracking-tight leading-none mb-1">
-                                    "{order.techMessage.message}"
-                                </h3>
-                                <p className="text-blue-100 font-medium text-xs max-w-md leading-snug opacity-90 font-mono">
-                                    {new Date(order.techMessage.timestamp).toLocaleString()}
-                                </p>
-                            </div>
-                        </div>
-                        <button 
-                            onClick={handleReadMessage} 
-                            className="relative z-10 px-5 py-2.5 bg-white text-blue-600 rounded-xl font-black text-xs uppercase shadow-md hover:bg-blue-50 transition active:scale-95 flex flex-col items-center justify-center gap-0.5 hover:shadow-lg hover:-translate-y-0.5 transform duration-200 whitespace-nowrap"
-                        >
-                            <CheckCircle2 className="w-4 h-4 text-blue-600"/> MARCAR LEÍDO
-                        </button>
-                    </div>
-                )}
-
-                {/* -1.7. VALIDATION REQUIRED BANNER (NEW) */}
-                {order.isValidated === false && currentUser?.role !== UserRole.TECHNICIAN && (
-                    <div className="bg-purple-600 text-white p-4 rounded-2xl shadow-lg shadow-purple-200 mb-4 flex flex-col md:flex-row justify-between items-center gap-4 animate-in slide-in-from-top-4 border-2 border-white/20 relative overflow-hidden">
-                        <div className="absolute top-0 right-0 p-4 opacity-10 rotate-12">
-                            <ShieldCheck className="w-32 h-32 text-white" />
-                        </div>
-                        <div className="relative z-10 flex items-center gap-4">
-                            <div className="bg-white/20 p-3 rounded-xl shadow-inner backdrop-blur-sm animate-pulse">
-                                <ShieldCheck className="w-6 h-6 text-white" />
-                            </div>
-                            <div>
-                                <div className="flex items-center gap-2 mb-0.5">
-                                    <span className="bg-white text-purple-600 px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-widest shadow-sm">Acción Requerida</span>
-                                    <span className="text-purple-100 text-[10px] font-bold uppercase tracking-wider opacity-80">Ingreso No Validado</span>
-                                </div>
-                                <h3 className="text-xl font-black text-white tracking-tight leading-none mb-1">
-                                    Validar Orden
-                                </h3>
-                                <p className="text-purple-100 font-medium text-xs max-w-md leading-snug opacity-90">
-                                    Esta orden fue ingresada recientemente. Verifica los datos y valida el ingreso.
-                                </p>
-                            </div>
-                        </div>
-                        <button 
-                            onClick={async () => {
-                                await validateOrder(order.id, currentUser?.name || 'Admin');
-                                showNotification('success', 'Orden validada correctamente');
-                            }} 
-                            className="relative z-10 px-5 py-2.5 bg-white text-purple-600 rounded-xl font-black text-xs uppercase shadow-md hover:bg-purple-50 transition active:scale-95 flex flex-col items-center justify-center gap-0.5 hover:shadow-lg hover:-translate-y-0.5 transform duration-200 whitespace-nowrap"
-                        >
-                            <CheckCircle2 className="w-4 h-4 text-purple-600"/> VALIDAR AHORA
-                        </button>
-                    </div>
-                )}
-
-                {/* -1.5. EXTERNAL REPAIR REQUEST BANNER */}
-                {order.externalRepair?.status === 'PENDING' && (
-                    <div className="bg-purple-600 text-white p-4 rounded-2xl shadow-lg shadow-purple-200 mb-4 flex flex-col md:flex-row justify-between items-center gap-4 animate-in slide-in-from-top-4 border-2 border-white/20 relative overflow-hidden">
-                        <div className="absolute top-0 right-0 p-4 opacity-10 rotate-12">
-                            <Truck className="w-32 h-32 text-white" />
-                        </div>
-                        <div className="relative z-10 flex items-center gap-4">
-                            <div className="bg-white/20 p-3 rounded-xl shadow-inner backdrop-blur-sm animate-pulse">
-                                <Truck className="w-6 h-6 text-white" />
-                            </div>
-                            <div>
-                                <div className="flex items-center gap-2 mb-0.5">
-                                    <span className="bg-white text-purple-600 px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-widest shadow-sm">Acción Requerida</span>
-                                    <span className="text-purple-100 text-[10px] font-bold uppercase tracking-wider opacity-80">Solicitud Externa</span>
-                                </div>
-                                <h3 className="text-xl font-black text-white tracking-tight leading-none mb-1">
-                                    Envío a Taller
-                                </h3>
-                                <p className="text-purple-100 font-medium text-xs max-w-md leading-snug opacity-90">
-                                    Solicitud de envío a <b>{order.externalRepair.targetWorkshop}</b>. Razón: {order.externalRepair.reason}
-                                </p>
-                            </div>
-                        </div>
-                        <div className="relative z-10 flex gap-2 w-full md:w-auto">
-                            <button 
-                                onClick={() => handleExternalResponse(false)} 
-                                className="flex-1 md:flex-none px-4 py-2 bg-white/10 border border-white/20 text-white rounded-xl font-black text-[10px] uppercase hover:bg-white/20 transition active:scale-95 flex flex-col items-center justify-center gap-0.5"
-                            >
-                                <XCircle className="w-4 h-4 opacity-80"/> Rechazar
-                            </button>
-                            <button 
-                                onClick={() => handleExternalResponse(true)} 
-                                className="flex-[2] md:flex-none px-5 py-2.5 bg-white text-purple-600 rounded-xl font-black text-xs uppercase shadow-md hover:bg-purple-50 transition active:scale-95 flex flex-col items-center justify-center gap-0.5 hover:shadow-lg hover:-translate-y-0.5 transform duration-200"
-                            >
-                                <CheckCircle2 className="w-4 h-4 text-purple-600"/> Aprobar Envío
-                            </button>
-                        </div>
-                    </div>
-                )}
-
-                {/* -1.4. RETURN REQUEST BANNER */}
-                {order.returnRequest?.status === 'PENDING' && (
-                    <div className="bg-red-600 text-white p-4 rounded-2xl shadow-lg shadow-red-200 mb-4 flex flex-col md:flex-row justify-between items-center gap-4 animate-in slide-in-from-top-4 border-2 border-white/20 relative overflow-hidden">
-                        <div className="absolute top-0 right-0 p-4 opacity-10 rotate-12">
-                            <Reply className="w-32 h-32 text-white" />
-                        </div>
-                        <div className="relative z-10 flex items-center gap-4">
-                            <div className="bg-white/20 p-3 rounded-xl shadow-inner backdrop-blur-sm animate-pulse">
-                                <Reply className="w-6 h-6 text-white" />
-                            </div>
-                            <div>
-                                <div className="flex items-center gap-2 mb-0.5">
-                                    <span className="bg-white text-red-600 px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-widest shadow-sm">Acción Requerida</span>
-                                    <span className="text-red-100 text-[10px] font-bold uppercase tracking-wider opacity-80">Devolución Pendiente</span>
-                                </div>
-                                <h3 className="text-xl font-black text-white tracking-tight leading-none mb-1">
-                                    Solicitud de Devolución
-                                </h3>
-                                <p className="text-red-100 font-medium text-xs max-w-md leading-snug opacity-90">
-                                    Razón: {order.returnRequest.reason}. 
-                                    {order.returnRequest.diagnosticFee > 0 && <span className="block mt-1 bg-black/20 px-2 py-1 rounded w-fit">Costo Chequeo: ${order.returnRequest.diagnosticFee}</span>}
-                                </p>
-                            </div>
-                        </div>
-                        <div className="relative z-10 flex gap-2 w-full md:w-auto">
-                            <button 
-                                onClick={() => handleReturnResponse(false)} 
-                                className="flex-1 md:flex-none px-4 py-2 bg-white/10 border border-white/20 text-white rounded-xl font-black text-[10px] uppercase hover:bg-white/20 transition active:scale-95 flex flex-col items-center justify-center gap-0.5"
-                            >
-                                <XCircle className="w-4 h-4 opacity-80"/> Rechazar
-                            </button>
-                            <button 
-                                onClick={() => handleReturnResponse(true)} 
-                                className="flex-[2] md:flex-none px-5 py-2.5 bg-white text-red-600 rounded-xl font-black text-xs uppercase shadow-md hover:bg-red-50 transition active:scale-95 flex flex-col items-center justify-center gap-0.5 hover:shadow-lg hover:-translate-y-0.5 transform duration-200"
-                            >
-                                <CheckCircle2 className="w-4 h-4 text-red-600"/> Aprobar Devolución
-                            </button>
-                        </div>
-                    </div>
-                )}
-
-                {/* -1. PENDING ASSIGNMENT BANNER (NEW) */}
-                {order.pending_assignment_to === currentUser?.id && (
-                    <div className="bg-indigo-600 text-white p-4 rounded-2xl shadow-lg shadow-indigo-200 mb-4 flex flex-col md:flex-row justify-between items-center gap-4 animate-in slide-in-from-top-4 border-2 border-white/20 relative overflow-hidden">
-                        <div className="absolute top-0 right-0 p-4 opacity-10 rotate-12">
-                            <User className="w-32 h-32 text-white" />
-                        </div>
-                        <div className="relative z-10 flex items-center gap-4">
-                            <div className="bg-white/20 p-3 rounded-xl shadow-inner backdrop-blur-sm animate-pulse">
-                                <User className="w-6 h-6 text-white" />
-                            </div>
-                            <div>
-                                <div className="flex items-center gap-2 mb-0.5">
-                                    <span className="bg-white text-indigo-600 px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-widest shadow-sm">Acción Requerida</span>
-                                    <span className="text-indigo-100 text-[10px] font-bold uppercase tracking-wider opacity-80">Solicitud de Traspaso</span>
-                                </div>
-                                <h3 className="text-xl font-black text-white tracking-tight leading-none mb-1">
-                                    ¿Aceptas esta orden?
-                                </h3>
-                                <p className="text-indigo-100 font-medium text-xs max-w-md leading-snug opacity-90">
-                                    Se te ha asignado esta reparación. Confirma para comenzar.
-                                </p>
-                            </div>
-                        </div>
-                        <div className="relative z-10 flex gap-2 w-full md:w-auto">
-                            <button 
-                                onClick={() => handleAssignmentResponse(false)} 
-                                className="flex-1 md:flex-none px-4 py-2 bg-white/10 border border-white/20 text-white rounded-xl font-black text-[10px] uppercase hover:bg-white/20 transition active:scale-95 flex flex-col items-center justify-center gap-0.5"
-                            >
-                                <XCircle className="w-4 h-4 opacity-80"/> Rechazar
-                            </button>
-                            <button 
-                                onClick={() => handleAssignmentResponse(true)} 
-                                className="flex-[2] md:flex-none px-5 py-2.5 bg-white text-indigo-600 rounded-xl font-black text-xs uppercase shadow-md hover:bg-indigo-50 transition active:scale-95 flex flex-col items-center justify-center gap-0.5 hover:shadow-lg hover:-translate-y-0.5 transform duration-200"
-                            >
-                                <CheckCircle2 className="w-4 h-4 text-indigo-600"/> Aceptar Orden
-                            </button>
-                        </div>
-                    </div>
-                )}
-
-                {/* 0. BUDGET APPROVAL BANNER (NEW - HIGH PRIORITY) */}
-                {order.status === OrderStatus.WAITING_APPROVAL && currentUser?.role !== UserRole.TECHNICIAN && (
-                    <div className="bg-orange-500 text-white p-4 rounded-2xl shadow-lg shadow-orange-200 mb-4 flex flex-col md:flex-row justify-between items-center gap-4 animate-in slide-in-from-top-4 border-2 border-white/20 relative overflow-hidden">
-                        <div className="absolute top-0 right-0 p-4 opacity-10 rotate-12">
-                            <HandCoins className="w-32 h-32 text-white" />
-                        </div>
-                        <div className="relative z-10 flex items-center gap-4">
-                            <div className="bg-white/20 p-3 rounded-xl shadow-inner backdrop-blur-sm animate-pulse">
-                                <HandCoins className="w-6 h-6 text-white" />
-                            </div>
-                            <div>
-                                <div className="flex items-center gap-2 mb-0.5">
-                                    <span className="bg-white text-orange-600 px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-widest shadow-sm">Acción Requerida</span>
-                                    <span className="text-orange-100 text-[10px] font-bold uppercase tracking-wider opacity-80">Presupuesto Pendiente</span>
-                                </div>
-                                <h3 className="text-xl font-black text-white tracking-tight leading-none mb-1">
-                                    ${(order.proposedEstimate || order.estimatedCost).toLocaleString()}
-                                </h3>
-                                <p className="text-orange-100 font-medium text-xs max-w-md leading-snug opacity-90">
-                                    El técnico ha propuesto este monto. ¿El cliente aprueba la reparación?
-                                </p>
-                                {order.technicianNotes && order.technicianNotes.includes('[PROPUESTA]') && (
-                                    <div className="mt-2 bg-black/10 p-2 rounded-lg border border-white/10 text-[10px] italic text-orange-50">
-                                        "{order.technicianNotes.split('[PROPUESTA]:')[1]?.split('\n')[0] || 'Ver notas...'}"
-                                    </div>
-                                )}
-                            </div>
-                        </div>
-                        <div className="relative z-10 flex gap-2 w-full md:w-auto">
-                            <button 
-                                onClick={() => handleBudgetResponse(false)} 
-                                disabled={isProcessing}
-                                className="flex-1 md:flex-none px-4 py-2 bg-white/10 border border-white/20 text-white rounded-xl font-black text-[10px] uppercase hover:bg-white/20 transition active:scale-95 flex flex-col items-center justify-center gap-0.5 disabled:opacity-50"
-                            >
-                                <XCircle className="w-4 h-4 opacity-80"/> Rechazar
-                            </button>
-                            <button 
-                                onClick={() => handleBudgetResponse(true)} 
-                                disabled={isProcessing}
-                                className="flex-[2] md:flex-none px-5 py-2.5 bg-white text-orange-600 rounded-xl font-black text-xs uppercase shadow-md hover:bg-orange-50 transition active:scale-95 flex flex-col items-center justify-center gap-0.5 hover:shadow-lg hover:-translate-y-0.5 transform duration-200 disabled:opacity-50"
-                            >
-                                <CheckCircle2 className="w-4 h-4 text-green-500"/> Aprobar Reparación
-                            </button>
-                        </div>
-                    </div>
-                )}
-
-                {/* 1. APPROVAL ACKNOWLEDGEMENT (NEW - TECHNICIAN ONLY) */}
-                {order.approvalAckPending && ((currentUser?.role === UserRole.TECHNICIAN && order.assignedTo === currentUser.id) || currentUser?.role === UserRole.ADMIN) && (
-                    <div className="bg-green-600 text-white p-4 rounded-2xl shadow-lg shadow-green-200 mb-4 flex flex-col md:flex-row justify-between items-center gap-4 animate-in slide-in-from-top-4 border-2 border-white/20 relative overflow-hidden">
-                        <div className="absolute top-0 right-0 p-4 opacity-10 rotate-12">
-                            <CheckCircle2 className="w-32 h-32 text-white" />
-                        </div>
-                        <div className="relative z-10 flex items-center gap-4">
-                            <div className="bg-white/20 p-3 rounded-xl shadow-inner backdrop-blur-sm animate-pulse">
-                                <CheckCircle2 className="w-6 h-6 text-white" />
-                            </div>
-                            <div>
-                                <div className="flex items-center gap-2 mb-0.5">
-                                    <span className="bg-white text-green-600 px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-widest shadow-sm">Acción Requerida</span>
-                                    <span className="text-green-100 text-[10px] font-bold uppercase tracking-wider opacity-80">Cliente Aprobó</span>
-                                </div>
-                                <h3 className="text-xl font-black text-white tracking-tight leading-none mb-1">
-                                    ¡Luz Verde para Reparar!
-                                </h3>
-                                <p className="text-green-100 font-medium text-xs max-w-md leading-snug opacity-90 mb-1">
-                                    El cliente ha aceptado el presupuesto. Revisa las instrucciones antes de comenzar.
-                                </p>
-                                {order.customerNotes && (
-                                    <div className="bg-black/20 p-2 rounded-lg border border-white/10 text-[10px] italic text-green-50">
-                                        "Nota Cliente: {order.customerNotes}"
-                                    </div>
-                                )}
-                            </div>
-                        </div>
-                        <button 
-                            onClick={handleAckApproval} 
-                            disabled={isProcessing}
-                            className="relative z-10 px-5 py-2.5 bg-white text-green-600 rounded-xl font-black text-xs uppercase shadow-md hover:bg-green-50 transition active:scale-95 flex flex-col items-center justify-center gap-0.5 hover:shadow-lg hover:-translate-y-0.5 transform duration-200 whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                            {isProcessing ? <Loader2 className="w-4 h-4 animate-spin text-green-600"/> : <><CheckCircle2 className="w-4 h-4 text-green-600"/> CONFIRMAR LECTURA</>}
-                        </button>
-                    </div>
-                )}
-
-                {/* 2. APPROVAL BANNER (NEW - INSIDE ORDER) */}
-                {pendingPointRequest && canApprovePoints && (
-                    <div className="bg-orange-50 border border-orange-200 rounded-2xl p-4 flex items-center justify-between shadow-sm animate-in slide-in-from-top-2">
-                        <div className="flex items-center gap-4">
-                            <div className="bg-orange-100 p-2 rounded-full text-orange-600"><Trophy className="w-6 h-6"/></div>
-                            <div>
-                                <h3 className="font-bold text-orange-900 text-sm">Solicitud de Comisión</h3>
-                                <p className="text-xs text-orange-700">
-                                    {order.pointRequest?.splitProposal 
-                                        ? `Split: ${users.find(u=>u.id===order.pointRequest?.splitProposal?.primaryTechId)?.name.split(' ')[0]} (${order.pointRequest.splitProposal.primaryPoints}) / ${users.find(u=>u.id===order.pointRequest?.splitProposal?.secondaryTechId)?.name.split(' ')[0]} (${order.pointRequest.splitProposal.secondaryPoints})` 
-                                        : `${order.pointRequest?.requestedPoints} Puntos solicitados`
-                                    }
-                                </p>
-                                {order.pointRequest?.reason && (
-                                    <p className="text-[10px] text-orange-800 italic mt-0.5">
-                                        "{order.pointRequest.reason}"
-                                    </p>
-                                )}
-                            </div>
-                        </div>
-                        <div className="flex gap-2">
-                            <button onClick={() => handlePointsResponse(false)} disabled={isProcessing} className="px-4 py-2 bg-white border border-red-200 text-red-600 rounded-xl text-xs font-bold hover:bg-red-50 transition disabled:opacity-50">Rechazar</button>
-                            <button onClick={async () => { if(confirm('¿Iniciar debate de puntos con el técnico?')) { await debatePoints(order.id, currentUser.name); } }} disabled={isProcessing} className="px-4 py-2 bg-yellow-50 border border-yellow-200 text-yellow-600 rounded-xl text-xs font-bold hover:bg-yellow-100 transition disabled:opacity-50">Debatir</button>
-                            <button onClick={() => handlePointsResponse(true)} disabled={isProcessing} className="px-6 py-2 bg-orange-500 text-white rounded-xl text-xs font-bold shadow-lg hover:bg-orange-600 transition disabled:opacity-50 flex items-center gap-2">
-                                {isProcessing ? <Loader2 className="w-3 h-3 animate-spin"/> : 'Aprobar'}
-                            </button>
-                        </div>
-                    </div>
-                )}
+                {/* Banners / Alerts */}
+                <OrderBanners 
+                    order={order}
+                    currentUser={currentUser}
+                    users={users}
+                    isProcessing={isProcessing}
+                    handlers={{
+                        handleTransferReceive,
+                        handleTransferReject,
+                        handleReadMessage,
+                        validateOrder,
+                        handleExternalResponse,
+                        handleReturnResponse,
+                        handleAssignmentResponse,
+                        handleBudgetResponse,
+                        handleAckApproval,
+                        handlePointsResponse,
+                        debatePoints,
+                        showNotification
+                    }}
+                />
 
                 {/* 3. TIMELINE */}
                 <StageBar 
                     currentStatus={order.status} 
-                    onStepClick={(s) => isTech || isAdmin ? handleStatusChange(s) : null} 
-                    disabled={!isTech && !isAdmin} 
+                    onStepClick={(s) => (isTech || isAdmin) && !isMonitor ? handleStatusChange(s) : null} 
+                    disabled={(!isTech && !isAdmin) || isMonitor} 
+                    isReturn={order.returnRequest?.status === RequestStatus.APPROVED || order.returnRequest?.status === RequestStatus.PENDING}
                 />
 
                 {/* 4. NOTES ONLY (Chat Removed) */}
@@ -1600,7 +1282,7 @@ export const OrderDetails: React.FC = () => {
 
                 {/* 5. FINANCIALS & HISTORY */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
-                    <div className="h-[500px]">
+                    <div className="h-[750px]">
                         <ExpensesAndParts 
                             order={order}
                             expenses={expenses}
@@ -1610,6 +1292,7 @@ export const OrderDetails: React.FC = () => {
                             canViewAccounting={canViewAccounting}
                             canEdit={canEditExpenses}
                             onAddExpense={handleAddExpense}
+                            onAddExpenses={handleAddExpenses}
                             onRemoveExpense={handleRemoveExpense}
                             onEditExpense={handleEditExpense}
                             handleUpdatePrice={handleUpdatePrice}
@@ -1633,6 +1316,28 @@ export const OrderDetails: React.FC = () => {
             <RequestPartModal 
                 onClose={() => setShowPartRequestModal(false)}
                 onConfirm={handlePartRequest}
+            />
+        )}
+        {showCustomerSelect && (
+            <CustomerSelectModal
+                onClose={() => setShowCustomerSelect(false)}
+                onSelect={(customer) => {
+                    setEditForm({
+                        ...editForm,
+                        customerId: customer.id,
+                        customerName: customer.name,
+                        customerPhone: customer.phone,
+                    });
+                    setShowCustomerSelect(false);
+                }}
+            />
+        )}
+        {showDbFixModal && <DbFixModal onClose={() => setShowDbFixModal(false)} />}
+        {showWarrantyModal && (
+            <WarrantyReasonModal 
+                type={warrantyType}
+                onConfirm={handleConfirmWarranty}
+                onCancel={() => setShowWarrantyModal(false)}
             />
         )}
     </div>

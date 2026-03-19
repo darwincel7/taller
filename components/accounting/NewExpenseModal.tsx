@@ -1,10 +1,13 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Upload, Loader2, Check, AlertCircle, FileText } from 'lucide-react';
+import { X, Upload, Loader2, Check, AlertCircle, FileText, Camera } from 'lucide-react';
 import { useDropzone } from 'react-dropzone';
 import { accountingService } from '../../services/accountingService';
 import { aiAccountingService } from '../../services/aiAccounting';
-import { AccountingCategory } from '../../types';
+import { AccountingCategory, TransactionStatus, ActionType } from '../../types';
+import { auditService } from '../../services/auditService';
+import { useAuth } from '../../contexts/AuthContext';
+import { format } from 'date-fns';
 
 interface NewExpenseModalProps {
   isOpen: boolean;
@@ -14,6 +17,7 @@ interface NewExpenseModalProps {
 
 export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({ isOpen, onClose, onSuccess }) => {
   const [isScanning, setIsScanning] = useState(false);
+  const { currentUser } = useAuth();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -28,18 +32,19 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({ isOpen, onClos
 
   const [formData, setFormData] = useState({
     amount: '',
-    date: new Date().toISOString().split('T')[0],
+    date: format(new Date(), 'yyyy-MM-dd'),
     vendor: '',
     description: '',
     invoice_number: '',
     category: '', // Will be set to first category ID or empty
-    source: 'MANUAL' as 'MANUAL' | 'STORE'
+    source: 'STORE' as 'MANUAL' | 'STORE'
   });
 
   // Set default category when loaded
   useEffect(() => {
     if (categories.length > 0 && !formData.category) {
-      setFormData(prev => ({ ...prev, category: categories[0].id }));
+      const repuestosCat = categories.find(c => c.name.toLowerCase().includes('repuesto'));
+      setFormData(prev => ({ ...prev, category: repuestosCat ? repuestosCat.id : categories[0].id }));
     }
   }, [categories]);
 
@@ -73,7 +78,7 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({ isOpen, onClos
         setFormData(prev => ({
           ...prev,
           amount: scannedData.amount?.toString() || '',
-          date: scannedData.date || new Date().toISOString().split('T')[0],
+          date: scannedData.date || format(new Date(), 'yyyy-MM-dd'),
           vendor: scannedData.vendor || '',
           description: scannedData.description || '',
           invoice_number: scannedData.invoice_number || '',
@@ -108,7 +113,7 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({ isOpen, onClos
     setSubmitError(null);
 
     try {
-      await accountingService.addTransaction({
+      const newTransaction = await accountingService.addTransaction({
         amount: -Math.abs(parseFloat(formData.amount)), // Expenses are negative
         transaction_date: formData.date,
         vendor: formData.vendor,
@@ -116,16 +121,25 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({ isOpen, onClos
         invoice_number: formData.invoice_number || undefined,
         category_id: formData.category,
         source: formData.source,
-        status: 'COMPLETED',
+        status: TransactionStatus.COMPLETED,
         search_text: ocrText // Pass the OCR text for indexing
       }, file || undefined); // Pass the file for uploading
+
+      // Record audit log
+      if (currentUser) {
+        await auditService.recordLog(
+          currentUser,
+          ActionType.TRANSACTION_ADDED,
+          `Gasto registrado: ${formData.vendor} - $${formData.amount} (${formData.description}) ${newTransaction?.readable_id ? `[Ref: #${newTransaction.readable_id}]` : ''}`
+        );
+      }
       
       onSuccess();
       onClose();
       // Reset form
       setFormData({
         amount: '',
-        date: new Date().toISOString().split('T')[0],
+        date: format(new Date(), 'yyyy-MM-dd'),
         vendor: '',
         description: '',
         invoice_number: '',
@@ -201,27 +215,51 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({ isOpen, onClos
               )}
 
               {/* AI Scanner Dropzone */}
-              <div 
-                {...getRootProps()} 
-                className={`border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-colors ${
-                  isDragActive ? 'border-indigo-500 bg-indigo-50' : 'border-slate-200 hover:border-indigo-300 hover:bg-slate-50'
-                }`}
-              >
-                <input {...getInputProps()} />
-                {isScanning ? (
-                  <div className="flex flex-col items-center gap-2 text-indigo-600">
-                    <Loader2 className="w-8 h-8 animate-spin" />
-                    <p className="font-medium">Analizando recibo con IA...</p>
-                  </div>
-                ) : (
-                  <div className="flex flex-col items-center gap-2 text-slate-500">
-                    <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center mb-2">
-                      <Upload className="w-6 h-6" />
+              <div className="flex flex-col gap-3">
+                <div 
+                  {...getRootProps()} 
+                  className={`border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-colors ${
+                    isDragActive ? 'border-indigo-500 bg-indigo-50' : 'border-slate-200 hover:border-indigo-300 hover:bg-slate-50'
+                  }`}
+                >
+                  <input {...getInputProps()} />
+                  {isScanning ? (
+                    <div className="flex flex-col items-center gap-2 text-indigo-600">
+                      <Loader2 className="w-8 h-8 animate-spin" />
+                      <p className="font-medium">Analizando recibo con IA...</p>
                     </div>
-                    <p className="font-medium text-slate-700">Arrastra tu recibo aquí</p>
-                    <p className="text-xs">o haz clic para escanear con IA</p>
-                  </div>
-                )}
+                  ) : (
+                    <div className="flex flex-col items-center gap-3">
+                      <div className="flex gap-4 w-full justify-center">
+                        <button 
+                          type="button"
+                          className="flex-1 flex flex-col items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white p-4 rounded-xl shadow-lg shadow-indigo-600/20 transition active:scale-95"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const input = document.createElement('input');
+                            input.type = 'file';
+                            input.accept = 'image/*';
+                            input.capture = 'environment';
+                            input.onchange = (e: any) => {
+                              if (e.target.files && e.target.files.length > 0) {
+                                onDrop(Array.from(e.target.files));
+                              }
+                            };
+                            input.click();
+                          }}
+                        >
+                          <Camera className="w-8 h-8" />
+                          <span className="font-bold">Tomar Foto</span>
+                        </button>
+                        <div className="flex-1 flex flex-col items-center justify-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-700 p-4 rounded-xl transition active:scale-95">
+                          <Upload className="w-8 h-8 text-slate-500" />
+                          <span className="font-bold">Subir Archivo</span>
+                        </div>
+                      </div>
+                      <p className="text-xs text-slate-500 mt-2">o arrastra tu recibo aquí para escanear con IA</p>
+                    </div>
+                  )}
+                </div>
               </div>
 
               {scanError && (
@@ -320,7 +358,7 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({ isOpen, onClos
                           : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
                       }`}
                     >
-                      🛍️ Caja Tienda
+                      🛍️ Caja Tienda 1
                     </button>
                   </div>
                 </div>

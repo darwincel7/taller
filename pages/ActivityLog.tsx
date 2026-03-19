@@ -60,8 +60,13 @@ export const ActivityLog: React.FC = () => {
           
           // Step 1: Find related Order IDs from the FULL orders table (server-side)
           // ENHANCED: Search for raw term OR normalized term in orders
-          let orderFilter = `deviceModel.ilike.%${term}%,customer->>name.ilike.%${term}%,id.ilike.%${term}%`;
+          let orderFilter = `deviceModel.ilike.%${term}%,customer->>name.ilike.%${term}%,id.ilike.%${term}%,imei.ilike.%${term}%`;
           
+          // If term is a number and within safe integer limits, search readable_id
+          if (/^\d+$/.test(term) && term.length <= 9) {
+              orderFilter += `,readable_id.eq.${term}`;
+          }
+
           // If normalized term is different and valid, add it to search
           if (normalizedTerm.length > 1 && normalizedTerm !== term.toLowerCase()) {
               orderFilter += `,deviceModel.ilike.%${normalizedTerm}%`;

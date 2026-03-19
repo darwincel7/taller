@@ -2,86 +2,453 @@
 import React from 'react';
 import { Database, Copy, X } from 'lucide-react';
 
-const FULL_SQL = `-- SCRIPT DE ACTUALIZACIÓN V14 (FIX DEFINITIVO DE ENTREGA)
-create extension if not exists "pgcrypto";
+const FULL_SQL = `-- ==============================================================================
+-- SCRIPT CONSOLIDADO DE ACTUALIZACIÓN V17 (Idempotente)
+-- Ejecutar en el SQL Editor de Supabase
+-- ==============================================================================
 
--- 1. Eliminar versiones anteriores de la función para evitar conflictos
-DROP FUNCTION IF EXISTS finalize_delivery_transaction(text, jsonb, jsonb, bigint);
-DROP FUNCTION IF EXISTS finalize_delivery_transaction(uuid, jsonb, jsonb, bigint);
+-- 1. ASEGURAR COLUMNAS EN TABLAS EXISTENTES
+DO $$
+BEGIN
+    -- cash_closings
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'cash_closings' AND column_name = 'notes') THEN
+        ALTER TABLE public.cash_closings ADD COLUMN notes text;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'cash_closings' AND column_name = 'updated_at') THEN
+        ALTER TABLE public.cash_closings ADD COLUMN updated_at timestamptz;
+    END IF;
 
--- 2. Crear la función con el tipo de dato correcto (BIGINT)
-CREATE OR REPLACE FUNCTION finalize_delivery_transaction(
-  p_order_id text,
-  p_new_payments jsonb,
-  p_history_logs jsonb,
-  p_completed_at bigint
+    -- order_payments
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'order_payments' AND column_name = 'edited_amount') THEN
+        ALTER TABLE public.order_payments ADD COLUMN edited_amount numeric;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'order_payments' AND column_name = 'original_amount') THEN
+        ALTER TABLE public.order_payments ADD COLUMN original_amount numeric;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'order_payments' AND column_name = 'is_edited') THEN
+        ALTER TABLE public.order_payments ADD COLUMN is_edited boolean DEFAULT false;
+    END IF;
+
+    -- accounting_transactions
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'accounting_transactions' AND column_name = 'closing_id') THEN
+        ALTER TABLE public.accounting_transactions ADD COLUMN closing_id text;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'accounting_transactions' AND column_name = 'readable_id') THEN
+        ALTER TABLE public.accounting_transactions ADD COLUMN readable_id bigint;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'accounting_transactions' AND column_name = 'branch') THEN
+        ALTER TABLE public.accounting_transactions ADD COLUMN branch text;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'accounting_transactions' AND column_name = 'method') THEN
+        ALTER TABLE public.accounting_transactions ADD COLUMN method text;
+    END IF;
+
+    -- floating_expenses
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'floating_expenses' AND column_name = 'closing_id') THEN
+        ALTER TABLE public.floating_expenses ADD COLUMN closing_id text;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'floating_expenses' AND column_name = 'readable_id') THEN
+        ALTER TABLE public.floating_expenses ADD COLUMN readable_id bigint;
+    END IF;
+END $$;
+
+-- 2. CREAR SECUENCIAS Y TRIGGERS PARA READABLE_ID
+-- Sequence for floating_expenses
+CREATE SEQUENCE IF NOT EXISTS floating_expenses_readable_id_seq START 1000;
+
+CREATE OR REPLACE FUNCTION public.assign_floating_expense_readable_id()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF NEW.readable_id IS NULL THEN
+    NEW.readable_id := nextval('floating_expenses_readable_id_seq');
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_assign_floating_expense_readable_id ON public.floating_expenses;
+CREATE TRIGGER trg_assign_floating_expense_readable_id
+BEFORE INSERT ON public.floating_expenses
+FOR EACH ROW
+EXECUTE FUNCTION public.assign_floating_expense_readable_id();
+
+-- Sequence for accounting_transactions
+CREATE SEQUENCE IF NOT EXISTS accounting_transactions_readable_id_seq START 5000;
+
+CREATE OR REPLACE FUNCTION public.assign_accounting_transaction_readable_id()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF NEW.readable_id IS NULL THEN
+    NEW.readable_id := nextval('accounting_transactions_readable_id_seq');
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_assign_accounting_transaction_readable_id ON public.accounting_transactions;
+CREATE TRIGGER trg_assign_accounting_transaction_readable_id
+BEFORE INSERT ON public.accounting_transactions
+FOR EACH ROW
+EXECUTE FUNCTION public.assign_accounting_transaction_readable_id();
+
+-- Actualizar registros existentes que no tengan readable_id
+DO $$
+DECLARE
+  rec RECORD;
+BEGIN
+  FOR rec IN SELECT id FROM public.floating_expenses WHERE readable_id IS NULL LOOP
+    UPDATE public.floating_expenses SET readable_id = nextval('floating_expenses_readable_id_seq') WHERE id = rec.id;
+  END LOOP;
+  
+  FOR rec IN SELECT id FROM public.accounting_transactions WHERE readable_id IS NULL LOOP
+    UPDATE public.accounting_transactions SET readable_id = nextval('accounting_transactions_readable_id_seq') WHERE id = rec.id;
+  END LOOP;
+END $$;
+
+
+-- 3. ACTUALIZAR FUNCIONES (RPCs)
+-- A. get_closing_details (Corregido para timestamptz)
+DROP FUNCTION IF EXISTS public.get_closing_details(text);
+CREATE OR REPLACE FUNCTION public.get_closing_details(
+    p_closing_id text
 )
-RETURNS SETOF orders
+RETURNS TABLE(
+    payment_id text,
+    amount numeric,
+    original_amount numeric,
+    is_edited boolean,
+    method text,
+    created_at timestamptz,
+    cashier_name text,
+    order_readable_id bigint,
+    order_model text,
+    order_branch text
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+    RETURN QUERY
+    SELECT
+        op.id::text,
+        op.amount::numeric,
+        op.original_amount::numeric,
+        COALESCE(op.is_edited, false),
+        op.method::text,
+        op.created_at,
+        op.cashier_name::text,
+        o.readable_id::bigint,
+        o."deviceModel"::text,
+        COALESCE(o."currentBranch", 'T4')::text
+    FROM
+        public.order_payments op
+    LEFT JOIN
+        public.orders o ON op.order_id = o.id
+    WHERE
+        op.closing_id = p_closing_id
+    ORDER BY
+        op.created_at DESC;
+END;
+$$;
+
+-- B. get_payments_flat (Actualizado con gastos y branch/method)
+DROP FUNCTION IF EXISTS public.get_payments_flat(bigint, bigint, text, text);
+CREATE OR REPLACE FUNCTION public.get_payments_flat(
+    p_start bigint DEFAULT NULL,
+    p_end bigint DEFAULT NULL,
+    p_cashier_id text DEFAULT NULL,
+    p_branch text DEFAULT NULL
+)
+RETURNS TABLE(
+    id uuid,
+    order_id text,
+    amount numeric,
+    method text,
+    cashier_id text,
+    cashier_name text,
+    is_refund boolean,
+    created_at bigint,
+    closing_id text,
+    branch text,
+    order_readable_id bigint,
+    order_model text
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+    RETURN QUERY
+    -- A. Pagos de Órdenes (Positivos) y Reembolsos (Negativos)
+    SELECT
+        op.id,
+        op.order_id,
+        op.amount,
+        op.method,
+        op.cashier_id,
+        op.cashier_name,
+        op.is_refund,
+        op.created_at as created_at,
+        op.closing_id,
+        COALESCE(o."currentBranch", 'T4') as branch,
+        o.readable_id::bigint as order_readable_id,
+        o."deviceModel"::text as order_model
+    FROM
+        public.order_payments op
+    LEFT JOIN
+        public.orders o ON op.order_id = o.id
+    WHERE
+        (p_start IS NULL OR op.created_at >= p_start)
+        AND (p_end IS NULL OR op.created_at <= p_end)
+        AND (p_cashier_id IS NULL OR op.cashier_id = p_cashier_id)
+        AND (p_branch IS NULL OR COALESCE(o."currentBranch", 'T4') = p_branch)
+        
+    UNION ALL
+    
+    -- B. Transacciones de Contabilidad (Ventas de Tienda, Gastos, Manuales)
+    SELECT
+        at.id,
+        CASE 
+            WHEN at.source = 'STORE' AND at.amount > 0 THEN 'PRODUCT_SALE'
+            WHEN at.source = 'MANUAL' THEN 'MANUAL_TX'
+            ELSE 'GASTO_LOCAL' 
+        END as order_id,
+        at.amount as amount,
+        COALESCE(at.method, 'CASH') as method,
+        at.created_by as cashier_id,
+        'Cajero' as cashier_name,
+        (at.amount < 0) as is_refund,
+        (extract(epoch from at.created_at) * 1000)::bigint as created_at,
+        at.closing_id,
+        COALESCE(at.branch, 'T4') as branch,
+        at.readable_id::bigint as order_readable_id,
+        CASE 
+            WHEN at.source = 'STORE' AND at.amount > 0 THEN 'Venta Directa'
+            WHEN at.source = 'MANUAL' THEN 'Transacción Manual'
+            ELSE 'Gasto Local' 
+        END::text as order_model
+    FROM
+        public.accounting_transactions at
+    WHERE
+        at.source IN ('STORE', 'ORDER', 'FLOATING', 'MANUAL')
+        AND at.status = 'COMPLETED'
+        AND (p_start IS NULL OR (extract(epoch from at.created_at) * 1000)::bigint >= p_start)
+        AND (p_end IS NULL OR (extract(epoch from at.created_at) * 1000)::bigint <= p_end)
+        AND (p_cashier_id IS NULL OR at.created_by = p_cashier_id)
+        AND (p_branch IS NULL OR COALESCE(at.branch, 'T4') = p_branch)
+        
+    UNION ALL
+    
+    -- C. Gastos Flotantes (Negativos)
+    SELECT
+        fe.id,
+        'GASTO_FLOTANTE' as order_id,
+        -ABS(fe.amount) as amount,
+        'CASH' as method,
+        fe.created_by as cashier_id,
+        'Gasto Flotante' as cashier_name,
+        true as is_refund,
+        (extract(epoch from fe.created_at) * 1000)::bigint as created_at,
+        fe.closing_id,
+        COALESCE(fe.branch_id, 'T4') as branch,
+        fe.readable_id::bigint as order_readable_id,
+        'Gasto Flotante'::text as order_model
+    FROM
+        public.floating_expenses fe
+    WHERE
+        fe.description != 'RECEIPT_UPLOAD_TRIGGER'
+        AND (p_start IS NULL OR (extract(epoch from fe.created_at) * 1000)::bigint >= p_start)
+        AND (p_end IS NULL OR (extract(epoch from fe.created_at) * 1000)::bigint <= p_end)
+        AND (p_cashier_id IS NULL OR fe.created_by = p_cashier_id)
+        AND (p_branch IS NULL OR COALESCE(fe.branch_id, 'T4') = p_branch)
+        
+    ORDER BY
+        created_at DESC;
+END;
+$$;
+
+-- C. perform_robust_closing (Actualizado para incluir gastos)
+CREATE OR REPLACE FUNCTION public.perform_robust_closing(
+    p_closing_id text,
+    p_cashier_ids text,
+    p_admin_id text,
+    p_system_total numeric,
+    p_actual_total numeric,
+    p_difference numeric,
+    p_timestamp bigint,
+    p_notes text,
+    p_payment_ids text[]
+)
+RETURNS json
 LANGUAGE plpgsql
 SECURITY DEFINER
 AS $$
 DECLARE
-  v_status text;
-  v_payment jsonb;
+    v_updated_count int := 0;
+    v_updated_expenses_count int := 0;
+    v_updated_floating_count int := 0;
 BEGIN
-  -- 1. Lock row for update
-  SELECT status INTO v_status FROM orders WHERE id = p_order_id FOR UPDATE;
-
-  IF NOT FOUND THEN
-    RAISE EXCEPTION 'Order not found';
-  END IF;
-
-  -- 2. Validate Status
-  IF v_status = 'Entregado' THEN
-    RAISE EXCEPTION 'CRITICAL: La orden YA fue entregada.';
-  END IF;
-
-  IF v_status = 'Cancelado' THEN
-    RAISE EXCEPTION 'No se puede entregar una orden cancelada.';
-  END IF;
-
-  -- 3. Insert Payments into order_payments table
-  FOR v_payment IN SELECT * FROM jsonb_array_elements(p_new_payments)
-  LOOP
-    INSERT INTO order_payments (
-      id,
-      order_id,
-      amount,
-      method,
-      cashier_id,
-      cashier_name,
-      is_refund,
-      created_at
+    INSERT INTO public.cash_closings (
+        id, "cashierId", "adminId", "systemTotal", "actualTotal", difference, timestamp, notes
     ) VALUES (
-      (v_payment->>'id')::uuid,
-      p_order_id,
-      (v_payment->>'amount')::numeric,
-      (v_payment->>'method')::text,
-      (v_payment->>'cashierId')::text,
-      (v_payment->>'cashierName')::text,
-      COALESCE((v_payment->>'isRefund')::boolean, false),
-      (v_payment->>'date')::bigint
-    )
-    ON CONFLICT (id) DO NOTHING;
-  END LOOP;
+        p_closing_id, p_cashier_ids, p_admin_id, p_system_total, p_actual_total, p_difference, p_timestamp, p_notes
+    );
 
-  -- 4. Atomic Update and Return
-  RETURN QUERY
-  UPDATE orders
-  SET
-    history = COALESCE(history, '[]'::jsonb) || p_history_logs,
-    status = 'Entregado',
-    "completedAt" = p_completed_at
-  WHERE id = p_order_id
-  RETURNING *;
+    WITH updated_rows AS (
+        UPDATE public.order_payments
+        SET closing_id = p_closing_id
+        WHERE id::text = ANY(p_payment_ids)
+        RETURNING 1
+    )
+    SELECT count(*) INTO v_updated_count FROM updated_rows;
+    
+    WITH updated_expenses AS (
+        UPDATE public.accounting_transactions
+        SET closing_id = p_closing_id
+        WHERE id::text = ANY(p_payment_ids)
+        RETURNING 1
+    )
+    SELECT count(*) INTO v_updated_expenses_count FROM updated_expenses;
+
+    WITH updated_floating AS (
+        UPDATE public.floating_expenses
+        SET closing_id = p_closing_id
+        WHERE id::text = ANY(p_payment_ids)
+        RETURNING 1
+    )
+    SELECT count(*) INTO v_updated_floating_count FROM updated_floating;
+
+    RETURN json_build_object(
+        'success', true,
+        'updated_count', v_updated_count + v_updated_expenses_count + v_updated_floating_count,
+        'closing_id', p_closing_id
+    );
+EXCEPTION WHEN OTHERS THEN
+    RETURN json_build_object(
+        'success', false,
+        'error', SQLERRM
+    );
 END;
 $$;
+
+-- D. edit_closed_payment
+CREATE OR REPLACE FUNCTION public.edit_closed_payment(
+    p_payment_id text,
+    p_new_amount numeric,
+    p_admin_id text
+)
+RETURNS json
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_closing_id text;
+    v_old_amount numeric;
+    v_diff numeric;
+    v_current_system_total numeric;
+    v_current_actual_total numeric;
+    v_payment_uuid uuid;
+BEGIN
+    BEGIN
+        v_payment_uuid := p_payment_id::uuid;
+    EXCEPTION WHEN OTHERS THEN
+        RETURN json_build_object('success', false, 'error', 'ID de pago inválido.');
+    END;
+
+    SELECT closing_id, amount INTO v_closing_id, v_old_amount
+    FROM public.order_payments
+    WHERE id = v_payment_uuid;
+
+    IF v_closing_id IS NULL THEN
+        RETURN json_build_object('success', false, 'error', 'Pago no encontrado o sin cierre.');
+    END IF;
+
+    v_diff := p_new_amount - v_old_amount;
+
+    UPDATE public.order_payments
+    SET 
+        original_amount = COALESCE(original_amount, amount),
+        amount = p_new_amount,
+        is_edited = true,
+        edited_amount = p_new_amount
+    WHERE id = v_payment_uuid;
+
+    SELECT "systemTotal", "actualTotal" INTO v_current_system_total, v_current_actual_total
+    FROM public.cash_closings
+    WHERE id = v_closing_id;
+
+    UPDATE public.cash_closings
+    SET 
+        "systemTotal" = v_current_system_total + v_diff,
+        difference = v_current_actual_total - (v_current_system_total + v_diff),
+        updated_at = now()
+    WHERE id = v_closing_id;
+
+    RETURN json_build_object('success', true, 'closing_id', v_closing_id);
+END;
+$$;
+
+-- E. force_clear_pending_payments
+CREATE OR REPLACE FUNCTION public.force_clear_pending_payments(
+    p_cashier_ids text[],
+    p_admin_id text
+)
+RETURNS json
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_closing_id text;
+    v_count int;
+    v_total numeric;
+    v_cashier_list text;
+BEGIN
+    v_closing_id := 'clear-' || extract(epoch from now())::bigint || '-' || array_to_string(p_cashier_ids, '_');
+    v_cashier_list := array_to_string(p_cashier_ids, ',');
+
+    SELECT COALESCE(SUM(amount), 0), COUNT(*)
+    INTO v_total, v_count
+    FROM public.order_payments
+    WHERE cashier_id = ANY(p_cashier_ids)
+    AND closing_id IS NULL;
+
+    IF v_count = 0 THEN
+        RETURN json_build_object('success', false, 'message', 'No hay pagos pendientes.');
+    END IF;
+
+    INSERT INTO public.cash_closings (
+        id, "cashierId", "adminId", "systemTotal", "actualTotal", difference, timestamp, notes
+    ) VALUES (
+        v_closing_id, v_cashier_list, p_admin_id, v_total, v_total, 0, extract(epoch from now()) * 1000, 'Limpieza Manual (Forzado)'
+    );
+
+    UPDATE public.order_payments
+    SET closing_id = v_closing_id
+    WHERE cashier_id = ANY(p_cashier_ids)
+    AND closing_id IS NULL;
+
+    RETURN json_build_object('success', true, 'count', v_count, 'total', v_total);
+EXCEPTION WHEN OTHERS THEN
+    RETURN json_build_object('success', false, 'error', SQLERRM);
+END;
+$$;
+
+-- 4. PERMISOS
+GRANT EXECUTE ON FUNCTION public.get_closing_details(text) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_closing_details(text) TO service_role;
+GRANT EXECUTE ON FUNCTION public.get_payments_flat(bigint, bigint, text, text) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_payments_flat(bigint, bigint, text, text) TO service_role;
+GRANT EXECUTE ON FUNCTION public.perform_robust_closing(text, text, text, numeric, numeric, numeric, bigint, text, text[]) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.perform_robust_closing(text, text, text, numeric, numeric, numeric, bigint, text, text[]) TO service_role;
+GRANT EXECUTE ON FUNCTION public.edit_closed_payment(text, numeric, text) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.edit_closed_payment(text, numeric, text) TO service_role;
+GRANT EXECUTE ON FUNCTION public.force_clear_pending_payments(text[], text) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.force_clear_pending_payments(text[], text) TO service_role;
 `;
 
 export const DbFixModal = ({ onClose }: { onClose: () => void }) => {
   const handleCopy = () => {
     navigator.clipboard.writeText(FULL_SQL);
-    alert("SQL V14 Copiado.\n\nEjecuta esto en Supabase SQL Editor para arreglar la transacción de entrega.");
+    alert("SQL V17 Copiado.\n\nEjecuta esto en Supabase SQL Editor para arreglar la conciliación de caja y gastos.");
   };
 
   return (
@@ -90,9 +457,9 @@ export const DbFixModal = ({ onClose }: { onClose: () => void }) => {
         <div className="flex items-center gap-3 text-blue-600 mb-4 border-b border-blue-100 dark:border-blue-900 pb-2">
           <Database className="w-8 h-8" />
           <div>
-            <h3 className="text-xl font-bold text-slate-800 dark:text-white">Reparación de Base de Datos (V14)</h3>
+            <h3 className="text-xl font-bold text-slate-800 dark:text-white">Reparación de Base de Datos (V17)</h3>
             <p className="text-sm text-slate-500 dark:text-slate-400">
-                Fuerza la actualización de la función de entrega para corregir el error de fechas.
+                Añade soporte para gastos en la conciliación de caja y corrige errores.
             </p>
           </div>
         </div>
@@ -102,7 +469,7 @@ export const DbFixModal = ({ onClose }: { onClose: () => void }) => {
         <div className="flex gap-3">
           <button onClick={onClose} className="px-6 py-3 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-bold rounded-xl hover:bg-slate-200">Cerrar</button>
           <button onClick={handleCopy} className="flex-1 py-3 bg-blue-600 text-white font-bold rounded-xl shadow-lg hover:bg-blue-700 flex items-center justify-center gap-2">
-            <Copy className="w-5 h-5"/> Copiar SQL V14
+            <Copy className="w-5 h-5"/> Copiar SQL V17
           </button>
         </div>
       </div>

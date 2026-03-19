@@ -30,6 +30,7 @@ export const StatusTimeline: React.FC<StatusTimelineProps> = ({ currentStatus, o
   // REGLA: La cajera puede entregar aunque la línea esté "desactivada" para otros pasos técnicos.
   const canInteract = (status: OrderStatus) => {
       if (!onStepClick) return false;
+      if (currentUser?.role === UserRole.MONITOR) return false;
       if (currentUser?.role === UserRole.ADMIN) return true;
       
       // EXCEPTION: Cashier can ALWAYS click "RETURNED" if current state is REPAIRED
@@ -68,7 +69,7 @@ export const StatusTimeline: React.FC<StatusTimelineProps> = ({ currentStatus, o
             </div>
         )}
 
-        <div className="absolute top-1/2 left-0 w-full h-3 bg-slate-100 rounded-full -translate-y-1/2 shadow-inner border border-slate-200 dark:bg-slate-800 dark:border-slate-700" />
+        <div className={`absolute top-1/2 left-0 w-full h-3 rounded-full -translate-y-1/2 shadow-inner border transition-colors duration-500 ${isReturn ? 'bg-red-100 border-red-200 dark:bg-red-900/20 dark:border-red-800' : 'bg-slate-100 border-slate-200 dark:bg-slate-800 dark:border-slate-700'}`} />
         
         <div 
           className={`absolute top-1/2 left-0 h-3 bg-gradient-to-r rounded-full -translate-y-1/2 transition-all duration-1000 ease-in-out overflow-hidden ${barGradient}`}

@@ -1,10 +1,11 @@
 
 import React, { useMemo, useState } from 'react';
-import { useOrders } from '../contexts/OrderContext';
 import { useAuth } from '../contexts/AuthContext';
-import { OrderType, OrderStatus, UserRole } from '../types';
-import { ShoppingBag, DollarSign, Package, TrendingUp, Search, PlusCircle, Calendar, Hash, ArrowUpCircle, ArrowDownCircle, ArrowDownAZ, ArrowUpAZ, History, AlertCircle } from 'lucide-react';
+import { OrderType, OrderStatus, UserRole, RepairOrder } from '../types';
+import { ShoppingBag, DollarSign, Package, TrendingUp, Search, PlusCircle, Calendar, Hash, ArrowUpCircle, ArrowDownCircle, ArrowDownAZ, ArrowUpAZ, History, AlertCircle, Loader2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
+import { supabase } from '../services/supabase';
 
 // --- INTELLIGENT NORMALIZER ---
 const normalizeForSearch = (s: string) => {
@@ -17,7 +18,6 @@ const normalizeForSearch = (s: string) => {
 type SortOption = 'NEWEST' | 'OLDEST' | 'MODEL_AZ' | 'MODEL_ZA' | 'INVEST_HIGH' | 'INVEST_LOW' | 'PROFIT_HIGH' | 'ID_DESC';
 
 const StoreStockComponent: React.FC = () => {
-  const { orders } = useOrders();
   const { currentUser } = useAuth();
   const navigate = useNavigate();
 
@@ -27,11 +27,34 @@ const StoreStockComponent: React.FC = () => {
   const myBranch = currentUser?.branch || 'T4';
   const isAdmin = currentUser?.role === UserRole.ADMIN;
 
-  const filteredItems = useMemo(() => 
-    orders.filter(o => {
-        if (o.orderType !== OrderType.STORE || o.status === OrderStatus.RETURNED) return false;
-        if (!isAdmin && o.currentBranch !== myBranch) return false;
+  // Fetch all STORE orders for the current branch
+  const { data: storeOrders = [], isLoading } = useQuery({
+    queryKey: ['store-orders', myBranch],
+    queryFn: async () => {
+      if (!supabase) return [];
+      
+      const { data, error } = await supabase
+        .from('orders')
+        .select('*')
+        .eq('orderType', OrderType.STORE)
+        .not('status', 'in', `(${OrderStatus.RETURNED},${OrderStatus.CANCELED})`);
+        
+      if (error) throw error;
+      
+      // Filter by branch
+      return (data as RepairOrder[]).filter(o => {
+        const isMyBranch = o.currentBranch === myBranch;
+        const isIncomingTransfer = o.transferStatus === 'PENDING' && o.transferTarget === myBranch;
+        const isMyExternal = o.status === OrderStatus.EXTERNAL && o.originBranch === myBranch;
+        
+        return isMyBranch || isIncomingTransfer || isMyExternal;
+      });
+    },
+    enabled: !!currentUser
+  });
 
+  const filteredItems = useMemo(() => 
+    storeOrders.filter(o => {
         if (searchTerm) {
             const term = searchTerm.toLowerCase();
             const normTerm = normalizeForSearch(term);
@@ -41,12 +64,13 @@ const StoreStockComponent: React.FC = () => {
                 o.deviceModel.toLowerCase().includes(term) ||
                 normModel.includes(normTerm) || 
                 o.id.toLowerCase().includes(term) ||
-                (o.readable_id && o.readable_id.toString().includes(term))
+                (o.readable_id && o.readable_id.toString().includes(term)) ||
+                (o.imei && o.imei.toLowerCase().includes(term))
             );
         }
         return true;
     }),
-  [orders, myBranch, isAdmin, searchTerm]);
+  [storeOrders, searchTerm]);
 
   const sortedItems = useMemo(() => {
       return [...filteredItems].sort((a, b) => {
@@ -116,13 +140,18 @@ const StoreStockComponent: React.FC = () => {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-         <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex items-center justify-between"><div><p className="text-slate-500 text-[10px] font-bold uppercase">Equipos Listados</p><h3 className="text-3xl font-black text-slate-800">{totalItems}</h3></div><div className="bg-slate-100 p-3 rounded-full text-slate-600"><Package className="w-6 h-6" /></div></div>
-         <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex items-center justify-between"><div><p className="text-slate-500 text-[10px] font-bold uppercase">Inversión Actual</p><h3 className="text-3xl font-black text-slate-800">${totalInvested.toLocaleString()}</h3></div><div className="bg-red-50 p-3 rounded-full text-red-600"><DollarSign className="w-6 h-6" /></div></div>
-         <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex items-center justify-between"><div><p className="text-slate-500 text-[10px] font-bold uppercase">Retorno Proyectado</p><h3 className="text-3xl font-black text-blue-600">${potentialRevenue.toLocaleString()}</h3></div><div className="bg-blue-50 p-3 rounded-full text-blue-600"><TrendingUp className="w-6 h-6" /></div></div>
-         <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex items-center justify-between"><div><p className="text-slate-500 text-[10px] font-bold uppercase">Margen Ganancia</p><h3 className={`text-3xl font-black ${potentialProfit >= 0 ? 'text-green-600' : 'text-red-500'}`}>${potentialProfit.toLocaleString()}</h3></div><div className="bg-green-50 p-3 rounded-full text-green-600"><DollarSign className="w-6 h-6" /></div></div>
+         <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex items-center justify-between"><div><p className="text-slate-500 text-[10px] font-bold uppercase">Equipos Listados</p><h3 className="text-3xl font-black text-slate-800">{isLoading ? '...' : totalItems}</h3></div><div className="bg-slate-100 p-3 rounded-full text-slate-600"><Package className="w-6 h-6" /></div></div>
+         <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex items-center justify-between"><div><p className="text-slate-500 text-[10px] font-bold uppercase">Inversión Actual</p><h3 className="text-3xl font-black text-slate-800">{isLoading ? '...' : `$${totalInvested.toLocaleString()}`}</h3></div><div className="bg-red-50 p-3 rounded-full text-red-600"><DollarSign className="w-6 h-6" /></div></div>
+         <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex items-center justify-between"><div><p className="text-slate-500 text-[10px] font-bold uppercase">Retorno Proyectado</p><h3 className="text-3xl font-black text-blue-600">{isLoading ? '...' : `$${potentialRevenue.toLocaleString()}`}</h3></div><div className="bg-blue-50 p-3 rounded-full text-blue-600"><TrendingUp className="w-6 h-6" /></div></div>
+         <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex items-center justify-between"><div><p className="text-slate-500 text-[10px] font-bold uppercase">Margen Ganancia</p><h3 className={`text-3xl font-black ${potentialProfit >= 0 ? 'text-green-600' : 'text-red-500'}`}>{isLoading ? '...' : `$${potentialProfit.toLocaleString()}`}</h3></div><div className="bg-green-50 p-3 rounded-full text-green-600"><DollarSign className="w-6 h-6" /></div></div>
       </div>
 
-      {sortedItems.length === 0 ? (
+      {isLoading ? (
+          <div className="flex flex-col items-center justify-center py-20">
+              <Loader2 className="w-10 h-10 text-red-600 animate-spin mb-4" />
+              <p className="text-slate-400 font-bold animate-pulse">Cargando inventario...</p>
+          </div>
+      ) : sortedItems.length === 0 ? (
           <div className="text-center py-20 bg-white rounded-3xl border-2 border-dashed border-slate-200"><div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4"><AlertCircle className="w-8 h-8 text-slate-300" /></div><h3 className="text-lg font-bold text-slate-700">Inventario Vacío</h3></div>
       ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 animate-in fade-in duration-500">

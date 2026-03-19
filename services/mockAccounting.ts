@@ -16,10 +16,12 @@ export const mockAccountingService = {
     await new Promise(resolve => setTimeout(resolve, 500));
     return {
       current_income: 15400,
-      current_expenses: 8200,
-      net_profit: 7200,
+      current_expenses: 3700,
+      current_purchases: 4500,
+      net_profit: 11700,
       prev_income: 12000,
-      prev_expenses: 7500,
+      prev_expenses: 3500,
+      prev_purchases: 4000,
       growth_income: 28.3
     };
   },
@@ -27,12 +29,12 @@ export const mockAccountingService = {
   getCashflow: async (): Promise<CashflowData[]> => {
     await new Promise(resolve => setTimeout(resolve, 600));
     return [
-      { month: 'May', income: 9000, expenses: 6000 },
-      { month: 'Jun', income: 11000, expenses: 7000 },
-      { month: 'Jul', income: 10500, expenses: 6500 },
-      { month: 'Aug', income: 13000, expenses: 8000 },
-      { month: 'Sep', income: 12000, expenses: 7500 },
-      { month: 'Oct', income: 15400, expenses: 8200 },
+      { month: 'May', income: 9000, expenses: 3000, purchases: 3000 },
+      { month: 'Jun', income: 11000, expenses: 3500, purchases: 3500 },
+      { month: 'Jul', income: 10500, expenses: 3500, purchases: 3000 },
+      { month: 'Aug', income: 13000, expenses: 4000, purchases: 4000 },
+      { month: 'Sep', income: 12000, expenses: 3500, purchases: 4000 },
+      { month: 'Oct', income: 15400, expenses: 3700, purchases: 4500 },
     ];
   },
 

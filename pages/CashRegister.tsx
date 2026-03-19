@@ -3,22 +3,24 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { useOrders } from '../contexts/OrderContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useCash } from '../contexts/CashContext';
-import { UserRole, Payment, PaymentMethod, OrderStatus, RepairOrder, DebtLog, CashClosing, OrderType } from '../types';
+import { UserRole, Payment, PaymentMethod, OrderStatus, RepairOrder, DebtLog, CashClosing, OrderType, ActionType } from '../types';
+import { auditService } from '../services/auditService';
 import { DollarSign, Filter, Calendar, User, Search, Wallet, CreditCard, Banknote, Building, AlertTriangle, Printer, CheckCircle2, Users, ChevronRight, Phone, ExternalLink, X, FileText, Smartphone, PlusCircle, Loader2, Lock, History, ClipboardCheck, ArrowUpRight, ArrowDownLeft, Edit2, CheckSquare, RotateCcw, Eye, ScrollText, UserCheck, RefreshCw, MapPin, CalendarDays, MousePointerClick, Info, XCircle, Trash2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { printCashCount } from '../services/invoiceService';
-import { DbFixModal } from '../components/DbFixModal';
+import { ExpenseApprovals } from '../components/pos/ExpenseApprovals';
 import { fetchGlobalPayments, FlatPayment } from '../services/analytics';
+import { DbFixModal } from '../components/DbFixModal';
 import { supabase } from '../services/supabase';
 
 const CashRegisterComponent: React.FC = () => {
   const navigate = useNavigate();
-  const { orders, addPayments, showNotification, performCashClosing, editPayment } = useOrders();
-  const { getCashierDebtLogs, payCashierDebt, getCashClosings, deleteCashClosing, updateCashClosing, forceClearPendingPayments, getClosingDetails, editClosedPayment } = useCash();
+  const { orders, addPayments, showNotification, editPayment } = useOrders();
+  const { performCashClosing, getCashierDebtLogs, payCashierDebt, getCashClosings, deleteCashClosing, updateCashClosing, forceClearPendingPayments, getClosingDetails, editClosedPayment } = useCash();
   const { users, currentUser } = useAuth();
   
   // View State
-  const [activeTab, setActiveTab] = useState<'DAILY' | 'RECONCILE' | 'DEBTS' | 'HISTORY'>('DAILY');
+  const [activeTab, setActiveTab] = useState<'DAILY' | 'RECONCILE' | 'DEBTS' | 'HISTORY' | 'APPROVALS'>('DAILY');
   const [isSyncing, setIsSyncing] = useState(false);
   
   // Filters
@@ -67,7 +69,7 @@ const CashRegisterComponent: React.FC = () => {
 
   // Permissions
   const canAdminister = currentUser?.role === UserRole.ADMIN || currentUser?.role === UserRole.SUB_ADMIN || currentUser?.role === UserRole.MONITOR || currentUser?.role === UserRole.CASHIER || currentUser?.permissions?.canViewAccounting;
-  const isAdmin = currentUser?.role === UserRole.ADMIN || currentUser?.role === UserRole.SUB_ADMIN;
+  const isSupervisor = currentUser?.role === UserRole.ADMIN || currentUser?.role === UserRole.SUB_ADMIN || currentUser?.role === UserRole.MONITOR;
 
   useEffect(() => {
       if (currentUser && selectedUsers.length === 0) {
@@ -84,21 +86,26 @@ const CashRegisterComponent: React.FC = () => {
       const end = Date.now();
       const start = end - (48 * 60 * 60 * 1000); 
 
-      // 1. Fetch RPC data (Standard)
+      // 1. Fetch RPC data (Standard Order Payments, Store Sales, Expenses, Floating)
       const payments = await fetchGlobalPayments(start, end, null, null);
-      
+
       // 2. SAFETY NET: Fetch IDs of closed payments directly from table
       // This ensures that even if RPC returns stale data or missing closing_id, we filter them out.
-      const { data: closedData } = await supabase
-        .from('order_payments')
-        .select('id')
-        .not('closing_id', 'is', null)
-        .gte('created_at', start); // created_at is bigint in DB for this app context? Or timestamptz?
-        // Based on get_payments_flat, it compares with bigint. So we pass number.
-        // Wait, supabase client usually expects ISO string for timestamptz or number for bigint.
-        // Let's assume bigint as per SQL.
+      const [
+        { data: closedPayments },
+        { data: closedExpenses },
+        { data: closedFloating }
+      ] = await Promise.all([
+        supabase.from('order_payments').select('id').not('closing_id', 'is', null).gte('created_at', start),
+        supabase.from('accounting_transactions').select('id').not('closing_id', 'is', null).gte('created_at', new Date(start).toISOString()),
+        supabase.from('floating_expenses').select('id').not('closing_id', 'is', null).gte('created_at', new Date(start).toISOString())
+      ]);
 
-      const closedSet = new Set(closedData?.map((x: any) => x.id) || []);
+      const closedSet = new Set([
+        ...(closedPayments?.map((x: any) => x.id) || []),
+        ...(closedExpenses?.map((x: any) => x.id) || []),
+        ...(closedFloating?.map((x: any) => x.id) || [])
+      ]);
       
       // 3. Merge knowledge: If ID is in closedSet, mark it as closed locally
       const processedPayments = payments.map(p => {
@@ -183,7 +190,7 @@ const CashRegisterComponent: React.FC = () => {
   // LISTA COMPLETA PARA "TURNO ACTUAL" (Incluye Abiertos y Cerrados)
   const allDailyPayments = useMemo(() => {
       return rawGlobalPayments
-          .filter(p => selectedUsers.includes((p as any).cashier_id))
+          .filter(p => selectedUsers.includes((p as any).cashier_id) && !(p as any).closing_id)
           .sort((a, b) => {
               const timeA = (a as any).created_at || a.date || 0;
               const timeB = (b as any).created_at || b.date || 0;
@@ -221,7 +228,7 @@ const CashRegisterComponent: React.FC = () => {
       });
       
       return groups;
-  }, [allDailyPayments]);
+  }, [allDailyPayments, orders]);
 
   useEffect(() => {
       const availableBranches = Object.keys(totalsByBranch);
@@ -266,7 +273,7 @@ const CashRegisterComponent: React.FC = () => {
       });
       
       return stats;
-  }, [currentShiftPayments, closingBranch, selectedPaymentIds]);
+  }, [currentShiftPayments, closingBranch, selectedPaymentIds, orders]);
 
   const handleCloseShift = async () => {
       // 1. VALIDACIONES INICIALES
@@ -314,6 +321,15 @@ const CashRegisterComponent: React.FC = () => {
           errorSource = 'EJECUCIÓN_RPC';
           await performCashClosing(combinedIds, expectedCash, actual, currentUser.id, paymentIds);
           
+          // Record audit log
+          if (currentUser) {
+            await auditService.recordLog(
+              { id: currentUser.id, name: currentUser.name },
+              ActionType.CASH_CLOSING_PERFORMED,
+              `Cierre de caja ejecutado - Esperado: $${expectedCash} - Real: $${actual} (Dif: $${actual - expectedCash})`
+            );
+          }
+
           // 4. ANIMACIÓN DE SALIDA (UI)
           errorSource = 'ANIMACIÓN_UI';
           setAnimatingIds(paymentIds); // Activar animación de salida para estos IDs
@@ -364,6 +380,16 @@ const CashRegisterComponent: React.FC = () => {
       
       try {
           await deleteCashClosing(closingId);
+          
+          // Record audit log
+          if (currentUser) {
+            await auditService.recordLog(
+              { id: currentUser.id, name: currentUser.name },
+              ActionType.CASH_CLOSING_DELETED,
+              `Cierre de caja eliminado (ID: ${closingId})`
+            );
+          }
+
           showNotification('success', 'Cierre eliminado y pagos reabiertos');
           loadHistory(); // Recargar lista
           loadPaymentsFromServer(); // Recargar pagos abiertos
@@ -381,6 +407,16 @@ const CashRegisterComponent: React.FC = () => {
 
       try {
           await updateCashClosing(closing.id, newActual, closing.notes || '');
+          
+          // Record audit log
+          if (currentUser) {
+            await auditService.recordLog(
+              { id: currentUser.id, name: currentUser.name },
+              ActionType.CASH_CLOSING_UPDATED,
+              `Cierre de caja actualizado (ID: ${closing.id}) - Nuevo Real: $${newActual}`
+            );
+          }
+
           showNotification('success', 'Cierre actualizado');
           loadHistory();
       } catch (error: any) {
@@ -401,6 +437,16 @@ const CashRegisterComponent: React.FC = () => {
       try {
           setIsSyncing(true);
           await forceClearPendingPayments(selectedUsers, currentUser.id);
+          
+          // Record audit log
+          if (currentUser) {
+            await auditService.recordLog(
+              { id: currentUser.id, name: currentUser.name },
+              ActionType.CASH_CLEAR_FORCED,
+              `Limpieza forzada de pagos para: ${names}`
+            );
+          }
+
           showNotification('success', 'Pagos limpiados correctamente');
           await loadPaymentsFromServer();
       } catch (error: any) {
@@ -432,6 +478,16 @@ const CashRegisterComponent: React.FC = () => {
       
       try {
           await editClosedPayment(paymentId, newAmount, currentUser?.id || 'admin');
+          
+          // Record audit log
+          if (currentUser) {
+            await auditService.recordLog(
+              { id: currentUser.id, name: currentUser.name },
+              ActionType.CASH_PAYMENT_EDITED,
+              `Pago cerrado editado: ID ${paymentId} - Nuevo monto: $${newAmount}`
+            );
+          }
+
           showNotification('success', 'Pago editado y cierre recalculado');
           // Reload details and history
           if (selectedClosing) {
@@ -484,7 +540,8 @@ const CashRegisterComponent: React.FC = () => {
               return (
                   o.customer.name.toLowerCase().includes(term) ||
                   o.deviceModel.toLowerCase().includes(term) ||
-                  (o.readable_id?.toString() || o.id).includes(term)
+                  (o.readable_id?.toString() || o.id.toLowerCase()).includes(term) ||
+                  (o.imei && o.imei.toLowerCase().includes(term))
               );
           }
           return true;
@@ -506,10 +563,18 @@ const CashRegisterComponent: React.FC = () => {
               cashierName: currentUser?.name || 'Cajero',
               notes: 'Abono a deuda cliente'
           };
-          await addPayments(selectedDebtOrder.id, [payment]);
-          showNotification('success', 'Abono registrado');
-          setPaymentAmount('');
-          setSelectedDebtOrder(null);
+          try {
+              await addPayments(selectedDebtOrder.id, [payment]);
+              showNotification('success', 'Abono registrado');
+              setPaymentAmount('');
+              setSelectedDebtOrder(null);
+          } catch (error: any) {
+              console.error("Error al registrar abono:", error);
+              showNotification('error', error.message || 'Error desconocido');
+              if (error.message && (error.message.includes('row-level security') || error.message.includes('RLS'))) {
+                  setShowDbFixModal(true);
+              }
+          }
       } finally { setIsProcessingPayment(false); }
   };
 
@@ -532,7 +597,14 @@ const CashRegisterComponent: React.FC = () => {
 
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
             <div>
-                <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><Wallet className="w-6 h-6 text-green-600"/> Gestión de Caja</h1>
+                <div className="flex items-center gap-3">
+                    <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><Wallet className="w-6 h-6 text-green-600"/> Gestión de Caja</h1>
+                    {canAdminister && (
+                        <button onClick={() => setShowDbFixModal(true)} className="text-xs bg-orange-100 text-orange-700 px-2 py-1 rounded-md font-bold hover:bg-orange-200 transition-colors flex items-center gap-1">
+                            <AlertTriangle className="w-3 h-3" /> Fix DB (V17)
+                        </button>
+                    )}
+                </div>
                 <p className="text-slate-500 text-sm">Control de efectivo, cuadres y deudas.</p>
             </div>
             <div className="bg-slate-100 p-1 rounded-xl flex gap-1 overflow-x-auto max-w-full">
@@ -540,11 +612,12 @@ const CashRegisterComponent: React.FC = () => {
                 {canAdminister && <button onClick={() => setActiveTab('RECONCILE')} className={`px-4 py-2 rounded-lg text-sm font-bold transition-all whitespace-nowrap ${activeTab === 'RECONCILE' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Cierre</button>}
                 <button onClick={() => setActiveTab('HISTORY')} className={`px-4 py-2 rounded-lg text-sm font-bold transition-all whitespace-nowrap ${activeTab === 'HISTORY' ? 'bg-white text-purple-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Historial</button>
                 <button onClick={() => setActiveTab('DEBTS')} className={`px-4 py-2 rounded-lg text-sm font-bold transition-all whitespace-nowrap ${activeTab === 'DEBTS' ? 'bg-white text-orange-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Cuentas x Cobrar</button>
+                {isSupervisor && <button onClick={() => setActiveTab('APPROVALS')} className={`px-4 py-2 rounded-lg text-sm font-bold transition-all whitespace-nowrap ${activeTab === 'APPROVALS' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Aprobaciones</button>}
             </div>
         </div>
 
         {/* --- GLOBAL USER MULTI-SELECTOR --- */}
-        {activeTab !== 'HISTORY' && (
+        {activeTab !== 'HISTORY' && activeTab !== 'APPROVALS' && (
         <div className="mb-6 bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
             <div className="flex justify-between items-center mb-3">
                 <div className="flex items-center gap-2 text-slate-500 font-bold text-sm uppercase tracking-wider">
@@ -603,7 +676,8 @@ const CashRegisterComponent: React.FC = () => {
                                          <p className="text-slate-400 text-xs font-bold uppercase">Total {branch}</p>
                                          <button onClick={() => handlePrintShift(branch)} className="bg-white/10 hover:bg-white/20 text-white p-2 rounded-lg transition" title="Imprimir Corte"><Printer className="w-5 h-5"/></button>
                                     </div>
-                                    <h2 className="text-4xl font-extrabold mb-6 flex items-center gap-1"><span className="text-2xl opacity-50">$</span> {totals.total.toLocaleString()}</h2>
+                                    <h2 className="text-4xl font-extrabold mb-2 flex items-center gap-1"><span className="text-2xl opacity-50">$</span> {totals.total.toLocaleString()}</h2>
+
                                     <div className="grid grid-cols-2 gap-4 pt-4 border-t border-slate-700">
                                         <div><p className="text-slate-400 text-[10px] uppercase font-bold flex items-center gap-1"><Banknote className="w-3 h-3"/> Efectivo</p><p className="text-lg font-bold text-green-400">${totals.cash.toLocaleString()}</p></div>
                                         <div><p className="text-slate-400 text-[10px] uppercase font-bold flex items-center gap-1"><CreditCard className="w-3 h-3"/> Tarjeta</p><p className="text-lg font-bold text-purple-400">${totals.card.toLocaleString()}</p></div>
@@ -639,8 +713,26 @@ const CashRegisterComponent: React.FC = () => {
                                     const isRefund = p.amount < 0 || p.is_refund;
                                     const methodTranslated = p.method === 'CASH' ? 'Efectivo' : p.method === 'TRANSFER' ? 'Transferencia' : p.method === 'CARD' ? 'Tarjeta' : p.method;
                                     const dateObj = new Date(Number(p.date));
-                                    const dateStr = isNaN(dateObj.getTime()) ? new Date(p.date).toLocaleDateString() : dateObj.toLocaleDateString();
+                                    
+                                    let dateStr = '';
+                                    if (isNaN(dateObj.getTime())) {
+                                        dateStr = new Date(p.date).toLocaleString();
+                                    } else {
+                                        const timeStr = dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                                        const dateOnlyStr = dateObj.toLocaleDateString();
+                                        dateStr = `${timeStr} - ${dateOnlyStr}`;
+                                    }
+                                    
                                     const isClosed = !!(p as any).closing_id && (p as any).closing_id !== 'temp-closed';
+                                    
+                                    // Get readable ID from context if possible
+                                    const contextOrder = orders.find(o => o.id === p.order_id);
+                                    const displayId = contextOrder?.readable_id 
+                                        ? contextOrder.readable_id 
+                                        : (['PRODUCT_SALE', 'VENTA_PRODUCTO'].includes(p.order_id) ? `V-${p.order_readable_id || p.id?.slice(-4)}` 
+                                        : (['EXPENSE', 'GASTO_LOCAL', 'GASTO_FLOTANTE'].includes(p.order_id) ? `G-${p.order_readable_id || p.id?.slice(-4)}` 
+                                        : p.order_readable_id || p.order_id?.slice(-4)));
+                                    const displayModel = contextOrder?.deviceModel || p.order_model || '';
                                     
                                     return (
                                     <div 
@@ -664,7 +756,7 @@ const CashRegisterComponent: React.FC = () => {
                                                     </span>
                                                 </div>
                                                 <p className="text-xs font-bold text-slate-500 uppercase">{methodTranslated}</p>
-                                                <p className="text-sm font-bold text-slate-800">Orden #{p.order_readable_id ? p.order_readable_id : p.order_id?.slice(-4)} - {p.order_model}</p>
+                                                <p className="text-sm font-bold text-slate-800">Orden #{displayId} {displayModel ? `- ${displayModel}` : ''}</p>
                                             </div>
                                         </div>
                                         <div className="text-right">
@@ -702,6 +794,14 @@ const CashRegisterComponent: React.FC = () => {
                                 const isChecked = selectedPaymentIds.includes(pId);
                                 const isAnimating = animatingIds.includes(pId);
                                 const methodTranslated = p.method === 'CASH' ? 'Efectivo' : p.method === 'TRANSFER' ? 'Transferencia' : p.method === 'CARD' ? 'Tarjeta' : p.method;
+                                
+                                const contextOrder = orders.find(o => o.id === p.order_id);
+                                const displayId = contextOrder?.readable_id 
+                                    ? contextOrder.readable_id 
+                                    : (['PRODUCT_SALE', 'VENTA_PRODUCTO'].includes(p.order_id) ? `V-${p.order_readable_id || p.id?.slice(-4)}` 
+                                    : (['EXPENSE', 'GASTO_LOCAL', 'GASTO_FLOTANTE'].includes(p.order_id) ? `G-${p.order_readable_id || p.id?.slice(-4)}` 
+                                    : p.order_readable_id || p.order_id?.slice(-4)));
+                                
                                 return (
                                 <div 
                                     key={pId} 
@@ -713,7 +813,7 @@ const CashRegisterComponent: React.FC = () => {
                                     </div>
                                     <div className="flex-1">
                                         <div className="flex justify-between">
-                                            <p className="text-xs font-bold text-slate-700">#{p.order_readable_id ? p.order_readable_id : p.order_id?.slice(-4)}</p>
+                                            <p className="text-xs font-bold text-slate-700">Orden #{displayId}</p>
                                             <p className="text-xs font-bold text-slate-800">${p.amount.toLocaleString()}</p>
                                         </div>
                                         <p className="text-[10px] text-slate-500 uppercase">{methodTranslated} • {p.cashier_name}</p>
@@ -743,7 +843,10 @@ const CashRegisterComponent: React.FC = () => {
                         <div className="space-y-6">
                             <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
                                 <div className="flex justify-between items-end">
-                                    <div><p className="text-xs font-bold text-slate-500 uppercase mb-1">Efectivo Esperado</p><p className="text-3xl font-black text-slate-800">${reconcileTotals.cash.toLocaleString()}</p></div>
+                                    <div>
+                                        <p className="text-xs font-bold text-slate-500 uppercase mb-1">Efectivo Esperado</p>
+                                        <p className="text-3xl font-black text-slate-800">${reconcileTotals.cash.toLocaleString()}</p>
+                                    </div>
                                 </div>
                             </div>
                             <div><label className="text-sm font-bold text-slate-700 mb-2 block">Efectivo Real (Conteo)</label><div className="relative"><span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold">$</span><input type="number" className="w-full pl-8 p-3 border border-slate-300 rounded-xl text-xl font-bold outline-none focus:ring-2 focus:ring-blue-500" placeholder="0.00" value={actualCash} onChange={e => setActualCash(e.target.value)} /></div></div>
@@ -776,9 +879,11 @@ const CashRegisterComponent: React.FC = () => {
                             const term = historySearchTerm.toLowerCase();
                             const dateStr = new Date(c.timestamp).toLocaleDateString().toLowerCase();
                             const cashierIdStr = c.cashierId ? c.cashierId.toLowerCase() : '';
+                            const cashierName = users.find(u => u.id === c.cashierId)?.name.toLowerCase() || '';
                             const idStr = c.id ? c.id.toLowerCase() : '';
                             return (
                                 cashierIdStr.includes(term) ||
+                                cashierName.includes(term) ||
                                 dateStr.includes(term) ||
                                 idStr.includes(term)
                             );
@@ -875,6 +980,12 @@ const CashRegisterComponent: React.FC = () => {
                 </div>
             </div>
         )}
+
+        {activeTab === 'APPROVALS' && isSupervisor && (
+            <div className="space-y-6 animate-in fade-in">
+                <ExpenseApprovals />
+            </div>
+        )}
         
         {/* ... MODALS ... */}
         {selectedDebtOrder && (
@@ -957,15 +1068,23 @@ const CashRegisterComponent: React.FC = () => {
                                                 </tr>
                                             </thead>
                                             <tbody className="divide-y divide-slate-100">
-                                                {closingDetails.map((p: any) => (
+                                                {closingDetails.map((p: any) => {
+                                                    const contextOrder = orders.find(o => o.id === p.order_id);
+                                                    const displayId = contextOrder?.readable_id 
+                                                        ? contextOrder.readable_id 
+                                                        : (['PRODUCT_SALE', 'VENTA_PRODUCTO'].includes(p.order_id) ? `V-${p.order_readable_id || p.id?.slice(-4)}` 
+                                                        : (['EXPENSE', 'GASTO_LOCAL', 'GASTO_FLOTANTE'].includes(p.order_id) ? `G-${p.order_readable_id || p.id?.slice(-4)}` 
+                                                        : p.order_readable_id || p.order_id?.slice(-4)));
+                                                    const displayModel = contextOrder?.deviceModel || p.order_model || '';
+                                                    return (
                                                     <tr key={p.payment_id} className="hover:bg-slate-50">
                                                         <td className="p-3">
-                                                            <div className="font-medium text-slate-800">{new Date(p.created_at).toLocaleDateString()}</div>
-                                                            <div className="text-xs text-slate-400">{new Date(p.created_at).toLocaleTimeString()}</div>
+                                                            <div className="font-medium text-slate-800">{new Date(p.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+                                                            <div className="text-xs text-slate-400">{new Date(p.created_at).toLocaleDateString()}</div>
                                                         </td>
                                                         <td className="p-3">
-                                                            <div className="font-bold text-slate-700">#{p.order_readable_id}</div>
-                                                            <div className="text-xs text-slate-500">{p.order_model}</div>
+                                                            <div className="font-bold text-slate-700">#{displayId}</div>
+                                                            <div className="text-xs text-slate-500">{displayModel}</div>
                                                         </td>
                                                         <td className="p-3">
                                                             <span className="px-2 py-1 bg-slate-100 rounded text-xs font-bold text-slate-600">{p.method}</span>
@@ -991,7 +1110,7 @@ const CashRegisterComponent: React.FC = () => {
                                                             )}
                                                         </td>
                                                     </tr>
-                                                ))}
+                                                )})}
                                             </tbody>
                                         </table>
                                     </div>
@@ -1033,11 +1152,19 @@ const CashRegisterComponent: React.FC = () => {
                         <div className="grid grid-cols-2 gap-4 bg-slate-50 p-4 rounded-xl border border-slate-100">
                             <div>
                                 <p className="text-[10px] font-bold text-slate-400 uppercase">Orden</p>
-                                <p className="font-bold text-slate-700 text-sm">#{selectedPaymentDetails.order_readable_id ? selectedPaymentDetails.order_readable_id : selectedPaymentDetails.order_id?.slice(-4)}</p>
+                                <p className="font-bold text-slate-700 text-sm">
+                                    {orders.find(o => o.id === selectedPaymentDetails.order_id)?.readable_id 
+                                        ? `#${orders.find(o => o.id === selectedPaymentDetails.order_id)?.readable_id}`
+                                        : (['PRODUCT_SALE', 'VENTA_PRODUCTO'].includes(selectedPaymentDetails.order_id) ? `V-${selectedPaymentDetails.order_readable_id || selectedPaymentDetails.id?.slice(-4)}` 
+                                        : (['EXPENSE', 'GASTO_LOCAL', 'GASTO_FLOTANTE'].includes(selectedPaymentDetails.order_id) ? `G-${selectedPaymentDetails.order_readable_id || selectedPaymentDetails.id?.slice(-4)}` 
+                                        : `#${selectedPaymentDetails.order_readable_id || selectedPaymentDetails.order_id?.slice(-4)}`))}
+                                </p>
                             </div>
                             <div>
                                 <p className="text-[10px] font-bold text-slate-400 uppercase">Fecha</p>
-                                <p className="font-bold text-slate-700 text-sm">{new Date(selectedPaymentDetails.date).toLocaleString()}</p>
+                                <p className="font-bold text-slate-700 text-sm">
+                                    {new Date(selectedPaymentDetails.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} - {new Date(selectedPaymentDetails.date).toLocaleDateString()}
+                                </p>
                             </div>
                             <div>
                                 <p className="text-[10px] font-bold text-slate-400 uppercase">Método</p>

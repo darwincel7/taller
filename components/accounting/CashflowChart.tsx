@@ -23,8 +23,9 @@ export const CashflowChart: React.FC<CashflowChartProps> = ({ data }) => {
             contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
           />
           <Legend wrapperStyle={{ paddingTop: '20px' }} />
-          <Bar dataKey="income" name="Ingresos" fill="#10b981" radius={[4, 4, 0, 0]} barSize={30} />
-          <Bar dataKey="expenses" name="Egresos" fill="#f43f5e" radius={[4, 4, 0, 0]} barSize={30} />
+          <Bar dataKey="income" name="Ingresos" fill="#10b981" radius={[4, 4, 0, 0]} barSize={20} />
+          <Bar dataKey="expenses" name="Gastos Operativos" fill="#f43f5e" radius={[4, 4, 0, 0]} barSize={20} />
+          <Bar dataKey="purchases" name="Inversión Inventario" fill="#3b82f6" radius={[4, 4, 0, 0]} barSize={20} />
         </BarChart>
       </ResponsiveContainer>
     </div>
