@@ -57,6 +57,21 @@ create trigger trg_whatsapp_conversations_updated_at
   before update on whatsapp_conversations
   for each row execute function set_updated_at();
 
+create table if not exists whatsapp_auth (
+  id text primary key,
+  data text not null,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+
+create index if not exists idx_whatsapp_auth_id
+  on whatsapp_auth(id);
+
+drop trigger if exists trg_whatsapp_auth_updated_at on whatsapp_auth;
+create trigger trg_whatsapp_auth_updated_at
+  before update on whatsapp_auth
+  for each row execute function set_updated_at();
+
 -- Supabase Realtime publication
 begin;
   do $$ 

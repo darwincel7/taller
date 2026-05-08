@@ -24,24 +24,20 @@ const getAiClient = () => {
 // Global error handlers to prevent server crash on WhatsApp crypto errors
 process.on('uncaughtException', (err) => {
   const errorMsg = err.message || String(err);
-  if (errorMsg.includes('Unsupported state') || errorMsg.includes('unable to authenticate data') || errorMsg.includes('bad session') || errorMsg.includes('MAC')) {
-    console.log('WhatsApp session out of sync. Resetting connection to recover...');
-    resetWhatsAppConnection();
-  } else {
-    // Only warn to avoid UI popovers from background exceptions
-    console.warn('Uncaught Exception:', err);
+  if (errorMsg.includes('MAC') || errorMsg.includes('decrypt') || errorMsg.includes('MessageCounterError') || errorMsg.includes('conflict') || errorMsg.includes('Unsupported state') || errorMsg.includes('unable to authenticate data') || errorMsg.includes('bad session')) {
+    console.warn('[WA] Error temporal capturado, no se resetea sesion:', errorMsg);
+    return;
   }
+  console.warn('Uncaught Exception:', err);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
   const errorMsg = reason instanceof Error ? reason.message : String(reason);
-  if (errorMsg.includes('Unsupported state') || errorMsg.includes('unable to authenticate data') || errorMsg.includes('bad session') || errorMsg.includes('MAC') || errorMsg.includes('conflict')) {
-    console.log('WhatsApp session out of sync. Resetting connection to recover...');
-    resetWhatsAppConnection();
-  } else {
-    // Only warn to avoid UI popovers from background promises
-    console.warn('Unhandled Rejection at:', promise, 'reason:', reason);
+  if (errorMsg.includes('MAC') || errorMsg.includes('decrypt') || errorMsg.includes('MessageCounterError') || errorMsg.includes('conflict') || errorMsg.includes('Unsupported state') || errorMsg.includes('unable to authenticate data') || errorMsg.includes('bad session')) {
+    console.warn('[WA] Error temporal capturado, no se resetea sesion:', errorMsg);
+    return;
   }
+  console.warn('Unhandled Rejection at:', promise, 'reason:', reason);
 });
 
 const __filename = fileURLToPath(import.meta.url);

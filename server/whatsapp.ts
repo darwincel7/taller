@@ -268,6 +268,19 @@ function getFallbackText(type: string) {
   return map[type] || 'Mensaje recibido';
 }
 
+async function messageExists(messageId: string) {
+  const supabase = getSupabase();
+  if (!supabase) return false;
+
+  const { data } = await supabase
+    .from('whatsapp_messages')
+    .select('id')
+    .eq('id', messageId)
+    .maybeSingle();
+
+  return !!data;
+}
+
 async function getOrCreateConversation(input: {
   phone: string;
   jid: string;
@@ -562,6 +575,12 @@ export async function connectToWhatsApp(manual = false) {
                     const messageId = msg.key.id;
                     if (!messageId) continue;
 
+                    const alreadyExists = await messageExists(messageId);
+                    if (alreadyExists) {
+                        console.log(`[WA] Mensaje duplicado ignorado: ${messageId}`);
+                        continue;
+                    }
+
                     const phone = normalizePhone(jid.split('@')[0]);
                     const messageType = detectMessageType(msg);
                     const extractedText = extractMessageText(msg);
@@ -593,6 +612,11 @@ export async function connectToWhatsApp(manual = false) {
                             else if (msg.message.documentMessage) { mimetype = msg.message.documentMessage.mimetype || 'application/pdf'; mediaType = 'document'; }
                             else if (msg.message.stickerMessage) { mimetype = msg.message.stickerMessage.mimetype || 'image/webp'; mediaType = 'image'; }
                             
+                            // TODO: Avoid storing large files as base64 in the database permanently.
+                            // Recommended architecture for future:
+                            // 1. Upload buffer to Supabase Storage: `await supabase.storage.from('whatsapp-media').upload(fileName, buffer)`
+                            // 2. Get public URL: `supabase.storage.from('whatsapp-media').getPublicUrl(fileName)`
+                            // 3. Save only the URL here.
                             if (buffer) {
                                 mediaUrl = `data:${mimetype};base64,${buffer.toString('base64')}`;
                             }
@@ -728,7 +752,7 @@ export async function sendWhatsAppMessage(phone: string, text: string, image?: s
         throw new Error('WhatsApp is not connected. Please wait a moment and try again.');
     }
     
-    const cleanPhone = phone.replace(/[^0-9]/g, '');
+    const cleanPhone = normalizePhone(phone);
     const jid = `${cleanPhone}@s.whatsapp.net`;
     
     let attempts = 0;
@@ -857,9 +881,8 @@ export async function sendWhatsAppMessage(phone: string, text: string, image?: s
                 errorMsg.includes('unable to authenticate data');
 
             if (isAuthError) {
-                console.log('Session corruption detected during send. Clearing auth and resetting...');
-                resetWhatsAppConnection();
-                throw new Error('Error de sesión de WhatsApp. Se ha cerrado la sesión, por favor escanea el QR nuevamente.');
+                console.warn('Session corruption warning during send. Deferring session reset to connection.update.');
+                throw new Error('Error temporal de sesión de WhatsApp al enviar el mensaje. Reitentando la conexión localmente.');
             }
 
             if (errorMsg.includes('Connection Closed') || errorMsg.includes('timeout') || errorMsg.includes('connection') || errorMsg.includes('socket') || errorMsg.includes('Precondition Required') || errorMsg.includes('decrypt') || errorMsg.includes('MAC') || errorMsg.includes('MessageCounterError') || errorMsg.includes('Key used already')) {
