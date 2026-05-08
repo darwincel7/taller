@@ -342,8 +342,36 @@ export function normalizePhone(phone: string) {
   return clean;
 }
 
+function unwrapMessage(msg: any) {
+  let m = msg.message;
+  if (!m) return null;
+
+  // Unwrap ephemeralMessage
+  if (m.ephemeralMessage) {
+    m = m.ephemeralMessage.message;
+  }
+  // Unwrap viewOnceMessage
+  if (m.viewOnceMessage) {
+    m = m.viewOnceMessage.message;
+  }
+  // Unwrap viewOnceMessageV2
+  if (m.viewOnceMessageV2) {
+    m = m.viewOnceMessageV2.message;
+  }
+  // Unwrap documentWithCaptionMessage
+  if (m.documentWithCaptionMessage) {
+    m = m.documentWithCaptionMessage.message;
+  }
+  // Unwrap editedMessage
+  if (m.editedMessage) {
+    m = m.editedMessage.message;
+  }
+
+  return m;
+}
+
 function extractMessageText(msg: any): string {
-  const m = msg.message;
+  const m = unwrapMessage(msg);
   if (!m) return '';
 
   return (
@@ -354,12 +382,13 @@ function extractMessageText(msg: any): string {
     m.documentMessage?.caption ||
     m.buttonsResponseMessage?.selectedDisplayText ||
     m.listResponseMessage?.title ||
+    m.editedMessage?.message?.protocolMessage?.editedMessage?.conversation ||
     ''
   );
 }
 
 function detectMessageType(msg: any) {
-  const m = msg.message || {};
+  const m = unwrapMessage(msg) || {};
   if (m.imageMessage) return 'image';
   if (m.videoMessage) return 'video';
   if (m.audioMessage) return 'audio';
@@ -422,7 +451,7 @@ function resolveContactIdentity(msg: any, sock: any) {
 }
 
 function isInternalWhatsAppMessage(msg: any) {
-  const m = msg.message;
+  const m = unwrapMessage(msg);
   if (!m) return true;
   if (m.protocolMessage) return true;
   if (m.senderKeyDistributionMessage) return true;
@@ -759,39 +788,75 @@ export async function connectToWhatsApp(manual = false) {
                 
                 for (const msg of m.messages) {
                     const identity = resolveContactIdentity(msg, sock);
+                    const unwrapped = unwrapMessage(msg);
                     
-                    console.log('[WA DEBUG UPSERT]', {
+                    const logPayload = {
                         type: m.type,
                         remoteJid: msg.key?.remoteJid,
                         participant: msg.key?.participant,
                         fromMe: msg.key?.fromMe,
                         id: msg.key?.id,
                         pushName: msg.pushName,
-                        messageKeys: Object.keys(msg.message || {}),
-                        identity
-                    });
+                        originalKeys: Object.keys(msg.message || {}),
+                        unwrappedKeys: Object.keys(unwrapped || {}),
+                        identity,
+                        reasonToIgnore: ''
+                    };
 
                     // Check for decryption errors due to corrupted session
                     if (msg.messageStubType === 2) { 
-                        const params = msg.messageStubParameters || [];
-                        console.log(`[WA] Message decryption issue: ${params.join(', ')}`);
+                        logPayload.reasonToIgnore = 'decryption_error';
+                        console.log('[WA DEBUG UPSERT]', logPayload);
                         continue;
                      }
 
-                    if (!msg.message) continue;
-                    if (isInternalWhatsAppMessage(msg)) continue;
-                    if (msg.key.fromMe) continue;
-                    if (identity.isSelf) continue;
-                    if (!identity.rawJid || identity.rawJid === 'status@broadcast') continue;
-                    if (identity.rawJid.endsWith('@g.us')) continue; // Ignore groups
-                    if (identity.rawJid.endsWith('@newsletter')) continue; // Ignore newsletters
+                    if (!msg.message) {
+                        logPayload.reasonToIgnore = 'no_message_object';
+                        console.log('[WA DEBUG UPSERT]', logPayload);
+                        continue;
+                    }
+                    if (isInternalWhatsAppMessage(msg)) {
+                        logPayload.reasonToIgnore = 'is_internal_message';
+                        console.log('[WA DEBUG UPSERT]', logPayload);
+                        continue;
+                    }
+                    if (msg.key.fromMe) {
+                        logPayload.reasonToIgnore = 'from_me';
+                        console.log('[WA DEBUG UPSERT]', logPayload);
+                        continue;
+                    }
+                    if (identity.isSelf) {
+                        logPayload.reasonToIgnore = 'is_self';
+                        console.log('[WA DEBUG UPSERT]', logPayload);
+                        continue;
+                    }
+                    if (!identity.rawJid || identity.rawJid === 'status@broadcast') {
+                        logPayload.reasonToIgnore = 'broadcast_or_no_jid';
+                        console.log('[WA DEBUG UPSERT]', logPayload);
+                        continue;
+                    }
+                    if (identity.rawJid.endsWith('@g.us')) {
+                        logPayload.reasonToIgnore = 'group';
+                        console.log('[WA DEBUG UPSERT]', logPayload);
+                        continue;
+                    }
+                    if (identity.rawJid.endsWith('@newsletter')) {
+                        logPayload.reasonToIgnore = 'newsletter';
+                        console.log('[WA DEBUG UPSERT]', logPayload);
+                        continue; // Ignore newsletters
+                    }
 
                     const messageId = msg.key.id;
-                    if (!messageId) continue;
+                    if (!messageId) {
+                        logPayload.reasonToIgnore = 'no_message_id';
+                        console.log('[WA DEBUG UPSERT]', logPayload);
+                        continue;
+                    }
 
                     const alreadyExists = await messageExists(identity.rawJid, messageId);
                     if (alreadyExists) {
-                        console.log(`[WA] Mensaje duplicado ignorado: ${messageId}`);
+                        logPayload.reasonToIgnore = 'duplicate';
+                        console.log('[WA DEBUG UPSERT]', logPayload);
                         continue;
                     }
 
@@ -799,11 +864,22 @@ export async function connectToWhatsApp(manual = false) {
                     const extractedText = extractMessageText(msg);
                     let fallbackText = getFallbackText(messageType);
                     
-                    if (!extractedText && !fallbackText) continue; // Skip empty messages with no content
+                    if (!extractedText && !fallbackText) {
+                        logPayload.reasonToIgnore = 'empty_content';
+                        console.log('[WA DEBUG UPSERT]', logPayload);
+                        continue; 
+                    }
                     
                     const finalText = extractedText || fallbackText;
 
-                    if (!finalText && messageType === 'text') continue;
+                    if (!finalText && messageType === 'text') {
+                        logPayload.reasonToIgnore = 'empty_text';
+                        console.log('[WA DEBUG UPSERT]', logPayload);
+                        continue;
+                    }
+
+                    logPayload.reasonToIgnore = 'none_saving_message';
+                    console.log('[WA DEBUG UPSERT]', logPayload);
 
                     // Parse media
                     let mediaUrl = undefined;
@@ -811,8 +887,10 @@ export async function connectToWhatsApp(manual = false) {
                     
                     if (messageType !== 'text') {
                         try {
+                            const unwrappedMsg = unwrapMessage(msg);
+                            const msgForMedia = { ...msg, message: unwrappedMsg };
                             const buffer = await downloadMediaMessage(
-                                msg,
+                                msgForMedia,
                                 'buffer',
                                 { },
                                 { 
@@ -822,11 +900,11 @@ export async function connectToWhatsApp(manual = false) {
                             );
                             
                             let mimetype = 'application/octet-stream';
-                            if (msg.message.imageMessage) { mimetype = msg.message.imageMessage.mimetype || 'image/jpeg'; mediaType = 'image'; }
-                            else if (msg.message.videoMessage) { mimetype = msg.message.videoMessage.mimetype || 'video/mp4'; mediaType = 'video'; }
-                            else if (msg.message.audioMessage) { mimetype = msg.message.audioMessage.mimetype || 'audio/ogg'; mediaType = 'audio'; }
-                            else if (msg.message.documentMessage) { mimetype = msg.message.documentMessage.mimetype || 'application/pdf'; mediaType = 'document'; }
-                            else if (msg.message.stickerMessage) { mimetype = msg.message.stickerMessage.mimetype || 'image/webp'; mediaType = 'image'; }
+                            if (unwrappedMsg.imageMessage) { mimetype = unwrappedMsg.imageMessage.mimetype || 'image/jpeg'; mediaType = 'image'; }
+                            else if (unwrappedMsg.videoMessage) { mimetype = unwrappedMsg.videoMessage.mimetype || 'video/mp4'; mediaType = 'video'; }
+                            else if (unwrappedMsg.audioMessage) { mimetype = unwrappedMsg.audioMessage.mimetype || 'audio/ogg'; mediaType = 'audio'; }
+                            else if (unwrappedMsg.documentMessage) { mimetype = unwrappedMsg.documentMessage.mimetype || 'application/pdf'; mediaType = 'document'; }
+                            else if (unwrappedMsg.stickerMessage) { mimetype = unwrappedMsg.stickerMessage.mimetype || 'image/webp'; mediaType = 'image'; }
                             
                             const uploadWhatsAppMediaToStorage = async (buffer: Buffer, mimetype: string, messageId: string) => {
                                 const extension = mimetype.split('/')[1]?.split(';')[0] || 'bin';

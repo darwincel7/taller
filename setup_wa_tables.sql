@@ -84,7 +84,8 @@ create trigger trg_whatsapp_auth_updated_at
 
 alter table whatsapp_auth enable row level security;
 drop policy if exists "Enable all for auth" on whatsapp_auth;
-create policy "Enable all for auth" on whatsapp_auth for all using (true) with check (true);
+-- whatsapp_auth should only be accessed by the backend using service_role, which bypasses RLS.
+-- We do not create any policy for anon or authenticated roles.
 
 -- Supabase Realtime publication
 begin;
@@ -129,6 +130,10 @@ add column if not exists identity_key text;
 
 create index if not exists idx_whatsapp_conversations_identity_key
 on whatsapp_conversations(identity_key);
+
+create unique index if not exists idx_whatsapp_conversations_identity_key_unique
+on whatsapp_conversations(identity_key)
+where identity_key is not null;
 
 create index if not exists idx_whatsapp_conversations_raw_jid
 on whatsapp_conversations(raw_jid);

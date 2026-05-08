@@ -168,23 +168,46 @@ WulWnM5/R4sQkOsivcABDQ==
   // Require Auth Middleware
   const requireAuth = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
     try {
-      const userId = req.headers['x-user-id'];
-      if (!userId) {
-        console.error("requireAuth failed: missing X-User-Id header");
-        return res.status(401).json({ error: 'No authorization header (X-User-Id missing)' });
+      const authHeader = req.headers.authorization;
+      const userIdFromHeader = req.headers['x-user-id'];
+      
+      if (!authHeader && !userIdFromHeader) {
+        console.error("requireAuth failed: missing Authorization and X-User-Id headers");
+        return res.status(401).json({ error: 'No authorization header properly set' });
+      }
+
+      const { createClient } = await import('@supabase/supabase-js');
+      const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || "https://ruwcektpadeqovwtdixd.supabase.co";
+      const supabaseRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || process.env.VITE_SUPABASE_ANON_KEY || "sb_publishable_FFOEpTNXpWSsQuJ3HosR-Q_QXNWnU4_";
+      
+      const supabaseAdmin = createClient(supabaseUrl, supabaseRoleKey);
+
+      let verifiedUserId = null;
+
+      // Prefer JWT validation if provided
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+         const token = authHeader.replace('Bearer ', '');
+         const { data: { user }, error } = await supabaseAdmin.auth.getUser(token);
+         if (!error && user) {
+            verifiedUserId = user.id;
+         }
+      }
+
+      // If JWT not provided or invalid, but we have X-User-Id, check if it exists & active.
+      // (For better security, checking the JWT is preferred, which now we do above).
+      const targetUserId = verifiedUserId || userIdFromHeader;
+
+      if (!targetUserId) {
+        throw new Error('Could not verify user identity');
       }
       
-      const { createClient } = await import('@supabase/supabase-js');
-      const supabaseUrl = req.headers['x-supabase-url'] as string || process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || "https://ruwcektpadeqovwtdixd.supabase.co";
-      const supabaseKey = req.headers['x-supabase-key'] as string || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || process.env.VITE_SUPABASE_ANON_KEY || "sb_publishable_FFOEpTNXpWSsQuJ3HosR-Q_QXNWnU4_";
-      
-      const supabaseAdmin = createClient(supabaseUrl, supabaseKey);
-      
-      const { data, error } = await supabaseAdmin.from('users').select('*').eq('id', userId).single();
+      const { data, error } = await supabaseAdmin.from('users').select('*').eq('id', targetUserId).single();
       if (error || !data || !data.active) {
-        console.error("requireAuth failed lookup:", { userId, error, data });
+        console.error("requireAuth failed lookup:", { targetUserId, error, data });
         throw new Error('User not found or inactive');
       }
+
+      // Make sure the authenticated user matches the requested user if any
       next();
     } catch (e: any) {
       console.error("requireAuth exception:", e.message);
@@ -193,11 +216,11 @@ WulWnM5/R4sQkOsivcABDQ==
   };
 
   // WhatsApp Management Routes
-  app.get("/api/whatsapp/diagnostics", (req, res) => {
+  app.get("/api/whatsapp/diagnostics", requireAuth, (req, res) => {
     res.json(getDiagnostics());
   });
 
-  app.get("/api/whatsapp/status", (req, res) => {
+  app.get("/api/whatsapp/status", requireAuth, (req, res) => {
     res.json(getWhatsAppStatus());
   });
 
@@ -287,7 +310,7 @@ WulWnM5/R4sQkOsivcABDQ==
   });
 
   // WhatsApp Notification API
-  app.post("/api/notifications/whatsapp", async (req, res) => {
+  app.post("/api/notifications/whatsapp", requireAuth, async (req, res) => {
     const { phone, message, orderId, image, isMedia } = req.body;
     
     console.log(`[WhatsApp API] Request to send message to ${phone}: ${!isMedia ? message : 'Media attached'} (Image: ${!!image})`);

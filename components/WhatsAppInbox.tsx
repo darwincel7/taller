@@ -102,6 +102,10 @@ export const WhatsAppInbox: React.FC = () => {
 
   const handleSend = async () => {
     if (!inputText.trim() || !activeConv) return;
+    if (!activeConv.is_valid_phone) {
+        alert("Este contacto no tiene número real identificado. Vincúlalo antes de responder.");
+        return;
+    }
     
     const text = inputText;
     setInputText('');
@@ -118,7 +122,7 @@ export const WhatsAppInbox: React.FC = () => {
 
     try {
       await sendCrmWhatsAppMessage({
-        phone: activeConv.phone || activeConv.raw_jid, // use real phone or fallback
+        phone: activeConv.phone, // We know phone is valid now
         text
       });
       // Update state to sent
@@ -324,23 +328,30 @@ export const WhatsAppInbox: React.FC = () => {
 
             {/* Input */}
             <div className="p-4 bg-white border-t border-slate-200">
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={inputText}
-                  onChange={(e) => setInputText(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-                  placeholder="Escribe un mensaje..."
-                  className="flex-1 p-3 bg-slate-100 border-none rounded-xl focus:outline-none focus:ring-2 focus:ring-green-500 transition"
-                />
-                <button
-                  onClick={handleSend}
-                  disabled={!inputText.trim()}
-                  className="p-3 bg-green-500 hover:bg-green-600 disabled:opacity-50 disabled:hover:bg-green-500 text-white rounded-xl transition flex items-center justify-center"
-                >
-                  <Send className="w-5 h-5" />
-                </button>
-              </div>
+              {activeConv.is_valid_phone ? (
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={inputText}
+                    onChange={(e) => setInputText(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+                    placeholder="Escribe un mensaje..."
+                    className="flex-1 p-3 bg-slate-100 border-none rounded-xl focus:outline-none focus:ring-2 focus:ring-green-500 transition"
+                  />
+                  <button
+                    onClick={handleSend}
+                    disabled={!inputText.trim()}
+                    className="p-3 bg-green-500 hover:bg-green-600 disabled:opacity-50 disabled:hover:bg-green-500 text-white rounded-xl transition flex items-center justify-center"
+                  >
+                    <Send className="w-5 h-5" />
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 p-3 bg-red-50 text-red-600 rounded-xl justify-center text-sm">
+                  <AlertCircle className="w-4 h-4" />
+                  No se puede responder porque no hay número de teléfono real identificado.
+                </div>
+              )}
             </div>
           </>
         ) : (
