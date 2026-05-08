@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { fetchWithAuth } from '../lib/fetchWithAuth';
 import { getWhatsAppConversations, getWhatsAppMessages, sendCrmWhatsAppMessage } from '../services/whatsappService';
 import { supabase } from '../services/supabase';
 import { Send, User, MessageCircle, Clock, CheckCircle2, AlertCircle, Link as LinkIcon, Search } from 'lucide-react';
@@ -12,6 +13,7 @@ export const WhatsAppInbox: React.FC = () => {
   const [inputText, setInputText] = useState('');
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
+  const [filterMode, setFilterMode] = useState<'all' | 'lid_only'>('all');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const [error, setError] = useState<string | null>(null);
@@ -43,7 +45,7 @@ export const WhatsAppInbox: React.FC = () => {
     try {
       const data = await getWhatsAppMessages(convId);
       setMessages(data);
-      await fetch(`/api/whatsapp/conversations/${convId}/read`, { method: 'POST' });
+      await fetchWithAuth(`/api/whatsapp/conversations/${convId}/read`, { method: 'POST' });
       fetchConversations(); 
     } catch (err: any) {
       if (err.message !== 'Failed to fetch') {
@@ -88,9 +90,13 @@ export const WhatsAppInbox: React.FC = () => {
     }
   }, [activeConversationId]);
 
-  const filteredConversations = conversations.filter(c => 
-    c.phone?.includes(searchQuery) || c.customer_name?.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const filteredConversations = conversations.filter(c => {
+    const isLidFilterMatch = filterMode === 'lid_only' ? c.is_lid : !c.is_self; // hide self
+    const searchMatch = (c.phone || '').includes(searchQuery) || 
+                       (c.display_name || '').toLowerCase().includes(searchQuery.toLowerCase()) || 
+                       (c.customer_name || '').toLowerCase().includes(searchQuery.toLowerCase());
+    return isLidFilterMatch && searchMatch;
+  });
 
   const activeConv = conversations.find(c => c.id === activeConversationId);
 
@@ -112,7 +118,7 @@ export const WhatsAppInbox: React.FC = () => {
 
     try {
       await sendCrmWhatsAppMessage({
-        phone: activeConv.phone,
+        phone: activeConv.phone || activeConv.raw_jid, // use real phone or fallback
         text
       });
       // Update state to sent
@@ -128,7 +134,7 @@ export const WhatsAppInbox: React.FC = () => {
     const orderId = prompt('Ingresa el ID de la orden para vincularla a este chat:');
     if (orderId && activeConversationId) {
       try {
-        await fetch(`/api/whatsapp/conversations/${activeConversationId}/link-order`, {
+        await fetchWithAuth(`/api/whatsapp/conversations/${activeConversationId}/link-order`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ orderId })
@@ -150,7 +156,23 @@ export const WhatsAppInbox: React.FC = () => {
             <MessageCircle className="w-5 h-5 text-green-500" />
             Bandeja WhatsApp
           </h2>
-          <div className="mt-4 relative">
+          
+          <div className="mt-4 flex gap-2">
+            <button 
+              onClick={() => setFilterMode('all')}
+              className={`flex-1 text-xs py-1.5 px-3 rounded-lg font-medium transition-colors ${filterMode === 'all' ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+            >
+              Principal
+            </button>
+            <button 
+              onClick={() => setFilterMode('lid_only')}
+              className={`flex-1 text-xs py-1.5 px-3 rounded-lg font-medium transition-colors ${filterMode === 'lid_only' ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+            >
+              Sin números
+            </button>
+          </div>
+
+          <div className="mt-3 relative">
             <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
             <input 
               type="text" 
@@ -186,14 +208,21 @@ export const WhatsAppInbox: React.FC = () => {
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex justify-between items-center mb-1">
-                    <h3 className="font-bold text-sm text-slate-800 truncate">{conv.phone}</h3>
+                    <h3 className="font-bold text-sm text-slate-800 truncate">
+                      {conv.display_name || conv.phone || conv.wa_name || 'Contacto WhatsApp'}
+                    </h3>
                     {conv.last_message_at && (
                       <span className="text-xs text-slate-400 whitespace-nowrap">
                         {format(new Date(conv.last_message_at), 'hh:mm a')}
                       </span>
                     )}
                   </div>
-                  <p className="text-sm text-slate-500 truncate">{conv.last_message || 'Sin mensaje'}</p>
+                  {conv.phone && conv.is_valid_phone ? (
+                     <p className="text-xs font-mono text-slate-500">{conv.phone}</p>
+                  ) : (
+                     <p className="text-xs font-mono text-amber-600 truncate">Sin número identificado (LID)</p>
+                  )}
+                  <p className="text-sm text-slate-500 truncate mt-1">{conv.last_message || 'Sin mensaje'}</p>
                 </div>
                 {conv.unread_count > 0 && (
                   <div className="w-5 h-5 bg-green-500 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
@@ -216,12 +245,26 @@ export const WhatsAppInbox: React.FC = () => {
                 <User className="w-6 h-6 text-slate-500" />
               </div>
               <div>
-                <h3 className="font-bold text-slate-800">{activeConv.phone}</h3>
-                <p className="text-xs text-slate-500">
-                  {activeConv.customer_name ? `${activeConv.customer_name} • ` : ''}Status: {activeConv.status}
-                </p>
+                <h3 className="font-bold text-slate-800">
+                   {activeConv.display_name || activeConv.phone || activeConv.wa_name || 'Contacto WhatsApp'}
+                </h3>
+                {activeConv.phone && activeConv.is_valid_phone ? (
+                   <p className="text-xs text-slate-500">{activeConv.phone}</p>
+                ) : (
+                   <p className="text-xs text-amber-600">ID WhatsApp: {activeConv.lid || activeConv.raw_jid}</p>
+                )}
+                {activeConv.customer_name && (
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Cliente: {activeConv.customer_name}
+                  </p>
+                )}
               </div>
-              <div className="ml-auto">
+              <div className="ml-auto flex items-center gap-2">
+                 {!activeConv.is_valid_phone && (
+                    <button className="text-xs bg-slate-100 text-slate-600 px-3 py-2 rounded-lg font-medium hover:bg-slate-200">
+                       Vincular a cliente existente
+                    </button> // A placeholder for the action
+                 )}
                 {activeConv.linked_order_id ? (
                   <span className="text-xs font-bold bg-indigo-50 text-indigo-700 px-3 py-1.5 rounded-lg border border-indigo-100 flex items-center gap-1">
                     <LinkIcon className="w-3 h-3" />

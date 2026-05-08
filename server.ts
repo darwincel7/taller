@@ -165,6 +165,33 @@ WulWnM5/R4sQkOsivcABDQ==
     }
   });
 
+  // Require Auth Middleware
+  const requireAuth = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    try {
+      const userId = req.headers['x-user-id'];
+      if (!userId) {
+        console.error("requireAuth failed: missing X-User-Id header");
+        return res.status(401).json({ error: 'No authorization header (X-User-Id missing)' });
+      }
+      
+      const { createClient } = await import('@supabase/supabase-js');
+      const supabaseUrl = req.headers['x-supabase-url'] as string || process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || "https://ruwcektpadeqovwtdixd.supabase.co";
+      const supabaseKey = req.headers['x-supabase-key'] as string || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || process.env.VITE_SUPABASE_ANON_KEY || "sb_publishable_FFOEpTNXpWSsQuJ3HosR-Q_QXNWnU4_";
+      
+      const supabaseAdmin = createClient(supabaseUrl, supabaseKey);
+      
+      const { data, error } = await supabaseAdmin.from('users').select('*').eq('id', userId).single();
+      if (error || !data || !data.active) {
+        console.error("requireAuth failed lookup:", { userId, error, data });
+        throw new Error('User not found or inactive');
+      }
+      next();
+    } catch (e: any) {
+      console.error("requireAuth exception:", e.message);
+      res.status(401).json({ error: 'Unauthorized' });
+    }
+  };
+
   // WhatsApp Management Routes
   app.get("/api/whatsapp/diagnostics", (req, res) => {
     res.json(getDiagnostics());
@@ -174,7 +201,7 @@ WulWnM5/R4sQkOsivcABDQ==
     res.json(getWhatsAppStatus());
   });
 
-  app.post("/api/whatsapp/connect", async (req, res) => {
+  app.post("/api/whatsapp/connect", requireAuth, async (req, res) => {
     try {
       await connectToWhatsApp(true);
       
@@ -194,17 +221,17 @@ WulWnM5/R4sQkOsivcABDQ==
     }
   });
 
-  app.post("/api/whatsapp/reconnect", async (req, res) => {
+  app.post("/api/whatsapp/reconnect", requireAuth, async (req, res) => {
     await reconnectWhatsApp();
     res.json({ success: true, message: "Reconnecting to WhatsApp..." });
   });
 
-  app.post("/api/whatsapp/logout", async (req, res) => {
+  app.post("/api/whatsapp/logout", requireAuth, async (req, res) => {
     await logoutWhatsApp();
     res.json({ success: true, message: "Logged out from WhatsApp" });
   });
 
-  app.get("/api/whatsapp/conversations", async (req, res) => {
+  app.get("/api/whatsapp/conversations", requireAuth, async (req, res) => {
     try {
       const data = await listWhatsAppConversations();
       res.json({ success: true, data });
@@ -217,9 +244,9 @@ WulWnM5/R4sQkOsivcABDQ==
     }
   });
 
-  app.get("/api/whatsapp/conversations/:id/messages", async (req, res) => {
+  app.get("/api/whatsapp/conversations/:id/messages", requireAuth, async (req, res) => {
     try {
-      const data = await listWhatsAppMessages(req.params.id);
+      const data = await listWhatsAppMessages(req.params.id as string);
       res.json({ success: true, data });
     } catch (error: any) {
       if (error.message && error.message.includes('schema cache')) {
@@ -230,7 +257,7 @@ WulWnM5/R4sQkOsivcABDQ==
     }
   });
 
-  app.post("/api/whatsapp/send", async (req, res) => {
+  app.post("/api/whatsapp/send", requireAuth, async (req, res) => {
     try {
       const { phone, text, image, media } = req.body;
       const result = await sendWhatsAppMessage(phone, text, image, media);
@@ -240,19 +267,19 @@ WulWnM5/R4sQkOsivcABDQ==
     }
   });
 
-  app.post("/api/whatsapp/conversations/:id/read", async (req, res) => {
+  app.post("/api/whatsapp/conversations/:id/read", requireAuth, async (req, res) => {
     try {
-      await markConversationAsRead(req.params.id);
+      await markConversationAsRead(req.params.id as string);
       res.json({ success: true });
     } catch (error: any) {
       res.status(500).json({ success: false, error: error.message });
     }
   });
 
-  app.post("/api/whatsapp/conversations/:id/link-order", async (req, res) => {
+  app.post("/api/whatsapp/conversations/:id/link-order", requireAuth, async (req, res) => {
     try {
       const { orderId } = req.body;
-      await linkConversationToOrder(req.params.id, orderId);
+      await linkConversationToOrder(req.params.id as string, orderId);
       res.json({ success: true });
     } catch (error: any) {
       res.status(500).json({ success: false, error: error.message });

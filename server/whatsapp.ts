@@ -12,6 +12,8 @@ let decryptionErrorCount = 0;
 let lastDecryptionErrorTime = 0;
 export let sessionHealth = 'stable';
 let lastSessionWarningAt = 0;
+export let softReconnectAttempts = 0;
+let criticalSessionStartTime = 0;
 
 console.error = function(...args: any[]) {
     // Only capture specific known Baileys/libsignal errors to prevent hiding real app crashes
@@ -34,28 +36,55 @@ console.error = function(...args: any[]) {
         lastDecryptionErrorTime = now;
 
         if (decryptionErrorCount > 30) {
-            console.log('[WA] CRITICAL: >30 decryption errors within 5 minutes. Session is likely totally corrupted. Re-authenticating...');
-            decryptionErrorCount = 0;
-            sessionHealth = 'critical';
+            if (sessionHealth !== 'critical') {
+                console.log('[WA] CRITICAL: >30 decryption errors within 5 minutes. Session is likely corrupted. Attempting soft reconnect first...');
+                sessionHealth = 'critical';
+                criticalSessionStartTime = now;
+            }
             
-            setTimeout(() => {
-                if (isInitializing) return;
-                clearSupabaseAuth().then(() => {
+            // Checks for absolute failure (critical > 5min or soft reconnects >= 3)
+            if (now - criticalSessionStartTime > 300000 || softReconnectAttempts >= 3) {
+                 console.log('[WA] Session critical for >5m or max soft reconnects reached. Forcing full re-authentication...');
+                 decryptionErrorCount = 0;
+                 softReconnectAttempts = 0;
+                 setTimeout(() => {
+                     if (isInitializing) return;
+                     clearSupabaseAuth().then(() => {
+                         if (sock) {
+                             try { sock.logout(); } catch (e) {}
+                             sock = null;
+                         }
+                         connectToWhatsApp();
+                     });
+                 }, 1000);
+                 return;
+            }
+
+            // Just soft reconnect if we haven't hit the limit, rate limit the tries to once per minute
+            if (now - lastSessionWarningAt > 60000) {
+                lastSessionWarningAt = now;
+                softReconnectAttempts++;
+                setTimeout(() => {
+                    if (isInitializing) return;
+                    console.log(`[WA] Executing Soft Reconnect (critical phase)... Attempt: ${softReconnectAttempts}`);
                     if (sock) {
-                        try { sock.logout(); } catch (e) {}
+                        try { sock.ws?.close(); } catch (e) {}
+                        try { sock.ev.removeAllListeners(); } catch (e) {}
                         sock = null;
                     }
-                    connectToWhatsApp();
-                });
-            }, 1000);
+                    connectionStatus = 'close';
+                    connectToWhatsApp(false);
+                }, 500);
+            }
             return;
         }
 
         // If > 10 errors in 60 seconds (but not > 30 yet)
         if (decryptionErrorCount > 10 && (now - lastSessionWarningAt > 60000)) {
-            console.log('[WA] WARNING: Multiple decryption errors detected. Session may be unstable. Attempting soft reconnect...');
+            console.log(`[WA] WARNING: Multiple decryption errors detected. Session may be unstable. Attempting soft reconnect (Attempt: ${softReconnectAttempts + 1})...`);
             sessionHealth = 'unstable';
             lastSessionWarningAt = now;
+            softReconnectAttempts++;
             
             setTimeout(() => {
                 if (isInitializing) return;
@@ -125,7 +154,7 @@ const scheduleFlush = () => {
     writeTimeout = setTimeout(flushQueue, 3000); // 3 second debounce
 };
 
-const flushQueue = async () => {
+export const flushQueue = async () => {
     if (isFlushing || pendingUpserts.size === 0) return;
     isFlushing = true;
 
@@ -170,6 +199,14 @@ const flushQueue = async () => {
     }
 };
 
+process.on('SIGINT', () => {
+    flushQueue();
+});
+
+process.on('SIGTERM', () => {
+    flushQueue();
+});
+
 async function clearSupabaseAuth() {
     try {
         if (writeTimeout) clearTimeout(writeTimeout);
@@ -188,7 +225,11 @@ export const useSupabaseAuthState = async (sessionId: string) => {
         const key = `${sessionId}-${id}`;
         authCache.set(key, data);
         pendingUpserts.set(key, data);
-        scheduleFlush();
+        if (id === 'creds') {
+            await flushQueue(); // critical credentials get flushed to DB immediately
+        } else {
+            scheduleFlush();
+        }
     };
 
     const readData = async (id: string) => {
@@ -339,22 +380,82 @@ function getFallbackText(type: string) {
   return map[type] || 'Mensaje recibido';
 }
 
-async function messageExists(messageId: string) {
+function resolveContactIdentity(msg: any, sock: any) {
+  const rawJid = msg.key?.remoteJid || '';
+  const participant = msg.key?.participant || '';
+  const pushName = msg.pushName || '';
+  const ownRaw = sock.user?.id || '';
+  const ownPhone = normalizePhone(ownRaw.split(':')[0].split('@')[0]);
+  
+  const candidates = [
+    rawJid,
+    participant,
+    msg.key?.senderPn,
+    msg.key?.remoteJidAlt
+  ].filter(Boolean);
+
+  let phone: string | null = null;
+  let lid: string | null = null;
+
+  for (const candidate of candidates) {
+    if (String(candidate).endsWith('@s.whatsapp.net')) {
+      phone = normalizePhone(String(candidate).split('@')[0]);
+      break; // Found the real phone number
+    }
+    if (String(candidate).endsWith('@lid')) {
+      lid = String(candidate).split('@')[0];
+    }
+  }
+
+  const isSelf = !!phone && phone === ownPhone;
+
+  return {
+    phone,
+    rawJid,
+    lid,
+    waName: pushName,
+    displayName: pushName || phone || 'Contacto WhatsApp',
+    isLid: rawJid.endsWith('@lid'),
+    isSelf,
+    isValidPhone: !!phone && phone.length >= 10 && phone.length <= 15
+  };
+}
+
+function isInternalWhatsAppMessage(msg: any) {
+  const m = msg.message;
+  if (!m) return true;
+  if (m.protocolMessage) return true;
+  if (m.senderKeyDistributionMessage) return true;
+  if (m.appStateSyncKeyShare) return true;
+  if (m.historySyncNotification) return true;
+  if (m.reactionMessage) return true;
+  return false;
+}
+
+async function messageExists(rawJid: string, messageId: string) {
   const supabase = getSupabase();
   if (!supabase) return false;
 
   const { data } = await supabase
     .from('whatsapp_messages')
     .select('id')
-    .eq('id', messageId)
+    .eq('raw_jid', rawJid)
+    .eq('wa_message_id', messageId)
     .maybeSingle();
 
   return !!data;
 }
 
 async function getOrCreateConversation(input: {
-  phone: string;
+  identityKey: string;
+  phone: string | null;
   jid: string;
+  lid: string | null;
+  waName: string;
+  displayName: string;
+  isLid: boolean;
+  isSelf: boolean;
+  isValidPhone: boolean;
   lastMessage: string;
   incrementUnread?: boolean;
 }) {
@@ -364,7 +465,7 @@ async function getOrCreateConversation(input: {
   const { data: existing, error: findError } = await supabase
     .from('whatsapp_conversations')
     .select('*')
-    .eq('phone', input.phone)
+    .eq('identity_key', input.identityKey)
     .maybeSingle();
 
   if (findError) throw findError;
@@ -373,7 +474,15 @@ async function getOrCreateConversation(input: {
     const { data, error } = await supabase
       .from('whatsapp_conversations')
       .update({
-        jid: input.jid,
+        phone: input.phone || existing.phone,
+        jid: input.jid, // raw_jid is stored in jid column initially or wait, we need to update the new columns
+        raw_jid: input.jid,
+        lid: input.lid,
+        wa_name: input.waName,
+        display_name: input.displayName,
+        is_lid: input.isLid,
+        is_self: input.isSelf,
+        is_valid_phone: input.isValidPhone,
         last_message: input.lastMessage,
         last_message_at: new Date().toISOString(),
         unread_count: input.incrementUnread
@@ -388,11 +497,20 @@ async function getOrCreateConversation(input: {
     return data;
   }
 
+  // Create new conversation
   const { data, error } = await supabase
     .from('whatsapp_conversations')
     .insert({
-      phone: input.phone,
+      identity_key: input.identityKey,
+      phone: input.phone || '', // keeping empty string to not break old constraints if any
       jid: input.jid,
+      raw_jid: input.jid,
+      lid: input.lid,
+      wa_name: input.waName,
+      display_name: input.displayName,
+      is_lid: input.isLid,
+      is_self: input.isSelf,
+      is_valid_phone: input.isValidPhone,
       last_message: input.lastMessage,
       last_message_at: new Date().toISOString(),
       unread_count: input.incrementUnread ? 1 : 0
@@ -405,7 +523,10 @@ async function getOrCreateConversation(input: {
 }
 
 async function saveIncomingMessage(input: {
-  id: string;
+  id: string; // The primary key mapping
+  waMessageId: string;
+  rawJid: string;
+  messageUpsertType: string;
   conversationId: string;
   phone: string;
   jid: string;
@@ -422,6 +543,9 @@ async function saveIncomingMessage(input: {
     .from('whatsapp_messages')
     .upsert({
       id: input.id,
+      wa_message_id: input.waMessageId,
+      raw_jid: input.rawJid,
+      message_upsert_type: input.messageUpsertType,
       conversation_id: input.conversationId,
       phone: input.phone,
       jid: input.jid,
@@ -433,7 +557,7 @@ async function saveIncomingMessage(input: {
       status: 'received',
       raw: input.raw || null,
       created_at: new Date().toISOString()
-    }, { onConflict: 'id' });
+    }, { onConflict: 'raw_jid,wa_message_id' }); // Conflict uses unique index
 
   if (error) throw error;
 }
@@ -609,6 +733,10 @@ export async function connectToWhatsApp(manual = false) {
                     qrCodeDataUrl = null;
                     isInitializing = false;
                     retryCount = 0;
+                    sessionHealth = 'stable';
+                    decryptionErrorCount = 0;
+                    lastSessionWarningAt = 0;
+                    softReconnectAttempts = 0;
                     console.log('[WA] Connected successfully!');
                 }
             } catch (err) {
@@ -626,36 +754,53 @@ export async function connectToWhatsApp(manual = false) {
 
         sock.ev.on('messages.upsert', async (m: any) => {
             try {
-                if (m.type !== 'notify') return;
+                const allowedTypes = ['notify', 'append'];
+                if (!allowedTypes.includes(m.type)) return;
                 
                 for (const msg of m.messages) {
+                    const identity = resolveContactIdentity(msg, sock);
+                    
+                    console.log('[WA DEBUG UPSERT]', {
+                        type: m.type,
+                        remoteJid: msg.key?.remoteJid,
+                        participant: msg.key?.participant,
+                        fromMe: msg.key?.fromMe,
+                        id: msg.key?.id,
+                        pushName: msg.pushName,
+                        messageKeys: Object.keys(msg.message || {}),
+                        identity
+                    });
+
                     // Check for decryption errors due to corrupted session
                     if (msg.messageStubType === 2) { 
                         const params = msg.messageStubParameters || [];
                         console.log(`[WA] Message decryption issue: ${params.join(', ')}`);
                         continue;
-                    }
+                     }
 
                     if (!msg.message) continue;
+                    if (isInternalWhatsAppMessage(msg)) continue;
                     if (msg.key.fromMe) continue;
-
-                    const jid = msg.key.remoteJid;
-                    if (!jid || jid === 'status@broadcast') continue;
-                    if (jid.endsWith('@g.us')) continue; // Ignore groups
+                    if (identity.isSelf) continue;
+                    if (!identity.rawJid || identity.rawJid === 'status@broadcast') continue;
+                    if (identity.rawJid.endsWith('@g.us')) continue; // Ignore groups
+                    if (identity.rawJid.endsWith('@newsletter')) continue; // Ignore newsletters
 
                     const messageId = msg.key.id;
                     if (!messageId) continue;
 
-                    const alreadyExists = await messageExists(messageId);
+                    const alreadyExists = await messageExists(identity.rawJid, messageId);
                     if (alreadyExists) {
                         console.log(`[WA] Mensaje duplicado ignorado: ${messageId}`);
                         continue;
                     }
 
-                    const phone = normalizePhone(jid.split('@')[0]);
                     const messageType = detectMessageType(msg);
                     const extractedText = extractMessageText(msg);
-                    const fallbackText = getFallbackText(messageType);
+                    let fallbackText = getFallbackText(messageType);
+                    
+                    if (!extractedText && !fallbackText) continue; // Skip empty messages with no content
+                    
                     const finalText = extractedText || fallbackText;
 
                     if (!finalText && messageType === 'text') continue;
@@ -683,11 +828,8 @@ export async function connectToWhatsApp(manual = false) {
                             else if (msg.message.documentMessage) { mimetype = msg.message.documentMessage.mimetype || 'application/pdf'; mediaType = 'document'; }
                             else if (msg.message.stickerMessage) { mimetype = msg.message.stickerMessage.mimetype || 'image/webp'; mediaType = 'image'; }
                             
-                            /* 
-                            // TODO: Future architecture - Migration to Supabase Storage
-                            // Recommended for production to prevent database bloat
                             const uploadWhatsAppMediaToStorage = async (buffer: Buffer, mimetype: string, messageId: string) => {
-                                const extension = mimetype.split('/')[1] || 'bin';
+                                const extension = mimetype.split('/')[1]?.split(';')[0] || 'bin';
                                 const fileName = `${messageId}.${extension}`;
                                 const supabase = getSupabase();
                                 if (!supabase) return null;
@@ -700,28 +842,53 @@ export async function connectToWhatsApp(manual = false) {
                                     .getPublicUrl(fileName);
                                 return data.publicUrl;
                             };
-                            */
                             
                             if (buffer) {
-                                mediaUrl = `data:${mimetype};base64,${buffer.toString('base64')}`;
+                                try {
+                                    const storageUrl = await uploadWhatsAppMediaToStorage(buffer, mimetype, messageId);
+                                    if (storageUrl) {
+                                        mediaUrl = storageUrl;
+                                    } else {
+                                        mediaUrl = `data:${mimetype};base64,${buffer.toString('base64')}`;
+                                    }
+                                } catch (storageErr) {
+                                    console.warn('[WA] Could not upload media to storage, falling back to base64:', Math.floor(buffer.length / 1024), 'KB');
+                                    mediaUrl = `data:${mimetype};base64,${buffer.toString('base64')}`;
+                                }
                             }
                         } catch(e) {
                             console.error('[WA] Error downloading media:', e);
                         }
                     }
 
+                    const identityKey = identity.phone 
+                        ? identity.phone 
+                        : identity.lid 
+                        ? `lid:${identity.lid}` 
+                        : `jid:${identity.rawJid}`;
+
                     const conversation = await getOrCreateConversation({
-                        phone,
-                        jid,
+                        identityKey,
+                        phone: identity.phone,
+                        jid: identity.rawJid,
+                        lid: identity.lid,
+                        waName: identity.waName,
+                        displayName: identity.displayName,
+                        isLid: identity.isLid,
+                        isSelf: identity.isSelf,
+                        isValidPhone: identity.isValidPhone,
                         lastMessage: finalText,
                         incrementUnread: true
                     });
 
                     await saveIncomingMessage({
-                        id: messageId,
+                        id: `${identity.rawJid}_${messageId}`, // Composite ID conceptually
+                        waMessageId: messageId,
+                        rawJid: identity.rawJid,
+                        messageUpsertType: m.type,
                         conversationId: conversation.id,
-                        phone,
-                        jid,
+                        phone: identity.phone || identity.rawJid, // Fallback if no phone
+                        jid: identity.rawJid,
                         text: finalText,
                         messageType,
                         mediaUrl: mediaUrl || null,
@@ -729,7 +896,7 @@ export async function connectToWhatsApp(manual = false) {
                         raw: msg
                     });
 
-                    console.log(`[WA] Mensaje entrante guardado: ${phone} / ${messageId}`);
+                    console.log(`[WA] Mensaje entrante guardado: ${identity.displayName} / ${messageId}`);
                 }
             } catch (err) {
                 console.warn('Issue processing incoming message:', err);
@@ -810,6 +977,8 @@ export function disconnectWhatsApp() {
 
     export async function saveOutgoingMessage(input: {
         id: string;
+        waMessageId?: string;
+        rawJid?: string;
         conversationId: string;
         phone: string;
         jid: string;
@@ -825,6 +994,8 @@ export function disconnectWhatsApp() {
             .from('whatsapp_messages')
             .upsert({
                 id: input.id,
+                wa_message_id: input.waMessageId || null,
+                raw_jid: input.rawJid || null,
                 conversation_id: input.conversationId,
                 phone: input.phone,
                 jid: input.jid,
@@ -849,9 +1020,23 @@ export async function sendWhatsAppMessage(phone: string, text: string, image?: s
         throw new Error('WhatsApp is not connected. Please wait a moment and try again.');
     }
     
-    const cleanPhone = normalizePhone(phone);
-    const jid = `${cleanPhone}@s.whatsapp.net`;
-    
+    // Parse the input phone. It can be a phone, a full jid, or a lid.
+    let jid = phone;
+    let isLid = phone.includes('@lid');
+    if (!phone.includes('@')) {
+        const cleanPhone = normalizePhone(phone);
+        jid = isLid ? `${cleanPhone}@lid` : `${cleanPhone}@s.whatsapp.net`;
+    }
+
+    const jidPhoneMatch = jid.split('@')[0];
+    const identityPhone = jid.includes('@s.whatsapp.net') ? normalizePhone(jidPhoneMatch) : null;
+    const identityLid = jid.includes('@lid') ? jidPhoneMatch : null;
+    const identityKey = identityPhone 
+        ? identityPhone 
+        : identityLid 
+        ? `lid:${identityLid}` 
+        : `jid:${jid}`;
+        
     let attempts = 0;
     while (attempts < 3) {
         try {
@@ -945,18 +1130,26 @@ export async function sendWhatsAppMessage(phone: string, text: string, image?: s
             const messageType = media ? 'media' : image ? 'image' : 'text';
 
             try {
-                const phoneNorm = normalizePhone(phone);
                 const conversation = await getOrCreateConversation({
-                    phone: phoneNorm,
+                    identityKey: identityKey,
+                    phone: identityPhone,
                     jid: jid,
+                    lid: identityLid,
+                    waName: '', // Output message doesn't need to overwrite name
+                    displayName: identityPhone || 'Contacto WhatsApp',
+                    isLid: isLid || jid.includes('@lid'),
+                    isSelf: false, // We're sending to them, so they are not us
+                    isValidPhone: !!identityPhone,
                     lastMessage: text || 'Mensaje enviado',
                     incrementUnread: false // Since we're sending, it's not unread for us
                 });
 
                 await saveOutgoingMessage({
-                    id: messageId,
+                    id: `${jid}_${messageId}`, // Composite ID
+                    waMessageId: messageId,
+                    rawJid: jid,
                     conversationId: conversation.id,
-                    phone: phoneNorm,
+                    phone: identityPhone || jid,
                     jid: jid,
                     text: text || '',
                     messageType: messageType,

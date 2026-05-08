@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { MessageSquare, RefreshCw, LogOut, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
+import { fetchWithAuth } from '../lib/fetchWithAuth';
 
 export const WhatsAppSettings: React.FC = () => {
   const [status, setStatus] = useState<'connecting' | 'open' | 'close'>('close');
@@ -9,7 +10,7 @@ export const WhatsAppSettings: React.FC = () => {
 
   const fetchStatus = async () => {
     try {
-      const res = await fetch('/api/whatsapp/status');
+      const res = await fetchWithAuth('/api/whatsapp/status');
       if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
       const text = await res.text();
       try {
@@ -42,7 +43,7 @@ export const WhatsAppSettings: React.FC = () => {
   const handleConnect = async () => {
     setIsConnecting(true);
     try {
-      const res = await fetch('/api/whatsapp/connect', { method: 'POST' });
+      const res = await fetchWithAuth('/api/whatsapp/connect', { method: 'POST' });
       if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
       const text = await res.text();
       try {
@@ -64,7 +65,7 @@ export const WhatsAppSettings: React.FC = () => {
   const handleReconnect = async () => {
     setIsConnecting(true);
     try {
-      const res = await fetch('/api/whatsapp/reconnect', { method: 'POST' });
+      const res = await fetchWithAuth('/api/whatsapp/reconnect', { method: 'POST' });
       if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
       // The polling will pick up the status change
     } catch (error) {
@@ -77,7 +78,7 @@ export const WhatsAppSettings: React.FC = () => {
   const handleLogout = async () => {
     setIsConnecting(true);
     try {
-      const res = await fetch('/api/whatsapp/logout', { method: 'POST' });
+      const res = await fetchWithAuth('/api/whatsapp/logout', { method: 'POST' });
       if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
       setStatus('close');
       setQrCode(null);

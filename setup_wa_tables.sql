@@ -102,3 +102,46 @@ begin;
     null; 
   end $$;
 commit;
+
+-- -------------------------------------------------------------
+-- MIGRATION: Identidad, LID y recepcion de mensajes
+-- -------------------------------------------------------------
+
+-- Remover la restricción 'unique' de 'phone' cuidadosamente ya que puede romper si se basan en ella.
+-- En vez de borrarla, simplemente agregaremos las columnas para que el código la ignore y use identity_key.
+-- Nota: PostgreSQL requiere borrar el constraint unique si queremos permitir duplicados (como telefonos vacíos).
+do $$
+begin
+  alter table whatsapp_conversations drop constraint if exists whatsapp_conversations_phone_key;
+exception when others then
+  null;
+end $$;
+
+alter table whatsapp_conversations
+add column if not exists wa_name text,
+add column if not exists display_name text,
+add column if not exists raw_jid text,
+add column if not exists lid text,
+add column if not exists is_lid boolean default false,
+add column if not exists is_self boolean default false,
+add column if not exists is_valid_phone boolean default true,
+add column if not exists identity_key text;
+
+create index if not exists idx_whatsapp_conversations_identity_key
+on whatsapp_conversations(identity_key);
+
+create index if not exists idx_whatsapp_conversations_raw_jid
+on whatsapp_conversations(raw_jid);
+
+-- Update existing records to have an identity_key to avoid null constraint issues later
+update whatsapp_conversations 
+set identity_key = phone, raw_jid = jid 
+where identity_key is null and phone is not null;
+
+alter table whatsapp_messages
+add column if not exists wa_message_id text,
+add column if not exists raw_jid text,
+add column if not exists message_upsert_type text;
+
+create unique index if not exists idx_whatsapp_messages_jid_msg_unique
+on whatsapp_messages(raw_jid, wa_message_id);
