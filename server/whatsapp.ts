@@ -7,12 +7,49 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
+const _origConsoleError = console.error;
+let decryptionErrorCount = 0;
+let lastDecryptionErrorTime = Date.now();
+
+console.error = function(...args: any[]) {
+    const msg = args.join(' ');
+    if (msg.includes('MessageCounterError') || msg.includes('Key used already') || msg.includes('Bad MAC') || msg.includes('Failed to decrypt message')) {
+        // Suppress these known libsignal errors from the console
+        const now = Date.now();
+        if (now - lastDecryptionErrorTime > 60000) {
+            decryptionErrorCount = 0; // Reset counter after 1 minute of no errors
+        }
+        decryptionErrorCount++;
+        lastDecryptionErrorTime = now;
+
+        if (decryptionErrorCount > 10) {
+             console.log('[WA] Too many decryption errors detected. Session is likely corrupted. Forcing logout...');
+             decryptionErrorCount = 0;
+             // Delay the logout slightly to avoid any immediate loop
+             setTimeout(() => {
+                 if (isInitializing) return;
+                 clearSupabaseAuth().then(() => {
+                     if (sock) {
+                         try { sock.logout(); } catch (e) {}
+                         sock = null;
+                     }
+                     connectToWhatsApp();
+                 });
+             }, 1000);
+        }
+        return;
+    }
+    _origConsoleError.apply(console, args);
+};
+
 let supabaseClient: any = null;
 
 export function getSupabase() {
     if (!supabaseClient) {
         let supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || "https://ruwcektpadeqovwtdixd.supabase.co";
-        const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_KEY || "sb_publishable_FFOEpTNXpWSsQuJ3HosR-Q_QXNWnU4_";
+        
+        // Prioritize SERVICE_ROLE_KEY for backend operations to bypass RLS
+        const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || "sb_publishable_FFOEpTNXpWSsQuJ3HosR-Q_QXNWnU4_";
         
         if (!supabaseUrl || !supabaseKey) {
             console.warn('Supabase credentials missing. WhatsApp auth will not be saved.');
@@ -612,11 +649,25 @@ export async function connectToWhatsApp(manual = false) {
                             else if (msg.message.documentMessage) { mimetype = msg.message.documentMessage.mimetype || 'application/pdf'; mediaType = 'document'; }
                             else if (msg.message.stickerMessage) { mimetype = msg.message.stickerMessage.mimetype || 'image/webp'; mediaType = 'image'; }
                             
-                            // TODO: Avoid storing large files as base64 in the database permanently.
-                            // Recommended architecture for future:
-                            // 1. Upload buffer to Supabase Storage: `await supabase.storage.from('whatsapp-media').upload(fileName, buffer)`
-                            // 2. Get public URL: `supabase.storage.from('whatsapp-media').getPublicUrl(fileName)`
-                            // 3. Save only the URL here.
+                            /* 
+                            // TODO: Future architecture - Migration to Supabase Storage
+                            // Recommended for production to prevent database bloat
+                            const uploadWhatsAppMediaToStorage = async (buffer: Buffer, mimetype: string, messageId: string) => {
+                                const extension = mimetype.split('/')[1] || 'bin';
+                                const fileName = `${messageId}.${extension}`;
+                                const supabase = getSupabase();
+                                if (!supabase) return null;
+                                const { error } = await supabase.storage
+                                    .from('whatsapp-media')
+                                    .upload(fileName, buffer, { contentType: mimetype, upsert: true });
+                                if (error) throw error;
+                                const { data } = supabase.storage
+                                    .from('whatsapp-media')
+                                    .getPublicUrl(fileName);
+                                return data.publicUrl;
+                            };
+                            */
+                            
                             if (buffer) {
                                 mediaUrl = `data:${mimetype};base64,${buffer.toString('base64')}`;
                             }

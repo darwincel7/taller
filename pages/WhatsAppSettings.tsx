@@ -163,14 +163,27 @@ export const WhatsAppSettings: React.FC = () => {
               </ol>
               
               {!qrCode && status !== 'connecting' && (
-                <button
-                  onClick={handleConnect}
-                  disabled={isConnecting}
-                  className="flex items-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-medium transition-colors disabled:opacity-50"
-                >
-                  {isConnecting ? <Loader2 className="w-5 h-5 animate-spin" /> : <RefreshCw className="w-5 h-5" />}
-                  Generar Código QR
-                </button>
+                <div className="space-y-3">
+                  <button
+                    onClick={handleReconnect}
+                    disabled={isConnecting}
+                    className="flex w-full items-center justify-center gap-2 px-6 py-3 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 rounded-xl font-medium transition-colors disabled:opacity-50"
+                  >
+                    {isConnecting ? <Loader2 className="w-5 h-5 animate-spin" /> : <RefreshCw className="w-5 h-5" />}
+                    Reconectar sin borrar sesión
+                  </button>
+                  <button
+                    onClick={handleConnect}
+                    disabled={isConnecting}
+                    className="flex w-full items-center justify-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-medium transition-colors disabled:opacity-50"
+                  >
+                    {isConnecting ? <Loader2 className="w-5 h-5 animate-spin" /> : <RefreshCw className="w-5 h-5" />}
+                    Generar nuevo QR
+                  </button>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-2">
+                    Generar nuevo QR puede borrar la sesión anterior y requerir escaneo nuevamente.
+                  </p>
+                </div>
               )}
             </div>
             

@@ -20,6 +20,12 @@ create index if not exists idx_whatsapp_conversations_phone
 create index if not exists idx_whatsapp_conversations_last_message_at
   on whatsapp_conversations(last_message_at desc);
 
+-- Allow permissive access so that Anon Key/Frontend can safely read/write or backend doesn't fail
+-- even if RLS is enabled by accident in Supabase UI.
+alter table whatsapp_conversations enable row level security;
+drop policy if exists "Enable all for conversations" on whatsapp_conversations;
+create policy "Enable all for conversations" on whatsapp_conversations for all using (true) with check (true);
+
 create table if not exists whatsapp_messages (
   id text primary key,
   conversation_id uuid references whatsapp_conversations(id) on delete cascade,
@@ -43,6 +49,10 @@ create index if not exists idx_whatsapp_messages_phone
 
 create index if not exists idx_whatsapp_messages_direction
   on whatsapp_messages(direction);
+
+alter table whatsapp_messages enable row level security;
+drop policy if exists "Enable all for messages" on whatsapp_messages;
+create policy "Enable all for messages" on whatsapp_messages for all using (true) with check (true);
 
 create or replace function set_updated_at()
 returns trigger as $$
@@ -71,6 +81,10 @@ drop trigger if exists trg_whatsapp_auth_updated_at on whatsapp_auth;
 create trigger trg_whatsapp_auth_updated_at
   before update on whatsapp_auth
   for each row execute function set_updated_at();
+
+alter table whatsapp_auth enable row level security;
+drop policy if exists "Enable all for auth" on whatsapp_auth;
+create policy "Enable all for auth" on whatsapp_auth for all using (true) with check (true);
 
 -- Supabase Realtime publication
 begin;

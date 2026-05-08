@@ -1,5 +1,4 @@
 import express from "express";
-import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
@@ -63,9 +62,13 @@ async function startServer() {
         },
         error: (err, req, res: any) => {
             console.warn("Supabase Proxy Issue:", err.message);
-            if (res && res.writeHead) {
+            // Handle both HTTP Response and TCP Socket (for WebSockets)
+            if (res && typeof res.writeHead === 'function') {
                 res.writeHead(502, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: 'Proxy Error', message: err.message }));
+            } else if (res && typeof res.write === 'function') {
+                res.write("HTTP/1.1 502 Bad Gateway\r\n\r\n");
+                res.end();
             }
         }
     }
@@ -376,6 +379,7 @@ WulWnM5/R4sQkOsivcABDQ==
 
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
