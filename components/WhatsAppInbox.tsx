@@ -192,11 +192,20 @@ export const WhatsAppInbox: React.FC = () => {
             <div className="p-4 text-center text-slate-400">Cargando...</div>
           ) : error ? (
             <div className="p-6 m-4 bg-red-50 border border-red-200 rounded-xl text-center">
-              <p className="text-red-600 font-bold mb-2">Error de Base de Datos</p>
-              <p className="text-sm text-red-500 mb-4">{error}</p>
-              <a href="/setup_wa_tables.sql" target="_blank" className="text-sm bg-red-500 text-white px-4 py-2 rounded-lg font-bold hover:bg-red-600">
-                Ver SQL necesario
-              </a>
+              {error.includes('Unauthorized') || error.includes('401') ? (
+                <>
+                  <p className="text-red-600 font-bold mb-2">Sesión no autorizada</p>
+                  <p className="text-sm text-red-500 mb-4">Recarga o vuelve a iniciar sesión.</p>
+                </>
+              ) : (
+                <>
+                  <p className="text-red-600 font-bold mb-2">Error de Sistema / Base de Datos</p>
+                  <p className="text-sm text-red-500 mb-4">{error}</p>
+                  <a href="/setup_wa_tables.sql" target="_blank" className="text-sm bg-red-500 text-white px-4 py-2 rounded-lg font-bold hover:bg-red-600">
+                    Ver SQL necesario
+                  </a>
+                </>
+              )}
             </div>
           ) : filteredConversations.length === 0 ? (
             <div className="p-4 text-center text-slate-400">No se encontraron conversaciones</div>

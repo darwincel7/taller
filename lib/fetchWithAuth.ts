@@ -16,7 +16,7 @@ export async function fetchWithAuth(url: string, options: RequestInit = {}) {
   }
   
   // Propagate custom Supabase config to the server if available
-  if (finalUrl && finalKey) {
+  if (finalUrl && finalKey && !finalUrl.startsWith('/')) {
     headers.set('X-Supabase-Url', finalUrl);
     headers.set('X-Supabase-Key', finalKey);
   }
