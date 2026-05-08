@@ -6,7 +6,7 @@ import dotenv from "dotenv";
 import crypto from "crypto";
 import fs from "fs";
 import { createProxyMiddleware } from "http-proxy-middleware";
-import { connectToWhatsApp, getWhatsAppStatus, logoutWhatsApp, sendWhatsAppMessage, reconnectWhatsApp, resetWhatsAppConnection, disconnectWhatsApp } from "./server/whatsapp.ts";
+import { connectToWhatsApp, getWhatsAppStatus, logoutWhatsApp, sendWhatsAppMessage, reconnectWhatsApp, resetWhatsAppConnection, disconnectWhatsApp, listWhatsAppConversations, listWhatsAppMessages, markConversationAsRead, linkConversationToOrder } from "./server/whatsapp.ts";
 import { GoogleGenAI, Type } from "@google/genai";
 
 dotenv.config({ override: true });
@@ -199,6 +199,61 @@ WulWnM5/R4sQkOsivcABDQ==
   app.post("/api/whatsapp/logout", async (req, res) => {
     await logoutWhatsApp();
     res.json({ success: true, message: "Logged out from WhatsApp" });
+  });
+
+  app.get("/api/whatsapp/conversations", async (req, res) => {
+    try {
+      const data = await listWhatsAppConversations();
+      res.json({ success: true, data });
+    } catch (error: any) {
+      if (error.message && error.message.includes('schema cache')) {
+        res.status(500).json({ success: false, error: 'La tabla de conversaciones no existe en Supabase o el cache está desactualizado. Ejecuta el SQL de setup_wa_tables.sql en el editor de SQL de Supabase.' });
+      } else {
+        res.status(500).json({ success: false, error: error.message });
+      }
+    }
+  });
+
+  app.get("/api/whatsapp/conversations/:id/messages", async (req, res) => {
+    try {
+      const data = await listWhatsAppMessages(req.params.id);
+      res.json({ success: true, data });
+    } catch (error: any) {
+      if (error.message && error.message.includes('schema cache')) {
+        res.status(500).json({ success: false, error: 'Las tablas de mensajes no existen en Supabase. Ejecuta el SQL primero.' });
+      } else {
+        res.status(500).json({ success: false, error: error.message });
+      }
+    }
+  });
+
+  app.post("/api/whatsapp/send", async (req, res) => {
+    try {
+      const { phone, text, image, media } = req.body;
+      const result = await sendWhatsAppMessage(phone, text, image, media);
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  app.post("/api/whatsapp/conversations/:id/read", async (req, res) => {
+    try {
+      await markConversationAsRead(req.params.id);
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  app.post("/api/whatsapp/conversations/:id/link-order", async (req, res) => {
+    try {
+      const { orderId } = req.body;
+      await linkConversationToOrder(req.params.id, orderId);
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ success: false, error: error.message });
+    }
   });
 
   // WhatsApp Notification API

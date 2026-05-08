@@ -19,6 +19,7 @@ interface ClientProfile {
 
 
 import { WhatsAppVisualizer } from '../components/WhatsAppVisualizer';
+import { WhatsAppInbox } from '../components/WhatsAppInbox';
 import { SalesAnalytics } from '../components/SalesAnalytics';
 
 export const CRM: React.FC = () => {
@@ -742,17 +743,7 @@ export const CRM: React.FC = () => {
         </div>
       ) : activeTab === 'CHATS' ? (
         <div className="h-[calc(100vh-180px)] mt-2">
-            <WhatsAppVisualizer 
-              lead={selectedChatLead || (leads && leads.length > 0 ? leads[0] : null) as any} 
-              onClose={() => {}}
-              onSendMessage={(text) => {
-                  const leadToUpdate = selectedChatLead || (leads && leads.length > 0 ? leads[0] : null);
-                  if (leadToUpdate) handleSendMessageToLead(leadToUpdate, text);
-              }}
-              embedded={true}
-              allLeads={leads}
-              onSelectLead={setSelectedChatLead}
-            />
+            <WhatsAppInbox />
         </div>
       ) : activeTab === 'ANALYTICS' ? (
         <div className="h-[calc(100vh-180px)] overflow-y-auto pr-2 pb-10">

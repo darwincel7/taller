@@ -9,7 +9,7 @@ dotenv.config();
 
 let supabaseClient: any = null;
 
-function getSupabase() {
+export function getSupabase() {
     if (!supabaseClient) {
         let supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || "https://ruwcektpadeqovwtdixd.supabase.co";
         const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_KEY || "sb_publishable_FFOEpTNXpWSsQuJ3HosR-Q_QXNWnU4_";
@@ -213,6 +213,190 @@ export const useSupabaseAuthState = async (sessionId: string) => {
     };
 };
 
+function getReconnectDelay(retryCount: number) {
+  const base = 3000;
+  const max = 60000;
+  return Math.min(max, base * Math.pow(1.7, retryCount));
+}
+
+export function normalizePhone(phone: string) {
+  let clean = String(phone || '').replace(/\D/g, '');
+  if (clean.length === 10) {
+    return `1${clean}`;
+  }
+  if (clean.startsWith('1') && clean.length === 11) {
+    return clean;
+  }
+  return clean;
+}
+
+function extractMessageText(msg: any): string {
+  const m = msg.message;
+  if (!m) return '';
+
+  return (
+    m.conversation ||
+    m.extendedTextMessage?.text ||
+    m.imageMessage?.caption ||
+    m.videoMessage?.caption ||
+    m.documentMessage?.caption ||
+    m.buttonsResponseMessage?.selectedDisplayText ||
+    m.listResponseMessage?.title ||
+    ''
+  );
+}
+
+function detectMessageType(msg: any) {
+  const m = msg.message || {};
+  if (m.imageMessage) return 'image';
+  if (m.videoMessage) return 'video';
+  if (m.audioMessage) return 'audio';
+  if (m.documentMessage) return 'document';
+  if (m.stickerMessage) return 'sticker';
+  return 'text';
+}
+
+function getFallbackText(type: string) {
+  const map: Record<string, string> = {
+    image: '📷 Imagen recibida',
+    video: '🎥 Video recibido',
+    audio: '🔊 Audio o nota de voz recibida',
+    document: '📄 Documento recibido',
+    sticker: '🏷️ Sticker recibido',
+    text: ''
+  };
+  return map[type] || 'Mensaje recibido';
+}
+
+async function getOrCreateConversation(input: {
+  phone: string;
+  jid: string;
+  lastMessage: string;
+  incrementUnread?: boolean;
+}) {
+  const supabase = getSupabase();
+  if (!supabase) throw new Error('Supabase no inicializado');
+
+  const { data: existing, error: findError } = await supabase
+    .from('whatsapp_conversations')
+    .select('*')
+    .eq('phone', input.phone)
+    .maybeSingle();
+
+  if (findError) throw findError;
+
+  if (existing) {
+    const { data, error } = await supabase
+      .from('whatsapp_conversations')
+      .update({
+        jid: input.jid,
+        last_message: input.lastMessage,
+        last_message_at: new Date().toISOString(),
+        unread_count: input.incrementUnread
+          ? (existing.unread_count || 0) + 1
+          : (existing.unread_count || 0)
+      })
+      .eq('id', existing.id)
+      .select()
+      .single();
+
+    if (error) throw error;
+    return data;
+  }
+
+  const { data, error } = await supabase
+    .from('whatsapp_conversations')
+    .insert({
+      phone: input.phone,
+      jid: input.jid,
+      last_message: input.lastMessage,
+      last_message_at: new Date().toISOString(),
+      unread_count: input.incrementUnread ? 1 : 0
+    })
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+
+async function saveIncomingMessage(input: {
+  id: string;
+  conversationId: string;
+  phone: string;
+  jid: string;
+  text: string;
+  messageType: string;
+  mediaUrl?: string | null;
+  mediaType?: string | null;
+  raw?: any;
+}) {
+  const supabase = getSupabase();
+  if (!supabase) throw new Error('Supabase no inicializado');
+
+  const { error } = await supabase
+    .from('whatsapp_messages')
+    .upsert({
+      id: input.id,
+      conversation_id: input.conversationId,
+      phone: input.phone,
+      jid: input.jid,
+      direction: 'inbound',
+      text: input.text,
+      message_type: input.messageType,
+      media_url: input.mediaUrl || null,
+      media_type: input.mediaType || null,
+      status: 'received',
+      raw: input.raw || null,
+      created_at: new Date().toISOString()
+    }, { onConflict: 'id' });
+
+  if (error) throw error;
+}
+
+export async function listWhatsAppConversations() {
+  const supabase = getSupabase();
+  if(!supabase) return [];
+  const { data, error } = await supabase
+    .from('whatsapp_conversations')
+    .select('*')
+    .order('last_message_at', { ascending: false, nullsFirst: false });
+  if (error) throw error;
+  return data || [];
+}
+
+export async function listWhatsAppMessages(conversationId: string) {
+  const supabase = getSupabase();
+  if(!supabase) return [];
+  const { data, error } = await supabase
+    .from('whatsapp_messages')
+    .select('*')
+    .eq('conversation_id', conversationId)
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  return data || [];
+}
+
+export async function markConversationAsRead(conversationId: string) {
+  const supabase = getSupabase();
+  if(!supabase) return;
+  const { error } = await supabase
+    .from('whatsapp_conversations')
+    .update({ unread_count: 0 })
+    .eq('id', conversationId);
+  if (error) throw error;
+}
+
+export async function linkConversationToOrder(conversationId: string, orderId: string) {
+  const supabase = getSupabase();
+  if(!supabase) return;
+  const { error } = await supabase
+    .from('whatsapp_conversations')
+    .update({ linked_order_id: orderId })
+    .eq('id', conversationId);
+  if (error) throw error;
+}
+
 export async function connectToWhatsApp(manual = false) {
     if (manual) {
         if (isResetting) return;
@@ -326,8 +510,8 @@ export async function connectToWhatsApp(manual = false) {
                             retryCount = 0;
                             setTimeout(() => connectToWhatsApp(), 2000);
                         } else {
+                            const delay = getReconnectDelay(retryCount);
                             retryCount++;
-                            const delay = Math.min(30000, 5000 * retryCount);
                             console.log(`WhatsApp reconnection attempt ${retryCount}/${MAX_RETRIES} in ${delay/1000}s...`);
                             setTimeout(() => connectToWhatsApp(), delay);
                         }
@@ -358,139 +542,85 @@ export async function connectToWhatsApp(manual = false) {
 
         sock.ev.on('messages.upsert', async (m: any) => {
             try {
-                if(m.type === 'notify') {
-                    for (const msg of m.messages) {
-                        // Check for decryption errors due to corrupted session
-                        if (msg.messageStubType === 2) { // 2 = CIPHERTEXT (Decryption failure)
-                            const params = msg.messageStubParameters || [];
-                            console.log(`[WA] Message decryption issue (often temporary/retryable): ${params.join(', ')}`);
-                            // DO NOT reset connection here, Baileys handles retries for missed messages
-                            continue;
-                        }
+                if (m.type !== 'notify') return;
+                
+                for (const msg of m.messages) {
+                    // Check for decryption errors due to corrupted session
+                    if (msg.messageStubType === 2) { 
+                        const params = msg.messageStubParameters || [];
+                        console.log(`[WA] Message decryption issue: ${params.join(', ')}`);
+                        continue;
+                    }
 
-                        if (!msg.key.fromMe && msg.message) {
-                            const jid = msg.key.remoteJid;
-                            if (!jid || jid === 'status@broadcast') continue;
-                            const phone = jid.split('@')[0];
+                    if (!msg.message) continue;
+                    if (msg.key.fromMe) continue;
+
+                    const jid = msg.key.remoteJid;
+                    if (!jid || jid === 'status@broadcast') continue;
+                    if (jid.endsWith('@g.us')) continue; // Ignore groups
+
+                    const messageId = msg.key.id;
+                    if (!messageId) continue;
+
+                    const phone = normalizePhone(jid.split('@')[0]);
+                    const messageType = detectMessageType(msg);
+                    const extractedText = extractMessageText(msg);
+                    const fallbackText = getFallbackText(messageType);
+                    const finalText = extractedText || fallbackText;
+
+                    if (!finalText && messageType === 'text') continue;
+
+                    // Parse media
+                    let mediaUrl = undefined;
+                    let mediaType = undefined;
+                    
+                    if (messageType !== 'text') {
+                        try {
+                            const buffer = await downloadMediaMessage(
+                                msg,
+                                'buffer',
+                                { },
+                                { 
+                                    logger: logger,
+                                    reuploadRequest: sock.updateMediaMessage
+                                }
+                            );
                             
-                            let text = msg.message.conversation || 
-                                         msg.message.extendedTextMessage?.text || 
-                                         msg.message.imageMessage?.caption || 
-                                         msg.message.videoMessage?.caption || 
-                                         msg.message.documentMessage?.caption || '';
-                                         
-                            // Check for media
-                            let mediaUrl = undefined;
-                            let mediaType = undefined;
-                            if (msg.message.imageMessage || msg.message.videoMessage || msg.message.audioMessage || msg.message.documentMessage || msg.message.stickerMessage) {
-                                try {
-                                    const buffer = await downloadMediaMessage(
-                                        msg,
-                                        'buffer',
-                                        { },
-                                        { 
-                                            logger: logger,
-                                            reuploadRequest: sock.updateMediaMessage
-                                        }
-                                    );
-                                    let mimetype = '';
-                                    if (msg.message.imageMessage) { mimetype = msg.message.imageMessage.mimetype || 'image/jpeg'; mediaType = 'image'; }
-                                    else if (msg.message.videoMessage) { mimetype = msg.message.videoMessage.mimetype || 'video/mp4'; mediaType = 'video'; }
-                                    else if (msg.message.audioMessage) { mimetype = msg.message.audioMessage.mimetype || 'audio/ogg'; mediaType = 'audio'; }
-                                    else if (msg.message.documentMessage) { mimetype = msg.message.documentMessage.mimetype || 'application/pdf'; mediaType = 'document'; }
-                                    else if (msg.message.stickerMessage) { mimetype = msg.message.stickerMessage.mimetype || 'image/webp'; mediaType = 'image'; }
-                                    
-                                    if (buffer) {
-                                        mediaUrl = `data:${mimetype};base64,${buffer.toString('base64')}`;
-                                    }
-                                } catch(e) {
-                                    console.error('[WA] Error downloading media:', e);
-                                }
+                            let mimetype = 'application/octet-stream';
+                            if (msg.message.imageMessage) { mimetype = msg.message.imageMessage.mimetype || 'image/jpeg'; mediaType = 'image'; }
+                            else if (msg.message.videoMessage) { mimetype = msg.message.videoMessage.mimetype || 'video/mp4'; mediaType = 'video'; }
+                            else if (msg.message.audioMessage) { mimetype = msg.message.audioMessage.mimetype || 'audio/ogg'; mediaType = 'audio'; }
+                            else if (msg.message.documentMessage) { mimetype = msg.message.documentMessage.mimetype || 'application/pdf'; mediaType = 'document'; }
+                            else if (msg.message.stickerMessage) { mimetype = msg.message.stickerMessage.mimetype || 'image/webp'; mediaType = 'image'; }
+                            
+                            if (buffer) {
+                                mediaUrl = `data:${mimetype};base64,${buffer.toString('base64')}`;
                             }
-
-                            // Check for media fallback text if no text
-                            if (!text) {
-                                if (msg.message.imageMessage) text = '📷 Imagen recibida';
-                                else if (msg.message.videoMessage) text = '🎥 Video recibido';
-                                else if (msg.message.audioMessage) text = '🔊 Audio/Nota de voz recibida';
-                                else if (msg.message.documentMessage) text = '📄 Documento recibido';
-                                else if (msg.message.stickerMessage) text = '🏷️ Sticker recibido';
-                                else continue;
-                            }
-
-                            const supabase = getSupabase();
-                            if (!supabase) continue;
-
-                            // We need to find the latest active order matching this phone number
-                            // Since DB phones might be formatted (e.g., 829-123-4567), we fetch recent orders and filter locally
-                            const cleanIncoming = phone.replace(/\D/g, '');
-                            const phoneTail = cleanIncoming.length > 10 ? cleanIncoming.substring(cleanIncoming.length - 10) : cleanIncoming;
-
-                            const { data: recentOrders } = await supabase
-                                .from('orders')
-                                .select('id, customer')
-                                .order('createdAt', { ascending: false })
-                                .limit(200);
-
-                            let matchedOrder = null;
-                            if (recentOrders) {
-                                for (const o of recentOrders) {
-                                    const dbPhone = (o.customer?.phone || '').replace(/\D/g, '');
-                                    const dbPhoneTail = dbPhone.length > 10 ? dbPhone.substring(dbPhone.length - 10) : dbPhone;
-                                    if (dbPhoneTail && dbPhoneTail === phoneTail) {
-                                        matchedOrder = o;
-                                        break; // Found the most recent matching order
-                                    }
-                                }
-                            }
-
-                            if (matchedOrder) {
-                                const { data: fullOrderData } = await supabase
-                                    .from('orders')
-                                    .select('*')
-                                    .eq('id', matchedOrder.id)
-                                    .single();
-                                
-                                if (fullOrderData) {
-                                    const order = fullOrderData;
-                                    const customerObj = order.customer || {};
-                                    const metadata = customerObj.metadata || {};
-                                    const history = metadata.whatsappHistory || [];
-                                    
-                                    history.push({
-                                        id: msg.key.id || Date.now().toString(),
-                                        sender: 'client',
-                                        text: text,
-                                        timestamp: new Date().toISOString(),
-                                        status: 'delivered',
-                                        mediaUrl: mediaUrl,
-                                        mediaType: mediaType,
-                                    });
-
-                                    let pfpUrl = metadata.waProfilePic;
-                                    if (!pfpUrl) {
-                                        try {
-                                            pfpUrl = await sock.profilePictureUrl(jid, 'image');
-                                        } catch (e) {
-                                            // Ignore if picture cannot be fetched
-                                        }
-                                    }
-
-                                    metadata.whatsappHistory = history;
-                                    if (pfpUrl) metadata.waProfilePic = pfpUrl;
-                                    
-                                    customerObj.metadata = metadata;
-
-                                    await supabase
-                                        .from('orders')
-                                        .update({ customer: customerObj })
-                                        .eq('id', order.id);
-                                        
-                                    console.log(`[WA] Saved incoming message from ${phone} to order ${order.id}`);
-                                }        
-                            }
+                        } catch(e) {
+                            console.error('[WA] Error downloading media:', e);
                         }
                     }
+
+                    const conversation = await getOrCreateConversation({
+                        phone,
+                        jid,
+                        lastMessage: finalText,
+                        incrementUnread: true
+                    });
+
+                    await saveIncomingMessage({
+                        id: messageId,
+                        conversationId: conversation.id,
+                        phone,
+                        jid,
+                        text: finalText,
+                        messageType,
+                        mediaUrl: mediaUrl || null,
+                        mediaType: mediaType || null,
+                        raw: msg
+                    });
+
+                    console.log(`[WA] Mensaje entrante guardado: ${phone} / ${messageId}`);
                 }
             } catch (err) {
                 console.warn('Issue processing incoming message:', err);
@@ -557,6 +687,38 @@ export function disconnectWhatsApp() {
     connectionStatus = 'close';
 }
 
+    export async function saveOutgoingMessage(input: {
+        id: string;
+        conversationId: string;
+        phone: string;
+        jid: string;
+        text: string;
+        messageType: string;
+        mediaUrl?: string | null;
+        mediaType?: string | null;
+        status?: string;
+    }) {
+        const supabase = getSupabase();
+        if(!supabase) return;
+        const { error } = await supabase
+            .from('whatsapp_messages')
+            .upsert({
+                id: input.id,
+                conversation_id: input.conversationId,
+                phone: input.phone,
+                jid: input.jid,
+                direction: 'outbound',
+                text: input.text,
+                message_type: input.messageType,
+                media_url: input.mediaUrl || null,
+                media_type: input.mediaType || null,
+                status: input.status || 'sent',
+                created_at: new Date().toISOString()
+            }, { onConflict: 'id' });
+        
+        if (error) throw error;
+    }
+
 export async function sendWhatsAppMessage(phone: string, text: string, image?: string, media?: { base64: string, mimetype: string, fileName: string }) {
     if (connectionStatus !== 'open' || !sock) {
         if (!isInitializing && connectionStatus !== 'connecting') {
@@ -589,7 +751,7 @@ export async function sendWhatsAppMessage(phone: string, text: string, image?: s
             await new Promise(resolve => setTimeout(resolve, delayMs));
 
             // Helper to prevent unhandled promise rejections after timeout
-            const safeSend = (payload: any) => {
+            const safeSend = (payload: any): Promise<any> => {
                 return new Promise((resolve, reject) => {
                     let isDone = false;
                     const timeoutId = setTimeout(() => {
@@ -627,6 +789,7 @@ export async function sendWhatsAppMessage(phone: string, text: string, image?: s
                 });
             };
 
+            let result: any = null;
             if (media) {
                  const base64Data = media.base64.split(';base64,').pop() || '';
                  const buffer = Buffer.from(base64Data, 'base64');
@@ -641,23 +804,48 @@ export async function sendWhatsAppMessage(phone: string, text: string, image?: s
                      mediaPayload = { document: buffer, mimetype: media.mimetype, fileName: media.fileName, caption: text };
                  }
                  
-                 await safeSend(mediaPayload);
+                 result = await safeSend(mediaPayload);
             } else if (image) {
                 const base64Data = image.includes('base64,') ? image.split('base64,')[1] : image;
                 const buffer = Buffer.from(base64Data, 'base64');
                 
-                await safeSend({ 
+                result = await safeSend({ 
                     image: buffer, 
                     caption: text 
                 });
             } else {
-                await safeSend({ text });
+                result = await safeSend({ text });
             }
             
             // Stop typing indicator
             await sock.sendPresenceUpdate('paused', jid);
             
-            return { success: true };
+            const messageId = result?.key?.id || `local-${Date.now()}`;
+            const messageType = media ? 'media' : image ? 'image' : 'text';
+
+            try {
+                const phoneNorm = normalizePhone(phone);
+                const conversation = await getOrCreateConversation({
+                    phone: phoneNorm,
+                    jid: jid,
+                    lastMessage: text || 'Mensaje enviado',
+                    incrementUnread: false // Since we're sending, it's not unread for us
+                });
+
+                await saveOutgoingMessage({
+                    id: messageId,
+                    conversationId: conversation.id,
+                    phone: phoneNorm,
+                    jid: jid,
+                    text: text || '',
+                    messageType: messageType,
+                    status: 'sent'
+                });
+            } catch (err) {
+                console.warn('Could not save outgoing CRM message:', err);
+            }
+
+            return { success: true, messageId };
         } catch (error: any) {
             console.warn(`Issue in sock.sendMessage (attempt ${attempts + 1}):`, error);
             
@@ -684,9 +872,9 @@ export async function sendWhatsAppMessage(phone: string, text: string, image?: s
                         // wait up to 15 seconds for reconnect
                         for (let i = 0; i < 30; i++) {
                             await new Promise(r => setTimeout(r, 500));
-                            if (connectionStatus === 'open' && sock) break;
+                            if ((connectionStatus as string) === 'open' && sock) break;
                         }
-                        if (connectionStatus !== 'open' || !sock) {
+                        if ((connectionStatus as string) !== 'open' || !sock) {
                             throw new Error('No se pudo reconectar con WhatsApp automáticamente.');
                         }
                         await new Promise(r => setTimeout(r, 4000)); // Wait for connection to fully stabilize

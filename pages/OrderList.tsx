@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useOrders } from '../contexts/OrderContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -41,9 +41,6 @@ export const OrderList: React.FC = () => {
   const [showConfirmApproval, setShowConfirmApproval] = useState(false);
   const [selectedOrderForApproval, setSelectedOrderForApproval] = useState<RepairOrder | null>(null);
 
-  // ALERT ORDERS STATE
-  const [alertOrders, setAlertOrders] = useState<any[]>([]);
-
   useEffect(() => {
     if (filterTab === 'TALLER') {
       setStatusFilter([]); 
@@ -54,16 +51,18 @@ export const OrderList: React.FC = () => {
     }
   }, [filterTab, setStatusFilter]);
 
-  const { data: rawAlerts = [] } = useQuery({
+  const { data: rawAlertsData } = useQuery({
       queryKey: ['action-required-orders', currentUser?.role, currentUser?.id, currentUser?.branch, managingAlert?.order?.id || 'none', showConfirmApproval],
       queryFn: () => currentUser ? fetchActionRequiredOrders(currentUser.role, currentUser.id, currentUser.branch || 'T4') : Promise.resolve([]),
       enabled: !!currentUser,
       refetchInterval: 30000,
   });
 
-  useEffect(() => {
-      if (!currentUser || !rawAlerts) return;
-      const mapped = rawAlerts.map(o => {
+  const rawAlerts = rawAlertsData || [];
+
+  const alertOrders = useMemo(() => {
+      if (!currentUser || !rawAlerts) return [];
+      return rawAlerts.map(o => {
           let type = ''; 
           if (o.pending_assignment_to === currentUser.id) type = 'ASSIGNMENT_REQUEST';
           else if (o.techMessage?.pending === true && (currentUser.role === UserRole.ADMIN || o.assignedTo === currentUser.id)) type = 'TECH_MESSAGE';
@@ -85,8 +84,7 @@ export const OrderList: React.FC = () => {
           if (o.alertType === 'TECH_MESSAGE' && currentUser.role !== UserRole.ADMIN && o.assignedTo !== currentUser.id) return false;
           return true;
       });
-      setAlertOrders(mapped);
-  }, [currentUser, rawAlerts, managingAlert, showConfirmApproval]);
+  }, [currentUser, rawAlerts]);
 
   const handleClaim = async (e: React.MouseEvent, orderId: string) => {
     e.stopPropagation();
