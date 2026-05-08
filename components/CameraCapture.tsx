@@ -37,7 +37,7 @@ export const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose
       }
       setLoading(false);
     } catch (err) {
-      console.error("Error accessing camera:", err);
+      console.warn("Error accessing camera:", err);
       alert("No se pudo acceder a la cámara. Verifique los permisos.");
       onClose();
     }
@@ -91,7 +91,7 @@ export const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose
   };
 
   return (
-    <div className="fixed inset-0 z-[100] bg-black flex flex-col animate-in fade-in duration-300">
+    <div className="fixed inset-0 z-[9999] bg-black flex flex-col animate-in fade-in duration-300">
       
       {/* Flash Overlay */}
       <div className={`absolute inset-0 bg-white pointer-events-none transition-opacity duration-150 z-20 ${flash ? 'opacity-80' : 'opacity-0'}`} />

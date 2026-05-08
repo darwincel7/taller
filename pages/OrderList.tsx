@@ -1,8 +1,10 @@
 
 import React, { useState, useEffect } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { useOrders } from '../contexts/OrderContext';
 import { useAuth } from '../contexts/AuthContext';
-import { OrderStatus, RepairOrder, UserRole, RequestStatus, LogType, TransferStatus } from '../types';
+import { OrderStatus, RepairOrder, UserRole, RequestStatus, LogType, TransferStatus, OrderType } from '../types';
+import { sendWhatsAppNotification } from '../services/notificationService';
 import { Loader2, RefreshCw, Smartphone } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { DbFixModal } from '../components/DbFixModal';
@@ -52,44 +54,39 @@ export const OrderList: React.FC = () => {
     }
   }, [filterTab, setStatusFilter]);
 
-  useEffect(() => {
-      if (!currentUser) return;
-      const loadAlerts = async () => {
-          const rawAlerts = await fetchActionRequiredOrders(
-              currentUser.role,
-              currentUser.id,
-              currentUser.branch || 'T4'
-          );
-          
-          const mapped = rawAlerts.map(o => {
-              let type = ''; 
-              if (o.pending_assignment_to === currentUser.id) type = 'ASSIGNMENT_REQUEST';
-              else if (o.techMessage?.pending === true && (currentUser.role === UserRole.ADMIN || o.assignedTo === currentUser.id)) type = 'TECH_MESSAGE';
-              else if (o.approvalAckPending && o.assignedTo === currentUser.id) type = 'APPROVED_ACK';
-              else if (o.transferStatus === TransferStatus.PENDING && (currentUser.role === UserRole.ADMIN || (currentUser.role !== UserRole.TECHNICIAN && o.transferTarget === (currentUser.branch || 'T4')))) type = 'TRANSFER';
-              else if (o.pointRequest?.status === RequestStatus.PENDING && (currentUser.role === UserRole.ADMIN || currentUser.role === UserRole.MONITOR)) type = 'POINTS';
-              else if (o.returnRequest?.status === RequestStatus.PENDING && currentUser.role !== UserRole.TECHNICIAN) type = 'RETURN_REQUEST';
-              else if (o.externalRepair?.status === RequestStatus.PENDING && currentUser.role !== UserRole.TECHNICIAN) type = 'EXTERNAL_REQUEST';
-              else if (o.isValidated === false && currentUser.role !== UserRole.TECHNICIAN) type = 'VALIDATE';
-              else if (o.status === OrderStatus.WAITING_APPROVAL && (currentUser.role !== UserRole.TECHNICIAN || o.assignedTo === currentUser.id)) type = 'BUDGET';
+  const { data: rawAlerts = [] } = useQuery({
+      queryKey: ['action-required-orders', currentUser?.role, currentUser?.id, currentUser?.branch, managingAlert?.order?.id || 'none', showConfirmApproval],
+      queryFn: () => currentUser ? fetchActionRequiredOrders(currentUser.role, currentUser.id, currentUser.branch || 'T4') : Promise.resolve([]),
+      enabled: !!currentUser,
+      refetchInterval: 30000,
+  });
 
-              if (!type) {
-                   if (o.status === OrderStatus.WAITING_APPROVAL) type = 'BUDGET';
-                   else type = 'GENERIC_ALERT';
-              }
-              return { ...o, alertType: type };
-          }).filter(o => {
-              if (o.alertType === 'BUDGET' && currentUser.role === UserRole.TECHNICIAN && o.assignedTo !== currentUser.id) return false;
-              if (o.alertType === 'TECH_MESSAGE' && currentUser.role !== UserRole.ADMIN && o.assignedTo !== currentUser.id) return false;
-              return true;
-          });
-          setAlertOrders(mapped);
-      };
-      
-      loadAlerts();
-      const interval = setInterval(loadAlerts, 30000);
-      return () => clearInterval(interval);
-  }, [currentUser, managingAlert, showConfirmApproval]);
+  useEffect(() => {
+      if (!currentUser || !rawAlerts) return;
+      const mapped = rawAlerts.map(o => {
+          let type = ''; 
+          if (o.pending_assignment_to === currentUser.id) type = 'ASSIGNMENT_REQUEST';
+          else if (o.techMessage?.pending === true && (currentUser.role === UserRole.ADMIN || o.assignedTo === currentUser.id)) type = 'TECH_MESSAGE';
+          else if (o.approvalAckPending && o.assignedTo === currentUser.id) type = 'APPROVED_ACK';
+          else if (o.transferStatus === TransferStatus.PENDING && (currentUser.role === UserRole.ADMIN || (currentUser.role !== UserRole.TECHNICIAN && o.transferTarget === (currentUser.branch || 'T4')))) type = 'TRANSFER';
+          else if (o.pointRequest?.status === RequestStatus.PENDING && (currentUser.role === UserRole.ADMIN || currentUser.role === UserRole.MONITOR)) type = 'POINTS';
+          else if (o.returnRequest?.status === RequestStatus.PENDING && currentUser.role !== UserRole.TECHNICIAN) type = 'RETURN_REQUEST';
+          else if (o.externalRepair?.status === RequestStatus.PENDING && currentUser.role !== UserRole.TECHNICIAN) type = 'EXTERNAL_REQUEST';
+          else if (o.isValidated === false && currentUser.role !== UserRole.TECHNICIAN) type = 'VALIDATE';
+          else if (o.status === OrderStatus.WAITING_APPROVAL && (currentUser.role !== UserRole.TECHNICIAN || o.assignedTo === currentUser.id)) type = 'BUDGET';
+
+          if (!type) {
+               if (o.status === OrderStatus.WAITING_APPROVAL) type = 'BUDGET';
+               else type = 'GENERIC_ALERT';
+          }
+          return { ...o, alertType: type };
+      }).filter(o => {
+          if (o.alertType === 'BUDGET' && currentUser.role === UserRole.TECHNICIAN && o.assignedTo !== currentUser.id) return false;
+          if (o.alertType === 'TECH_MESSAGE' && currentUser.role !== UserRole.ADMIN && o.assignedTo !== currentUser.id) return false;
+          return true;
+      });
+      setAlertOrders(mapped);
+  }, [currentUser, rawAlerts, managingAlert, showConfirmApproval]);
 
   const handleClaim = async (e: React.MouseEvent, orderId: string) => {
     e.stopPropagation();
@@ -113,6 +110,12 @@ export const OrderList: React.FC = () => {
       } else {
           if (confirm('¿Rechazar presupuesto y devolver a diagnóstico?')) {
               await updateOrderStatus(order.id, OrderStatus.DIAGNOSIS, '❌ Presupuesto RECHAZADO por cliente. Volviendo a diagnóstico.', currentUser?.name);
+              
+              if (order.orderType === OrderType.REPAIR || order.orderType === OrderType.WARRANTY) {
+                  const updatedOrder = { ...order, status: OrderStatus.DIAGNOSIS };
+                  sendWhatsAppNotification(updatedOrder, OrderStatus.DIAGNOSIS);
+              }
+              
               setManagingAlert(null);
           }
       }
@@ -132,11 +135,17 @@ export const OrderList: React.FC = () => {
               technicianNotes: updatedNotes
           });
           await addOrderLog(selectedOrderForApproval.id, OrderStatus.IN_REPAIR, '✅ Presupuesto APROBADO por cliente. Reparación iniciada.', currentUser?.name, LogType.SUCCESS);
+          
+          if (selectedOrderForApproval.orderType === OrderType.REPAIR || selectedOrderForApproval.orderType === OrderType.WARRANTY) {
+              const updatedOrder = { ...selectedOrderForApproval, status: OrderStatus.IN_REPAIR };
+              sendWhatsAppNotification(updatedOrder, OrderStatus.IN_REPAIR);
+          }
+          
           setShowConfirmApproval(false);
           setSelectedOrderForApproval(null);
           setManagingAlert(null);
       } catch (e) {
-          console.error(e);
+          console.warn(e);
           alert('Error al aprobar presupuesto');
       } finally {
           setIsProcessing(false);
@@ -151,17 +160,23 @@ export const OrderList: React.FC = () => {
         if (approve) {
             const updates: Partial<RepairOrder> = { 
                 pointsAwarded: order.pointRequest.requestedPoints, 
+                pointsEarnedBy: order.pointsEarnedBy || order.assignedTo || undefined, // LOCK IT IN
                 pointRequest: { ...order.pointRequest, status: RequestStatus.APPROVED, approvedBy: currentUser.name },
                 status: OrderStatus.REPAIRED
             };
             if (order.pointRequest.splitProposal) updates.pointsSplit = order.pointRequest.splitProposal;
             await updateOrderDetails(order.id, updates);
             await addOrderLog(order.id, OrderStatus.REPAIRED, `✅ Puntos APROBADOS (${order.pointRequest.requestedPoints}) por ${currentUser.name}.`, currentUser.name, LogType.SUCCESS);
+            
+            // Send WhatsApp notification
+            const updatedOrder = { ...order, ...updates };
+            sendWhatsAppNotification(updatedOrder, OrderStatus.REPAIRED);
         } else {
-            await updateOrderDetails(order.id, { pointsAwarded: 0, pointRequest: { ...order.pointRequest, status: RequestStatus.REJECTED, approvedBy: currentUser.name } });
-            await addOrderLog(order.id, order.status, `❌ Solicitud de puntos RECHAZADA por ${currentUser.name}.`, currentUser.name, LogType.DANGER);
+            // DO NOT set pointsAwarded to 0 on rejection. Keep current points.
+            await updateOrderDetails(order.id, { pointRequest: { ...order.pointRequest, status: RequestStatus.REJECTED, approvedBy: currentUser.name } });
+            await addOrderLog(order.id, order.status, `❌ Solicitud de puntos RECHAZADA por ${currentUser.name}. Los puntos previos se conservan.`, currentUser.name, LogType.DANGER);
         }
-      } catch(e) { console.error(e); } finally { setIsProcessing(false); }
+      } catch(e) { console.warn(e); } finally { setIsProcessing(false); }
   };
 
   const handleQuickAction = async (order: RepairOrder, type: string) => {

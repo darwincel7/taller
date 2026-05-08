@@ -1,11 +1,12 @@
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { format } from 'date-fns';
 import { orderService } from '../services/orderService';
 import { useOrders } from '../contexts/OrderContext';
 import { useAuth } from '../contexts/AuthContext';
+import { useInventory } from '../contexts/InventoryContext';
 import { 
   RepairOrder, OrderStatus, UserRole, PriorityLevel, OrderType, Expense, PointSplit, LogType, HistoryLog, ActionType, RequestStatus, TransferStatus, TransactionStatus, ApprovalStatus, ExpenseDestination
 } from '../types';
@@ -50,11 +51,14 @@ import { RequestPartModal } from '../components/modals/RequestPartModal';
 import { DbFixModal } from '../components/DbFixModal';
 import { CustomerSelectModal } from '../components/modals/CustomerSelectModal';
 import { WarrantyReasonModal } from '../components/modals/WarrantyReasonModal';
+import { WhatsAppVisualizer } from '../components/WhatsAppVisualizer';
 
 export const OrderDetails: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [showDbFixModal, setShowDbFixModal] = useState(false);
+  const [isWhatsAppVisualizerOpen, setIsWhatsAppVisualizerOpen] = useState(false);
   const { 
     orders,
     updateOrderDetails, updateOrderStatus, addOrderLog, showNotification, 
@@ -65,6 +69,7 @@ export const OrderDetails: React.FC = () => {
   } = useOrders();
   
   const { currentUser, users } = useAuth();
+  const { inventory, addInventoryPart, fetchInventory } = useInventory();
 
   // Fetch specific order data
   const { data: order, isLoading: isLoadingOrder } = useQuery({
@@ -85,7 +90,7 @@ export const OrderDetails: React.FC = () => {
       
       const totalSpent = historyData.reduce((sum, o) => {
           if (o.status === OrderStatus.RETURNED) {
-              return sum + (o.finalPrice || o.estimatedCost || 0);
+              return sum + (o.totalAmount ?? (o.finalPrice || o.estimatedCost || 0));
           }
           return sum;
       }, 0);
@@ -177,8 +182,8 @@ export const OrderDetails: React.FC = () => {
               devicePassword: order.devicePassword
           });
           setExpenses(order.expenses || []);
-          let price = order.finalPrice > 0 ? order.finalPrice : order.estimatedCost;
-          if (order.finalPrice === 0 && order.orderType === OrderType.STORE && order.targetPrice) {
+          let price = order.totalAmount ?? (order.finalPrice > 0 ? order.finalPrice : order.estimatedCost);
+          if (price === 0 && order.orderType === OrderType.STORE && order.targetPrice) {
               price = order.targetPrice;
           }
           setFinalPriceInput(isNaN(price) ? '0' : price.toString());
@@ -192,9 +197,11 @@ export const OrderDetails: React.FC = () => {
   const isAdmin = currentUser?.role === UserRole.ADMIN;
   const isMonitor = currentUser?.role === UserRole.MONITOR;
   const canEdit = currentUser?.permissions?.canEditOrderDetails || isAdmin;
+  const canDeliverStoreOrders = currentUser?.permissions?.canDeliverStoreOrders || isAdmin;
   const canDeliver = (currentUser?.permissions?.canDeliverOrder || isAdmin) && !isMonitor;
   const canViewAccounting = currentUser?.permissions?.canViewAccounting || isAdmin; 
   const canEditExpenses = currentUser?.permissions?.canEditExpenses || isAdmin;
+  const canEditPrice = isAdmin || isMonitor;
 
   // Check for Pending Points Request
   const pendingPointRequest = order?.pointRequest && order.pointRequest.status === RequestStatus.PENDING;
@@ -240,6 +247,21 @@ export const OrderDetails: React.FC = () => {
           alert("🚫 Esta orden está Cancelada y no puede cambiar de estado.");
           return;
       }
+
+      const statusOrder = [OrderStatus.PENDING, OrderStatus.DIAGNOSIS, OrderStatus.WAITING_APPROVAL, OrderStatus.IN_REPAIR, OrderStatus.ON_HOLD, OrderStatus.EXTERNAL, OrderStatus.QC_PENDING, OrderStatus.REPAIRED, OrderStatus.RETURNED, OrderStatus.CANCELED];
+      const currentIndex = statusOrder.indexOf(order.status);
+      const newIndex = statusOrder.indexOf(newStatus);
+
+      if (newIndex < currentIndex && (order.status === OrderStatus.REPAIRED || order.status === OrderStatus.RETURNED)) {
+          if (!isAdmin) {
+              alert("🚫 Solo los administradores pueden retroceder una orden que ya está en Listo o Entregado.");
+              return;
+          }
+          if (!confirm(`⚠️ Estás a punto de retroceder esta orden de ${order.status} a ${newStatus}. ¿Estás seguro?`)) {
+              return;
+          }
+      }
+
       if (newStatus === OrderStatus.RETURNED) {
           handleDeliverCheck();
           return;
@@ -253,6 +275,12 @@ export const OrderDetails: React.FC = () => {
           return;
       }
       await updateOrderStatus(order.id, newStatus, `🔄 Estado cambiado a ${newStatus} por ${currentUser?.name}`, currentUser?.name);
+      
+      if (order.orderType === OrderType.REPAIR || order.orderType === OrderType.WARRANTY) {
+          const updatedOrder = { ...order, status: newStatus };
+          sendWhatsAppNotification(updatedOrder, newStatus);
+      }
+
       showNotification('success', `Estado cambiado a ${newStatus}`);
   };
 
@@ -260,15 +288,20 @@ export const OrderDetails: React.FC = () => {
       if (isSubmittingPoints) return;
       setIsSubmittingPoints(true);
       try {
-          const isAutoApproved = points <= 1; // 0 or 1 point is auto-approved
+          // Warranty + >0 pts needs approval. Other types + >1 pt needs approval.
+          const isAutoApproved = order.orderType === OrderType.WARRANTY 
+              ? points === 0 
+              : points <= 1;
           
           // Construct the log manually to avoid stale state race conditions
           const logMessage = isAutoApproved ? `✅ Finalizado. ${points} pts (Automático).` : `⚠️ Solicitud de ${points} pts enviada a revisión.`;
           const logType = isAutoApproved ? LogType.SUCCESS : LogType.WARNING;
           
+          const finalStatus = isAutoApproved ? ((order.status === OrderStatus.RETURNED || order.status === OrderStatus.REPAIRED) ? order.status : OrderStatus.REPAIRED) : order.status;
+          
           const newLog: HistoryLog = {
               date: new Date().toISOString(),
-              status: isAutoApproved ? OrderStatus.REPAIRED : order.status,
+              status: finalStatus,
               note: logMessage,
               technician: currentUser?.name || 'Sistema',
               logType: logType,
@@ -280,9 +313,11 @@ export const OrderDetails: React.FC = () => {
           const newHistory = [...currentHistory, newLog];
 
           const updates: Partial<RepairOrder> = {
-              status: isAutoApproved ? OrderStatus.REPAIRED : order.status, 
+              status: finalStatus, 
               completedAt: Date.now(),
-              pointsAwarded: isAutoApproved ? points : undefined,
+              pointsAwarded: isAutoApproved ? points : order.pointsAwarded, // Keep existing if not auto-approved
+              originalPointsAwarded: isAutoApproved ? ((order.status === OrderStatus.REPAIRED || order.status === OrderStatus.RETURNED) ? (order.originalPointsAwarded ?? order.pointsAwarded) : undefined) : order.originalPointsAwarded,
+              pointsEarnedBy: (order.status === OrderStatus.REPAIRED || order.status === OrderStatus.RETURNED) ? order.pointsEarnedBy : (order.pointsEarnedBy || order.assignedTo || undefined),
               pointRequest: {
                   requestedPoints: points,
                   reason,
@@ -302,123 +337,151 @@ export const OrderDetails: React.FC = () => {
           
           setShowPointsModal(false);
           
-          if(isAutoApproved) sendWhatsAppNotification(order, OrderStatus.REPAIRED);
+          if(isAutoApproved) {
+              const updatedOrder = { ...order, ...updates };
+              sendWhatsAppNotification(updatedOrder, finalStatus);
+          }
           else showNotification('success', 'Solicitud de puntos enviada');
       } catch (error) {
-          console.error("Error submitting points:", error);
+          console.warn("Error submitting points:", error);
           showNotification('error', 'Error al procesar la solicitud. Intente nuevamente.');
       } finally {
           setIsSubmittingPoints(false);
       }
   };
 
-  const handleAddExpenses = async (expensesToAdd: {desc: string, amount: number, receiptUrl?: string, sharedReceiptId?: string, readableId?: number, isExternal?: boolean, closingId?: string, createdAt?: string, invoiceNumber?: string, isDuplicate?: boolean}[]) => {
+  const handleAddExpenses = async (expensesToAdd: {desc: string, amount: number, receiptUrl?: string, sharedReceiptId?: string, readableId?: number, isExternal?: boolean, closingId?: string, createdAt?: string, invoiceNumber?: string, vendor?: string, isDuplicate?: boolean, createdBy?: string, isInventory?: boolean, branchId?: string}[]) => {
       const newExps: Expense[] = [];
+      let savedCount = 0;
+      let errors: string[] = [];
       
       for (const [index, exp] of expensesToAdd.entries()) {
           let readableId: number | undefined = exp.readableId;
+          let success = true;
           
+          if (!exp.isInventory) {
+              try {
+                let catId = await accountingService.getCategoryIdByName('Repuestos');
+                if (!catId) {
+                    catId = await accountingService.getCategoryIdByName('Compras');
+                }
+
+                const transaction = await accountingService.addTransaction({
+                  readable_id: readableId,
+                  amount: -Math.abs(exp.amount),
+                  transaction_date: exp.createdAt ? format(new Date(exp.createdAt), 'yyyy-MM-dd') : format(new Date(), 'yyyy-MM-dd'),
+                  description: `[Orden #${order.readable_id || order.id.slice(0,6)}] ${exp.desc}`,
+                  category_id: catId || undefined, 
+                  vendor: exp.vendor || 'Taller',
+                  status: TransactionStatus.COMPLETED, // Money left the register, so it's completed for cash register purposes
+                  approval_status: exp.isExternal ? ApprovalStatus.APPROVED : ApprovalStatus.PENDING,
+                  expense_destination: ExpenseDestination.WORKSHOP,
+                  source: 'ORDER',
+                  order_id: order.id,
+                  created_by: exp.createdBy || currentUser?.id,
+                  branch: exp.branchId || currentUser?.branch || 'T4',
+                  receipt_url: exp.receiptUrl,
+                  shared_receipt_id: exp.sharedReceiptId,
+                  closing_id: exp.closingId,
+                  created_at: exp.createdAt,
+                  invoice_number: exp.invoiceNumber || undefined,
+                  is_duplicate: exp.isDuplicate
+                });
+                
+                if (transaction && transaction.readable_id) {
+                    readableId = transaction.readable_id;
+                }
+              } catch (e: any) {
+                console.warn("Error syncing expense to accounting:", e);
+                errors.push(`${exp.desc}: ${e.message || 'Error desconocido'}`);
+                success = false;
+              }
+          }
+          
+          if (success) {
+              newExps.push({
+                  id: (Date.now() + index).toString(),
+                  readable_id: readableId,
+                  description: exp.desc,
+                  amount: exp.amount,
+                  date: Date.now(),
+                  receiptUrl: exp.receiptUrl,
+                  sharedReceiptId: exp.sharedReceiptId,
+                  invoiceNumber: exp.invoiceNumber,
+                  vendor: exp.vendor,
+                  addedBy: currentUser?.name,
+                  isExternal: exp.isExternal,
+                  is_duplicate: exp.isDuplicate
+              });
+              savedCount++;
+          }
+      }
+
+      if (newExps.length > 0) {
+          const newExpenses = [...expenses, ...newExps];
+          await updateOrderDetails(order.id, { expenses: newExpenses });
+
+          for (const exp of newExps) {
+              await recordOrderLog(
+                  order.id,
+                  ActionType.EXPENSE_ADDED,
+                  `💸 GASTO AGREGADO: ${exp.description} ($${exp.amount})${exp.readable_id ? ` #${exp.readable_id}` : ''}`,
+                  { description: exp.description, amount: exp.amount, receiptUrl: exp.receiptUrl, sharedReceiptId: exp.sharedReceiptId, readableId: exp.readable_id },
+                  LogType.INFO,
+                  currentUser?.name
+              );
+          }
+      }
+
+      if (errors.length > 0) {
+          alert(`Se guardaron ${savedCount} de ${expensesToAdd.length} gastos en la orden.\nErrores:\n${errors.join('\n')}`);
+      } else {
+          alert(`Se guardaron correctamente los ${savedCount} gastos en la orden.`);
+      }
+  };
+
+  const handleAddExpense = async (desc: string, amount: number, receiptUrl?: string, sharedReceiptId?: string, providedReadableId?: number, isExternal?: boolean, closingId?: string, createdAt?: string, invoiceNumber?: string, vendor?: string, isDuplicate?: boolean, createdBy?: string, isInventory?: boolean, branchId?: string) => { 
+      let readableId: number | undefined = providedReadableId;
+      
+      // --- NEW ACCOUNTING LOGIC ---
+      if (!isInventory) {
           try {
             let catId = await accountingService.getCategoryIdByName('Repuestos');
             if (!catId) {
+                // Fallback to 'Compras' or create 'Repuestos'
                 catId = await accountingService.getCategoryIdByName('Compras');
             }
 
             const transaction = await accountingService.addTransaction({
               readable_id: readableId,
-              amount: -Math.abs(exp.amount),
-              transaction_date: exp.createdAt ? format(new Date(exp.createdAt), 'yyyy-MM-dd') : format(new Date(), 'yyyy-MM-dd'),
-              description: `[Orden #${order.readable_id || order.id.slice(0,6)}] ${exp.desc}`,
+              amount: -Math.abs(amount), // Expense is negative
+              transaction_date: createdAt ? format(new Date(createdAt), 'yyyy-MM-dd') : format(new Date(), 'yyyy-MM-dd'),
+              description: `[Orden #${order.readable_id || order.id.slice(0,6)}] ${desc}`,
               category_id: catId || undefined, 
-              vendor: 'Taller',
-              status: TransactionStatus.PENDING,
-              approval_status: exp.isExternal ? ApprovalStatus.APPROVED : ApprovalStatus.PENDING,
+              vendor: vendor || 'Taller',
+              status: TransactionStatus.COMPLETED, // Money left the register, so it's completed for cash register purposes
+              approval_status: isExternal ? ApprovalStatus.APPROVED : ApprovalStatus.PENDING,
               expense_destination: ExpenseDestination.WORKSHOP,
               source: 'ORDER',
               order_id: order.id,
-              created_by: currentUser?.id,
-              receipt_url: exp.receiptUrl,
-              shared_receipt_id: exp.sharedReceiptId,
-              closing_id: exp.closingId,
-              created_at: exp.createdAt,
-              invoice_number: exp.invoiceNumber,
-              is_duplicate: exp.isDuplicate
+              created_by: createdBy || currentUser?.id,
+              branch: branchId || currentUser?.branch || 'T4',
+              receipt_url: receiptUrl, // Add receipt URL to accounting transaction if supported
+              shared_receipt_id: sharedReceiptId,
+              closing_id: closingId,
+              created_at: createdAt,
+              invoice_number: invoiceNumber || undefined,
+              is_duplicate: isDuplicate
             });
             
             if (transaction && transaction.readable_id) {
                 readableId = transaction.readable_id;
             }
-          } catch (e) {
-            console.error("Error syncing expense to accounting:", e);
+          } catch (e: any) {
+            console.warn("Error syncing expense to accounting:", e);
+            alert(`Error al registrar el gasto en caja: ${e.message || 'Error desconocido'}`);
+            return; // Stop execution if accounting fails
           }
-          
-          newExps.push({
-              id: (Date.now() + index).toString(),
-              readable_id: readableId,
-              description: exp.desc,
-              amount: exp.amount,
-              date: Date.now(),
-              receiptUrl: exp.receiptUrl,
-              sharedReceiptId: exp.sharedReceiptId,
-              invoiceNumber: exp.invoiceNumber,
-              addedBy: currentUser?.name,
-              isExternal: exp.isExternal,
-              is_duplicate: exp.isDuplicate
-          });
-      }
-
-      const newExpenses = [...expenses, ...newExps];
-      await updateOrderDetails(order.id, { expenses: newExpenses });
-
-      for (const exp of newExps) {
-          await recordOrderLog(
-              order.id,
-              ActionType.EXPENSE_ADDED,
-              `💸 GASTO AGREGADO: ${exp.description} ($${exp.amount})${exp.readable_id ? ` #${exp.readable_id}` : ''}`,
-              { description: exp.description, amount: exp.amount, receiptUrl: exp.receiptUrl, sharedReceiptId: exp.sharedReceiptId, readableId: exp.readable_id },
-              LogType.INFO,
-              currentUser?.name
-          );
-      }
-  };
-
-  const handleAddExpense = async (desc: string, amount: number, receiptUrl?: string, sharedReceiptId?: string, providedReadableId?: number, isExternal?: boolean, closingId?: string, createdAt?: string, invoiceNumber?: string, isDuplicate?: boolean) => { 
-      let readableId: number | undefined = providedReadableId;
-      
-      // --- NEW ACCOUNTING LOGIC ---
-      try {
-        let catId = await accountingService.getCategoryIdByName('Repuestos');
-        if (!catId) {
-            // Fallback to 'Compras' or create 'Repuestos'
-            catId = await accountingService.getCategoryIdByName('Compras');
-        }
-
-        const transaction = await accountingService.addTransaction({
-          readable_id: readableId,
-          amount: -Math.abs(amount), // Expense is negative
-          transaction_date: createdAt ? format(new Date(createdAt), 'yyyy-MM-dd') : format(new Date(), 'yyyy-MM-dd'),
-          description: `[Orden #${order.readable_id || order.id.slice(0,6)}] ${desc}`,
-          category_id: catId || undefined, 
-          vendor: 'Taller',
-          status: TransactionStatus.PENDING,
-          approval_status: isExternal ? ApprovalStatus.APPROVED : ApprovalStatus.PENDING,
-          expense_destination: ExpenseDestination.WORKSHOP,
-          source: 'ORDER',
-          order_id: order.id,
-          created_by: currentUser?.id,
-          receipt_url: receiptUrl, // Add receipt URL to accounting transaction if supported
-          shared_receipt_id: sharedReceiptId,
-          closing_id: closingId,
-          created_at: createdAt,
-          invoice_number: invoiceNumber,
-          is_duplicate: isDuplicate
-        });
-        
-        if (transaction && transaction.readable_id) {
-            readableId = transaction.readable_id;
-        }
-      } catch (e) {
-        console.error("Error syncing expense to accounting:", e);
       }
 
       const newExp: Expense = { 
@@ -430,6 +493,7 @@ export const OrderDetails: React.FC = () => {
           receiptUrl,
           sharedReceiptId,
           invoiceNumber,
+          vendor,
           addedBy: currentUser?.name,
           isExternal,
           is_duplicate: isDuplicate
@@ -459,6 +523,7 @@ export const OrderDetails: React.FC = () => {
             
             // Return to floating expenses (gastos en espera) ONLY if it was originally a floating expense
             if (expenseToRemove.isExternal) {
+                const originalInvoiceNumber = expenseToRemove.invoiceNumber ? expenseToRemove.invoiceNumber.split('-DUP-')[0] : null;
                 await supabase.from('floating_expenses').insert([{
                   description: expenseToRemove.description,
                   amount: expenseToRemove.amount,
@@ -468,11 +533,14 @@ export const OrderDetails: React.FC = () => {
                   branch_id: order.currentBranch || 'T4',
                   approval_status: 'APPROVED', // Ya estaba aprobado si estaba en la orden
                   closing_id: deletedTx?.closing_id || null,
-                  created_at: deletedTx?.created_at || new Date().toISOString()
+                  created_at: deletedTx?.created_at || new Date().toISOString(),
+                  invoice_number: originalInvoiceNumber,
+                  vendor: expenseToRemove.vendor || null,
+                  is_duplicate: expenseToRemove.is_duplicate || false
                 }]);
             }
           } catch (e) {
-            console.error("Error deleting expense from accounting or returning to floating:", e);
+            console.warn("Error deleting expense from accounting or returning to floating:", e);
           }
 
           await recordOrderLog(
@@ -497,7 +565,7 @@ export const OrderDetails: React.FC = () => {
             const newAccountingDesc = `[Orden #${order.readable_id || order.id.slice(0,6)}] ${desc}`;
             await accountingService.updateTransactionByOrderExpense(order.id, oldAccountingDesc, oldExpense.amount, newAccountingDesc, amount);
           } catch (e) {
-            console.error("Error updating expense in accounting:", e);
+            console.warn("Error updating expense in accounting:", e);
           }
 
           await recordOrderLog(
@@ -512,9 +580,9 @@ export const OrderDetails: React.FC = () => {
   };
   const handleUpdatePrice = async (reason?: string) => { 
       const newPrice = parseFloat(finalPriceInput);
-      const oldPrice = order.finalPrice > 0 ? order.finalPrice : order.estimatedCost;
+      const oldPrice = order.totalAmount ?? (order.finalPrice > 0 ? order.finalPrice : order.estimatedCost);
       
-      await updateOrderDetails(order.id, { finalPrice: newPrice }); 
+      await updateOrderDetails(order.id, { finalPrice: newPrice, totalAmount: newPrice }); 
       
       if (newPrice !== oldPrice) {
           await recordOrderLog(
@@ -535,7 +603,7 @@ export const OrderDetails: React.FC = () => {
           setShowPartRequestModal(false);
           showNotification('success', 'Pieza solicitada correctamente');
       } catch (error) {
-          console.error("Error requesting part:", error);
+          console.warn("Error requesting part:", error);
           showNotification('error', 'Error al solicitar la pieza. Intente nuevamente.');
       }
   };
@@ -567,6 +635,10 @@ export const OrderDetails: React.FC = () => {
           setIsProcessing(true);
           try {
               await updateOrderStatus(order.id, OrderStatus.DIAGNOSIS, `❌ Presupuesto RECHAZADO por ${currentUser.name}.`, currentUser.name);
+              if (order.orderType === OrderType.REPAIR || order.orderType === OrderType.WARRANTY) {
+                  const updatedOrder = { ...order, status: OrderStatus.DIAGNOSIS };
+                  sendWhatsAppNotification(updatedOrder, OrderStatus.DIAGNOSIS);
+              }
           } finally {
               setIsProcessing(false);
           }
@@ -604,10 +676,15 @@ export const OrderDetails: React.FC = () => {
               history: newHistory
           });
           
+          if (order.orderType === OrderType.REPAIR || order.orderType === OrderType.WARRANTY) {
+              const updatedOrder = { ...order, status: OrderStatus.IN_REPAIR };
+              sendWhatsAppNotification(updatedOrder, OrderStatus.IN_REPAIR);
+          }
+          
           setShowConfirmApproval(false);
           showNotification('success', 'Aprobación registrada y enviada al técnico.');
       } catch (error) {
-          console.error(error);
+          console.warn(error);
           showNotification('error', 'Error al aprobar presupuesto');
       } finally {
           setIsProcessing(false);
@@ -619,44 +696,49 @@ export const OrderDetails: React.FC = () => {
       setIsProcessing(true);
       try {
           if (approve) {
+              const newPoints = order.pointRequest.requestedPoints;
+              const finalStatus = (order.status === OrderStatus.RETURNED || order.status === OrderStatus.REPAIRED) ? order.status : OrderStatus.REPAIRED;
               const newLog = {
                   date: new Date().toISOString(),
-                  status: OrderStatus.REPAIRED,
-                  note: `✅ Puntos APROBADOS (${order.pointRequest.requestedPoints}) por ${currentUser.name}.`,
+                  status: finalStatus,
+                  note: `✅ Puntos APROBADOS (${newPoints}) por ${currentUser.name}.`,
                   technician: currentUser.name,
                   logType: LogType.SUCCESS,
                   action_type: ActionType.POINTS_APPROVED,
-                  metadata: { points: order.pointRequest.requestedPoints }
+                  metadata: { points: newPoints }
               };
               
               const currentHistory = order.history || [];
               const newHistory = [...currentHistory, newLog];
 
               const updates: Partial<RepairOrder> = { 
-                  pointsAwarded: order.pointRequest.requestedPoints, 
+                  pointsAwarded: newPoints, 
+                  originalPointsAwarded: (order.status === OrderStatus.REPAIRED || order.status === OrderStatus.RETURNED) ? (order.originalPointsAwarded ?? order.pointsAwarded) : undefined,
+                  pointsEarnedBy: (order.status === OrderStatus.REPAIRED || order.status === OrderStatus.RETURNED) ? order.pointsEarnedBy : (order.pointsEarnedBy || order.assignedTo || undefined), // Keep the tech who earned them
                   pointRequest: { ...order.pointRequest, status: RequestStatus.APPROVED, approvedBy: currentUser.name },
-                  status: OrderStatus.REPAIRED,
+                  status: finalStatus,
                   history: newHistory
               };
               if (order.pointRequest.splitProposal) updates.pointsSplit = order.pointRequest.splitProposal;
               await updateOrderDetails(order.id, updates);
-              sendWhatsAppNotification(order, OrderStatus.REPAIRED);
+              const updatedOrder = { ...order, ...updates };
+              sendWhatsAppNotification(updatedOrder, finalStatus);
           } else {
               const newLog = {
                   date: new Date().toISOString(),
                   status: order.status,
-                  note: `❌ Solicitud de puntos RECHAZADA por ${currentUser.name}.`,
+                  note: `❌ Solicitud de puntos RECHAZADA por ${currentUser.name}. Los puntos previos se conservan.`,
                   technician: currentUser.name,
                   logType: LogType.DANGER,
                   action_type: ActionType.POINTS_REJECTED,
-                  metadata: { requested: order.pointRequest.requestedPoints }
+                  metadata: { requested: order.pointRequest.requestedPoints, current: order.pointsAwarded }
               };
               
               const currentHistory = order.history || [];
               const newHistory = [...currentHistory, newLog];
 
+              // DO NOT set pointsAwarded to 0 on rejection. Keep current points.
               await updateOrderDetails(order.id, { 
-                  pointsAwarded: 0, 
                   pointRequest: { ...order.pointRequest, status: RequestStatus.REJECTED, approvedBy: currentUser.name },
                   history: newHistory
               });
@@ -803,13 +885,17 @@ export const OrderDetails: React.FC = () => {
           const newHistory = [...currentHistory, newLog];
 
           // Apply fee, set status to REPAIRED (Ready for delivery), approve request
-          await updateOrderDetails(order.id, { 
+          const updates = { 
               status: OrderStatus.REPAIRED,
               finalPrice: fee,
               totalAmount: fee,
               returnRequest: { ...order.returnRequest, status: RequestStatus.APPROVED, approvedBy: currentUser.name },
               history: newHistory
-          });
+          };
+          await updateOrderDetails(order.id, updates);
+          
+          const updatedOrder = { ...order, ...updates };
+          sendWhatsAppNotification(updatedOrder, OrderStatus.REPAIRED);
           showNotification('success', 'Devolución aprobada. Orden lista para entregar.');
       } else {
           const newLog = {
@@ -854,6 +940,11 @@ export const OrderDetails: React.FC = () => {
 
   // --- REQUIRED RESTORED HANDLERS ---
 
+  const handleManualWhatsApp = () => {
+    if (!order) return;
+    setIsWhatsAppVisualizerOpen(true);
+  };
+
   const handleSaveChanges = async () => {
       if (!order) return;
       const updates: Partial<RepairOrder> = {
@@ -878,9 +969,11 @@ export const OrderDetails: React.FC = () => {
                   phone: editForm.customerPhone
               }).eq('id', order.customerId);
           } catch (err) {
-              console.error("Error updating customer directory:", err);
+              console.warn("Error updating customer directory:", err);
           }
       }
+
+      const newLogs: any[] = [];
 
       // LOG CHANGE OF DEADLINE
       if (editForm.deadline) {
@@ -897,28 +990,61 @@ export const OrderDetails: React.FC = () => {
                   const oldDate = order.deadline ? new Date(order.deadline).toLocaleString('es-ES', { dateStyle: 'short', timeStyle: 'short' }) : 'Sin fecha';
                   const newDate = new Date(dl).toLocaleString('es-ES', { dateStyle: 'short', timeStyle: 'short' });
                   
-                  await recordOrderLog(
-                      order.id,
-                      ActionType.DEADLINE_CHANGED,
-                      `⏳ Tiempo límite actualizado: ${oldDate} ➔ ${newDate}`,
-                      { oldDeadline: order.deadline, newDeadline: dl },
-                      LogType.WARNING,
-                      currentUser?.name
-                  );
+                  newLogs.push({
+                      date: new Date().toISOString(),
+                      status: order.status,
+                      note: `⏳ Tiempo límite actualizado: ${oldDate} ➔ ${newDate}`,
+                      technician: currentUser?.name || 'Sistema',
+                      logType: LogType.WARNING,
+                      action_type: ActionType.DEADLINE_CHANGED,
+                      metadata: { oldDeadline: order.deadline, newDeadline: dl }
+                  });
               }
           }
+      } else if (order.deadline) {
+          updates.deadline = 0;
+          const oldDate = new Date(order.deadline).toLocaleString('es-ES', { dateStyle: 'short', timeStyle: 'short' });
+          newLogs.push({
+              date: new Date().toISOString(),
+              status: order.status,
+              note: `⏳ Tiempo límite eliminado (antes: ${oldDate})`,
+              technician: currentUser?.name || 'Sistema',
+              logType: LogType.WARNING,
+              action_type: ActionType.DEADLINE_CHANGED,
+              metadata: { oldDeadline: order.deadline, newDeadline: 0 }
+          });
       }
 
       // LOG CHANGE OF PHONE
       if (editForm.customerPhone !== order.customer.phone) {
-          await recordOrderLog(
-              order.id, 
-              ActionType.PHONE_UPDATED, 
-              `📞 TELÉFONO ACTUALIZADO: ${order.customer.phone} ➔ ${editForm.customerPhone}`, 
-              { oldPhone: order.customer.phone, newPhone: editForm.customerPhone }, 
-              LogType.INFO, 
-              currentUser?.name
-          );
+          newLogs.push({
+              date: new Date().toISOString(),
+              status: order.status,
+              note: `📞 TELÉFONO ACTUALIZADO: ${order.customer.phone} ➔ ${editForm.customerPhone}`,
+              technician: currentUser?.name || 'Sistema',
+              logType: LogType.INFO,
+              action_type: ActionType.PHONE_UPDATED,
+              metadata: { oldPhone: order.customer.phone, newPhone: editForm.customerPhone }
+          });
+      }
+      
+      if (newLogs.length > 0) {
+          updates.history = [...(order.history || []), ...newLogs];
+          
+          // Also record global audit logs
+          for (const log of newLogs) {
+              if (currentUser) {
+                  auditService.recordLog(
+                      { id: currentUser.id, name: currentUser.name },
+                      log.action_type,
+                      log.note,
+                      order.id,
+                      'ORDER',
+                      order.id,
+                      log.metadata
+                  ).catch(console.warn);
+              }
+          }
       }
       
       await updateOrderDetails(order.id, updates);
@@ -971,32 +1097,60 @@ export const OrderDetails: React.FC = () => {
           showNotification('success', 'Nueva orden de reingreso creada correctamente');
           navigate(`/orders/${newOrderId}`);
       } catch (error: any) {
-          console.error("Error creating warranty order:", error);
+          console.warn("Error creating warranty order:", error);
           showNotification('error', `Error al crear orden de reingreso: ${error.message}`);
       }
   };
 
   const handleStoreDelivery = async () => {
-      if (!order || !currentUser) return;
+      if (!order || !currentUser || isProcessing) return;
+      setIsProcessing(true);
       try {
-          const updatedOrder = await finalizeDelivery(order, [], currentUser, addPayments, recordOrderLog);
-          showNotification('success', 'Equipo entregado a tienda exitosamente');
-          navigate('/taller');
+          await finalizeDelivery(order, [], currentUser, addPayments, recordOrderLog);
+          queryClient.invalidateQueries({ queryKey: ['orders'] });
+          queryClient.invalidateQueries({ queryKey: ['order', order.id] });
+          await fetchInventory();
+          showNotification('success', 'Equipo movido a Inventario (Pendiente Aceptación)');
       } catch (error: any) {
-          console.error("Error entregando equipo a tienda:", error);
+          console.warn("Error entregando equipo a tienda:", error);
           showNotification('error', error.message || 'Error desconocido');
+      } finally {
+          setIsProcessing(false);
       }
   };
 
   const handleDeliverCheck = () => {
-      setShowPreDeliveryCheckModal(true);
+      if (!order) return;
+      if (order.orderType === OrderType.STORE && !canDeliverStoreOrders) {
+          showNotification('error', 'No tienes permiso para entregar equipos recibidos.');
+          return;
+      }
+
+      const isCanceled = order.status === OrderStatus.CANCELED;
+      const isPart = order.orderType === OrderType.PART_ONLY;
+
+      if (order.orderType === OrderType.STORE) {
+          const hasTargetPrice = order.targetPrice && order.targetPrice > 0;
+          if (!isCanceled && !isPart && !hasPendingRequests && hasTargetPrice) {
+              // Bypass modal and deliver store device directly to inventory with ONE CLICK
+              handleStoreDelivery();
+          } else {
+              setShowPreDeliveryCheckModal(true);
+          }
+      } else {
+          if (!hasPendingRequests && !isCanceled && !isPart) {
+              setShowDeliveryModal(true);
+          } else {
+              setShowPreDeliveryCheckModal(true);
+          }
+      }
   };
 
   return (
     <div className="p-4 max-w-[1600px] mx-auto pb-24 font-sans bg-slate-50 min-h-screen">
         {/* Modals */}
         {showReturnModal && <UnrepairableModal onConfirm={handleRequestReturn} onCancel={() => setShowReturnModal(false)} />}
-        {showPointsModal && <PointsRequestModal users={users} currentUser={currentUser} onConfirm={handleSubmitPoints} onCancel={() => setShowPointsModal(false)} isSubmitting={isSubmittingPoints} />}
+        {showPointsModal && <PointsRequestModal users={users} currentUser={currentUser} orderType={order.orderType} onConfirm={handleSubmitPoints} onCancel={() => setShowPointsModal(false)} isSubmitting={isSubmittingPoints} />}
         {showAssignModal && <AssignTechModal users={users} onClose={() => setShowAssignModal(false)} onConfirm={handleAssign} />}
         {showExternalModal && <ExternalRepairModal onClose={() => setShowExternalModal(false)} onConfirm={handleExternal} />}
         {showConfirmApproval && (
@@ -1036,8 +1190,25 @@ export const OrderDetails: React.FC = () => {
                 alreadyPaid={(order.payments || []).reduce((acc, p) => acc + p.amount, 0)}
                 onConfirm={async (payments, printWindow) => {
                     console.log("--- INICIO onConfirm (OrderDetails) ---");
+                    if (isProcessing) return;
+                    setIsProcessing(true);
                     try {
                         let orderToPrint = order;
+                        
+                        const currentTotal = order.totalAmount ?? (order.finalPrice ?? (order.estimatedCost || 0));
+                        const newTotal = parseFloat(finalPriceInput) || 0;
+                        if (newTotal !== currentTotal) {
+                            await updateOrderDetails(order.id, { totalAmount: newTotal, finalPrice: newTotal });
+                            if (currentUser) {
+                                await auditService.recordLog(
+                                    { id: currentUser.id, name: currentUser.name },
+                                    ActionType.PRICE_UPDATED,
+                                    `Precio actualizado durante ${isDepositMode ? 'abono' : 'entrega'}: $${currentTotal} -> $${newTotal}`,
+                                    order.id
+                                );
+                            }
+                            orderToPrint = { ...order, totalAmount: newTotal, finalPrice: newTotal };
+                        }
 
                         if (isDepositMode) {
                             // Handle Deposit (Abono)
@@ -1054,18 +1225,21 @@ export const OrderDetails: React.FC = () => {
                                 );
                             }
 
-                            orderToPrint = { ...order, payments: [...(order.payments || []), ...payments] };
+                            orderToPrint = { ...orderToPrint, payments: [...(orderToPrint.payments || []), ...payments] };
                             showNotification('success', 'Abono registrado');
                             
                             setShowDeliveryModal(false);
                             setIsDepositMode(false);
                             
                             setTimeout(() => {
-                                try { printInvoice(orderToPrint, printWindow); } catch(e) { console.error(e); }
+                                try { printInvoice(orderToPrint, printWindow, 'INTAKE'); } catch(e) { console.warn(e); }
                             }, 100);
                         } else {
                             // CRITICAL DELIVERY FLOW
-                            const updatedOrder = await finalizeDelivery(order, payments, currentUser!, addPayments, recordOrderLog);
+                            const updatedOrder = await finalizeDelivery(orderToPrint, payments, currentUser!, addPayments, recordOrderLog);
+                            queryClient.invalidateQueries({ queryKey: ['orders'] });
+                            queryClient.invalidateQueries({ queryKey: ['order', order.id] });
+                            await fetchInventory();
                             
                             // Record audit log
                             if (currentUser) {
@@ -1079,44 +1253,48 @@ export const OrderDetails: React.FC = () => {
                             }
 
                             // Construct temp order for printing (since we navigate away)
-                            const allPayments = updatedOrder.payments?.length > (order.payments?.length || 0) 
+                            const allPayments = updatedOrder.payments?.length > (orderToPrint.payments?.length || 0) 
                                 ? updatedOrder.payments 
-                                : [...(order.payments || []), ...payments];
+                                : [...(orderToPrint.payments || []), ...payments];
                             
                             orderToPrint = {
                                 ...updatedOrder,
                                 payments: allPayments
                             };
 
+                            if (orderToPrint.orderType === OrderType.REPAIR || orderToPrint.orderType === OrderType.WARRANTY) {
+                                sendWhatsAppNotification(orderToPrint, OrderStatus.RETURNED);
+                            }
+
                             showNotification('success', 'Orden finalizada y entregada');
                             
                             setShowDeliveryModal(false);
                             setIsDepositMode(false);
 
-                            // NAVIGATE IMMEDIATELY (Prevent Freeze)
-                            navigate('/taller');
+                            // We intentionally do not navigate away so user can see outcome
 
                             setTimeout(() => {
                                 try {
-                                    printInvoice(orderToPrint, printWindow);
+                                    printInvoice(orderToPrint, printWindow, 'FINAL');
                                 } catch (printError) {
-                                    console.error("Error al imprimir:", printError);
+                                    console.warn("Error al imprimir:", printError);
                                 }
                             }, 500);
                         }
 
                     } catch (error: any) {
-                        console.error("Error en proceso de entrega (onConfirm):", error);
+                        console.warn("Error en proceso de entrega (onConfirm):", error);
                         showNotification('error', error.message || 'Error desconocido');
                         if (error.message && (error.message.includes('row-level security') || error.message.includes('RLS'))) {
                             setShowDbFixModal(true);
                         }
                     } finally {
                          console.log("--- FIN onConfirm ---");
+                         setIsProcessing(false);
                     }
                 }}
                 onCancel={() => { setShowDeliveryModal(false); setIsDepositMode(false); }}
-                isSaving={false}
+                isSaving={isProcessing}
                 isReturn={order.status === OrderStatus.REPAIRED && order.returnRequest?.status === 'APPROVED'}
                 isDeposit={isDepositMode}
             />
@@ -1130,6 +1308,12 @@ export const OrderDetails: React.FC = () => {
                         proposalType: type,
                         technicianNotes: (order.technicianNotes || '') + `\n[PROPUESTA]: ${type === 'MONETARY' ? `$${est}` : 'AUTORIZACIÓN'}: ${note}`
                     });
+                    
+                    if (order.orderType === OrderType.REPAIR || order.orderType === OrderType.WARRANTY) {
+                        const updatedOrder = { ...order, status: OrderStatus.WAITING_APPROVAL };
+                        sendWhatsAppNotification(updatedOrder, OrderStatus.WAITING_APPROVAL);
+                    }
+                    
                     setShowProposalModal(false);
                     showNotification('success', 'Propuesta enviada al cliente/monitor');
                 }}
@@ -1179,8 +1363,39 @@ export const OrderDetails: React.FC = () => {
                 </div>
             </div>
             <div className="ml-auto flex gap-2">
-                 <button onClick={() => printSticker(order)} className="bg-white border border-slate-300 text-slate-700 px-4 py-2 rounded-lg font-bold flex items-center gap-2 hover:bg-slate-50"><Smartphone className="w-4 h-4"/> QR</button>
-                 <button onClick={() => printInvoice(order)} className="bg-slate-800 text-white px-6 py-2 rounded-lg font-bold flex items-center gap-2 hover:bg-slate-900"><Printer className="w-4 h-4"/> Recibo</button>
+                 <button 
+                   onClick={handleManualWhatsApp}
+                   title="Enviar WhatsApp Manual"
+                   className="bg-green-50 border border-green-200 text-green-700 px-3 py-2 rounded-lg font-bold flex items-center gap-2 hover:bg-green-100 transition-colors"
+                 >
+                   <MessageSquare className="w-4 h-4"/>
+                 </button>
+                 <button 
+                   onClick={() => printSticker(order)} 
+                   data-track-action="PRINT_QR"
+                   data-track-type="ORDER"
+                   data-track-id={order.id}
+                   className="bg-white border border-slate-300 text-slate-700 px-4 py-2 rounded-lg font-bold flex items-center gap-2 hover:bg-slate-50"
+                 >
+                   <Smartphone className="w-4 h-4"/> Etiqueta
+                 </button>
+                 <button 
+                   onClick={() => printInvoice(order, null, 'INTAKE')} 
+                   data-track-action="PRINT_INVOICE"
+                   data-track-type="ORDER"
+                   data-track-id={order.id}
+                   className="bg-slate-800 text-white px-6 py-2 rounded-lg font-bold flex items-center gap-2 hover:bg-slate-900"
+                 >
+                   <Printer className="w-4 h-4"/> Recibo
+                 </button>
+                 {(order.status === OrderStatus.REPAIRED || order.status === OrderStatus.RETURNED) && (
+                   <button 
+                     onClick={() => printInvoice(order, null, 'FINAL')} 
+                     className="bg-blue-600 text-white px-6 py-2 rounded-lg font-bold flex items-center gap-2 hover:bg-blue-700"
+                   >
+                     <Printer className="w-4 h-4"/> Factura
+                   </button>
+                 )}
             </div>
         </div>
 
@@ -1200,6 +1415,55 @@ export const OrderDetails: React.FC = () => {
         )}
 
         {/* Layout Grid */}
+        {order.orderType === OrderType.PART_ONLY ? (
+            <div className="bg-white rounded-3xl p-8 border border-slate-200 shadow-sm max-w-4xl mx-auto mt-6">
+                <div className="mb-8 border-b border-slate-100 pb-6 flex items-center justify-between">
+                    <div>
+                        <h2 className="text-2xl font-black text-slate-800 tracking-tight flex items-center gap-3">
+                            <ShoppingBag className="w-6 h-6 text-emerald-500" />
+                            Factura de Venta POS
+                        </h2>
+                        <p className="text-slate-500 mt-1 font-medium select-all">Factura generada el {new Date(order.createdAt).toLocaleString()}</p>
+                    </div>
+                    <div className="text-right">
+                        <span className="text-4xl font-black text-emerald-600">${order.totalAmount?.toLocaleString()}</span>
+                        <p className="text-xs font-bold text-slate-400 uppercase mt-1">Monto Cobrado</p>
+                    </div>
+                </div>
+                
+                <div className="mb-8 space-y-4">
+                    <h3 className="text-sm font-black text-slate-800 uppercase tracking-wider flex items-center gap-2">
+                        <Tag className="w-4 h-4 text-slate-400" /> Artículos Vendidos
+                    </h3>
+                    <div className="bg-slate-50 rounded-2xl border border-slate-200 overflow-hidden text-sm">
+                        {order.expenses && order.expenses.length > 0 ? (
+                            order.expenses.map((exp: any, i: number) => (
+                                <div key={i} className="flex justify-between items-center p-4 border-b border-slate-200 last:border-0 hover:bg-white transition-colors">
+                                    <div className="pr-4">
+                                        <p className="font-bold text-slate-800">{exp.description}</p>
+                                        {(exp.partId || exp.item_id) && <p className="text-xs text-slate-400 font-mono mt-0.5 select-all">SKU: {exp.partId || exp.item_id}</p>}
+                                    </div>
+                                    <div className="font-black text-slate-700 shrink-0">
+                                        ${exp.cost.toLocaleString()}
+                                    </div>
+                                </div>
+                            ))
+                        ) : (
+                            <div className="p-6 text-center text-slate-500 font-medium">No hay detalles de artículos o fue una venta genérica.</div>
+                        )}
+                    </div>
+                </div>
+                
+                <div className="bg-amber-50 rounded-2xl p-6 border border-amber-200 text-amber-800">
+                    <h4 className="font-bold mb-2 flex items-center gap-2">
+                        <AlertCircle className="w-5 h-5 opacity-70" /> Información Adicional
+                    </h4>
+                    <p className="text-sm font-medium leading-relaxed opacity-90">
+                        Esta orden corresponde a una venta directa del inventario. No requiere diagnóstico, reparación ni proceso técnico.
+                    </p>
+                </div>
+            </div>
+        ) : (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
             
             {/* LEFT COLUMN (3/12): Image, Ficha & Control Panel */}
@@ -1222,6 +1486,7 @@ export const OrderDetails: React.FC = () => {
                     isAdmin={isAdmin}
                     currentUser={currentUser}
                     canDeliver={canDeliver}
+                    canDeliverStoreOrders={canDeliverStoreOrders}
                     onReturn={() => setShowReturnModal(true)}
                     onDeliver={handleDeliverCheck}
                     onAssign={() => setShowAssignModal(true)}
@@ -1271,6 +1536,7 @@ export const OrderDetails: React.FC = () => {
                     onStepClick={(s) => (isTech || isAdmin) && !isMonitor ? handleStatusChange(s) : null} 
                     disabled={(!isTech && !isAdmin) || isMonitor} 
                     isReturn={order.returnRequest?.status === RequestStatus.APPROVED || order.returnRequest?.status === RequestStatus.PENDING}
+                    orderType={order.orderType as OrderType}
                 />
 
                 {/* 4. NOTES ONLY (Chat Removed) */}
@@ -1291,6 +1557,7 @@ export const OrderDetails: React.FC = () => {
                             setFinalPriceInput={setFinalPriceInput}
                             canViewAccounting={canViewAccounting}
                             canEdit={canEditExpenses}
+                            canEditPrice={canEditPrice}
                             onAddExpense={handleAddExpense}
                             onAddExpenses={handleAddExpenses}
                             onRemoveExpense={handleRemoveExpense}
@@ -1306,6 +1573,7 @@ export const OrderDetails: React.FC = () => {
                 </div>
             </div>
         </div>
+        )}
         {showExternalModal && (
             <ExternalRepairModal 
                 onClose={() => setShowExternalModal(false)}
@@ -1339,6 +1607,62 @@ export const OrderDetails: React.FC = () => {
                 onConfirm={handleConfirmWarranty}
                 onCancel={() => setShowWarrantyModal(false)}
             />
+        )}
+        
+        {isWhatsAppVisualizerOpen && order && (
+          <WhatsAppVisualizer
+            lead={order}
+            onClose={() => setIsWhatsAppVisualizerOpen(false)}
+            onSendMessage={async (text) => {
+              const phone = order.customer?.phone?.replace(/\D/g, '');
+              let messageSentStatus = 'sent';
+              
+              if (phone) {
+                const wsPhone = phone.length === 10 ? `1${phone}` : phone;
+                try {
+                  const response = await fetch('/api/notifications/whatsapp', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      phone: wsPhone,
+                      message: text,
+                      orderId: order.id
+                    })
+                  });
+                  const result = await response.json();
+                  if (!response.ok || !result.success) {
+                    console.error('Failed to send WhatsApp message via API:', result.error);
+                    messageSentStatus = 'failed';
+                    alert(`Error al enviar mensaje: ${result.error || 'Problema de conexión'}`);
+                  }
+                } catch (error) {
+                  console.error('Error sending WhatsApp message:', error);
+                  messageSentStatus = 'failed';
+                  alert('Error al enviar el mensaje. Revisa tu conexión.');
+                }
+              } else {
+                messageSentStatus = 'failed';
+              }
+  
+              const currentMetadata = order.metadata || {};
+              const currentHistory = currentMetadata.whatsappHistory || [];
+              
+              const newMessage = {
+                id: Date.now().toString(),
+                sender: 'seller',
+                text: text,
+                timestamp: new Date().toISOString(),
+                status: messageSentStatus
+              };
+              
+              const updatedMetadata = { 
+                ...currentMetadata, 
+                whatsappHistory: [...currentHistory, newMessage]
+              };
+              
+              await updateOrderDetails(order.id, { metadata: updatedMetadata });
+            }}
+          />
         )}
     </div>
   );

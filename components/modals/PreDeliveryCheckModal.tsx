@@ -58,10 +58,10 @@ export const PreDeliveryCheckModal: React.FC<PreDeliveryCheckModalProps> = ({ or
                         {allPassed ? <ShieldCheck className="w-10 h-10 text-white" /> : <AlertTriangle className="w-10 h-10 text-white" />}
                     </div>
                     <h2 className="text-2xl font-black tracking-tight">
-                        {allPassed ? '¡Lista para Entregar!' : 'Revisión Requerida'}
+                        {allPassed ? (isStore ? '¡Lista para Entregar a Inventario!' : '¡Lista para Entregar!') : 'Revisión Requerida'}
                     </h2>
                     <p className="opacity-90 text-sm mt-2 font-medium">
-                        {allPassed ? 'Todos los requisitos se cumplen correctamente.' : 'Resuelve los siguientes problemas antes de entregar.'}
+                        {allPassed ? (isStore ? 'Todos los requisitos técnicos y de inventario se cumplen.' : 'Todos los requisitos se cumplen correctamente.') : 'Resuelve los siguientes problemas antes de entregar.'}
                     </p>
                 </div>
 
@@ -117,7 +117,7 @@ export const PreDeliveryCheckModal: React.FC<PreDeliveryCheckModalProps> = ({ or
                             onClick={onProceed}
                             className="flex-1 px-4 py-3.5 text-sm font-bold text-white bg-green-600 rounded-xl hover:bg-green-700 transition-all flex items-center justify-center gap-2 shadow-lg shadow-green-200 hover:shadow-xl hover:-translate-y-0.5"
                         >
-                            Confirmar Entrega <ChevronRight className="w-5 h-5" />
+                            {isStore ? 'Confirmar Entrega a Inventario' : 'Confirmar Entrega'} <ChevronRight className="w-5 h-5" />
                         </button>
                     )}
                 </div>

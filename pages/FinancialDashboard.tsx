@@ -17,7 +17,7 @@ import { NewIncomeModal } from '../components/accounting/NewIncomeModal';
 import { ManageCategoriesModal } from '../components/accounting/ManageCategoriesModal';
 import { ConsolidateExpenseModal } from '../components/accounting/ConsolidateExpenseModal';
 import { PendingExpenseDetailsModal } from '../components/accounting/PendingExpenseDetailsModal';
-import { Plus, Sparkles, MessageSquare, X, ShieldAlert, Tag, CheckCircle2, TrendingUp, Lock, Camera, Loader2, FileText } from 'lucide-react';
+import { Plus, Sparkles, MessageSquare, X, ShieldAlert, Tag, CheckCircle2, TrendingUp, Lock, Camera, Loader2, FileText, Calendar } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../services/supabase';
@@ -39,6 +39,10 @@ export const FinancialDashboard: React.FC = () => {
   const [isChatLoading, setIsChatLoading] = useState(false);
   const [selectedPendingExpense, setSelectedPendingExpense] = useState<any | null>(null);
 
+  // Global Date Filters
+  const [globalStartDate, setGlobalStartDate] = useState('');
+  const [globalEndDate, setGlobalEndDate] = useState('');
+
   // Security Check
   if (currentUser?.role !== UserRole.ADMIN && !currentUser?.permissions?.canViewAccounting) {
     return (
@@ -52,25 +56,30 @@ export const FinancialDashboard: React.FC = () => {
     );
   }
 
+  const dateFilters = {
+    startDate: globalStartDate || undefined,
+    endDate: globalEndDate || undefined
+  };
+
   // Queries
   const { data: kpis, isLoading: kpisLoading } = useQuery({
-    queryKey: ['financialKPIs'],
-    queryFn: accountingService.getKPIs
+    queryKey: ['financialKPIs', dateFilters],
+    queryFn: () => accountingService.getKPIs(dateFilters)
   });
 
   const { data: cashflow, isLoading: cashflowLoading } = useQuery({
-    queryKey: ['cashflow'],
-    queryFn: accountingService.getCashflow
+    queryKey: ['cashflow', dateFilters],
+    queryFn: () => accountingService.getCashflow(dateFilters)
   });
 
   const { data: expenses, isLoading: expensesLoading } = useQuery({
-    queryKey: ['expensesDistribution'],
-    queryFn: accountingService.getExpenseDistribution
+    queryKey: ['expensesDistribution', dateFilters],
+    queryFn: () => accountingService.getExpenseDistribution(dateFilters)
   });
 
   const { data: transactions, isLoading: transactionsLoading } = useQuery({
-    queryKey: ['transactions'],
-    queryFn: () => accountingService.getTransactions({ status: TransactionStatus.COMPLETED })
+    queryKey: ['transactions', dateFilters],
+    queryFn: () => accountingService.getTransactions({ status: TransactionStatus.COMPLETED, ...dateFilters })
   });
 
   const { data: pendingExpenses, isLoading: pendingLoading } = useQuery({
@@ -102,7 +111,10 @@ export const FinancialDashboard: React.FC = () => {
         auditService.recordLog(
           currentUser,
           ActionType.TRANSACTION_EDITED,
-          `Gasto consolidado: ${variables.description} (ID: ${variables.id})`
+          `Gasto consolidado: ${variables.description} (ID: ${variables.id})`,
+          undefined,
+          'TRANSACTION',
+          variables.id
         );
       }
     }
@@ -125,7 +137,10 @@ export const FinancialDashboard: React.FC = () => {
         auditService.recordLog(
           currentUser,
           ActionType.TRANSACTION_EDITED,
-          `Gasto rechazado/cancelado (ID: ${id})`
+          `Gasto rechazado/cancelado (ID: ${id})`,
+          undefined,
+          'TRANSACTION',
+          id
         );
       }
     }
@@ -185,6 +200,34 @@ export const FinancialDashboard: React.FC = () => {
           <p className="text-slate-500 font-medium">Dashboard Contable & Proyecciones AI</p>
         </div>
         <div className="flex flex-wrap gap-3">
+          <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-xl px-3 py-2 shadow-sm mr-2">
+            <Calendar className="w-4 h-4 text-slate-400" />
+            <input 
+              type="date" 
+              className="bg-transparent text-sm font-bold text-slate-600 outline-none w-32"
+              value={globalStartDate}
+              onChange={e => setGlobalStartDate(e.target.value)}
+              title="Fecha Inicio"
+            />
+            <span className="text-slate-300 text-sm">-</span>
+            <input 
+              type="date" 
+              className="bg-transparent text-sm font-bold text-slate-600 outline-none w-32"
+              value={globalEndDate}
+              onChange={e => setGlobalEndDate(e.target.value)}
+              title="Fecha Fin"
+            />
+            {(globalStartDate || globalEndDate) && (
+              <button 
+                onClick={() => { setGlobalStartDate(''); setGlobalEndDate(''); }}
+                className="p-1 hover:bg-slate-100 rounded-full text-slate-400 hover:text-slate-600 transition-colors"
+                title="Limpiar fechas"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+
           <button 
             onClick={() => setIsVaultPinModalOpen(true)}
             className="px-4 py-2.5 bg-slate-900 border border-slate-800 text-white rounded-xl font-bold shadow-sm hover:bg-slate-800 transition flex items-center gap-2"
@@ -215,7 +258,7 @@ export const FinancialDashboard: React.FC = () => {
           </button>
           <button 
             onClick={() => setIsModalOpen(true)}
-            className="px-5 py-2.5 bg-slate-900 text-white rounded-xl font-bold shadow-lg shadow-slate-900/20 hover:bg-slate-800 transition active:scale-95 flex items-center gap-2"
+            className="px-5 py-2.5 bg-gradient-to-r from-red-500 to-rose-600 text-white rounded-xl font-bold shadow-lg shadow-red-500/30 hover:from-red-600 hover:to-rose-700 transition active:scale-95 flex items-center gap-2"
           >
             <Plus className="w-5 h-5" />
             Nuevo Gasto

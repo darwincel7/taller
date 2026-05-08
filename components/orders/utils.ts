@@ -5,6 +5,9 @@ export const getTimeLeft = (deadline: number, status?: OrderStatus) => {
     if (status && (status === OrderStatus.RETURNED || status === OrderStatus.REPAIRED || status === OrderStatus.CANCELED)) {
         return { text: 'Finalizado', color: 'text-slate-400', bg: 'bg-slate-50', urgent: false };
     }
+    if (!deadline || deadline === 0) {
+        return { text: 'Sin fecha', color: 'text-slate-500', bg: 'bg-slate-100', urgent: false };
+    }
     const now = Date.now();
     const diff = deadline - now;
     const isOverdue = diff < 0;

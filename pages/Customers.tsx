@@ -67,7 +67,7 @@ export const Customers: React.FC = () => {
         (!o.customerId && o.customer.phone.replace(/\D/g, '') === c.phone.replace(/\D/g, ''))
       );
 
-      const totalSpent = customerOrders.reduce((sum, o) => sum + (o.finalPrice || 0), 0);
+      const totalSpent = customerOrders.reduce((sum, o) => sum + (o.totalAmount ?? (o.finalPrice || 0)), 0);
       const activeOrders = customerOrders.filter(o => o.status !== OrderStatus.RETURNED && o.status !== OrderStatus.CANCELED).length;
       const lastOrderDate = customerOrders.length > 0 ? Math.max(...customerOrders.map(o => o.createdAt)) : 0;
 
@@ -367,7 +367,7 @@ export const Customers: React.FC = () => {
                         </div>
                       </div>
                       <div className="text-right flex sm:flex-col items-center sm:items-end justify-between sm:justify-center">
-                        <span className="font-black text-slate-800">{formatCurrency(order.finalPrice || 0)}</span>
+                        <span className="font-black text-slate-800">{formatCurrency(order.totalAmount ?? (order.finalPrice || 0))}</span>
                         <a href={`#/orders/${order.id}`} className="text-xs font-bold text-blue-600 hover:text-blue-700 mt-1 flex items-center gap-1">
                           Ver detalle <ChevronRight className="w-3 h-3" />
                         </a>

@@ -6,6 +6,7 @@ import { useInventory } from '../contexts/InventoryContext';
 import { useAuth } from '../contexts/AuthContext';
 import { auditService } from '../services/auditService';
 import { InventoryUsageModal } from './modals/InventoryUsageModal';
+import { InventorySelectorModal } from './modals/InventorySelectorModal';
 import { AddExpenseModal } from './orders/AddExpenseModal';
 import { FloatingExpensesModal } from './orders/FloatingExpensesModal';
 import { supabase } from '../services/supabase';
@@ -19,11 +20,12 @@ interface OrderFinancialsProps {
   finalPriceInput: string;
   setFinalPriceInput: (val: string) => void;
   isSaving: boolean;
-  onAddExpense: (desc: string, amount: number, receiptUrl?: string, sharedReceiptId?: string, readableId?: number, isExternal?: boolean, closingId?: string, createdAt?: string, invoiceNumber?: string, isDuplicate?: boolean) => Promise<void>;
-  onAddExpenses?: (expensesToAdd: {desc: string, amount: number, receiptUrl?: string, sharedReceiptId?: string, readableId?: number, isExternal?: boolean, closingId?: string, createdAt?: string, invoiceNumber?: string, isDuplicate?: boolean}[]) => Promise<void>;
+  onAddExpense: (desc: string, amount: number, receiptUrl?: string, sharedReceiptId?: string, readableId?: number, isExternal?: boolean, closingId?: string, createdAt?: string, invoiceNumber?: string, vendor?: string, isDuplicate?: boolean, createdBy?: string, isInventory?: boolean, branchId?: string) => Promise<void>;
+  onAddExpenses?: (expensesToAdd: {desc: string, amount: number, receiptUrl?: string, sharedReceiptId?: string, readableId?: number, isExternal?: boolean, closingId?: string, createdAt?: string, invoiceNumber?: string, vendor?: string, isDuplicate?: boolean, createdBy?: string, isInventory?: boolean, branchId?: string}[]) => Promise<void>;
   onRemoveExpense: (id: string) => Promise<void>;
   onEditExpense: (id: string, newDesc: string, newAmount: number) => Promise<void>;
   canEdit: boolean;
+  canEditPrice?: boolean;
   onPermissionError?: () => void;
 }
 
@@ -40,6 +42,7 @@ export const OrderFinancials: React.FC<OrderFinancialsProps> = ({
   onRemoveExpense,
   onEditExpense,
   canEdit,
+  canEditPrice = canEdit,
   onPermissionError
 }) => {
   const { updateOrderDetails, showNotification, recordOrderLog } = useOrders();
@@ -86,10 +89,6 @@ export const OrderFinancials: React.FC<OrderFinancialsProps> = ({
       const val = order.targetPrice ?? 0;
       return isNaN(val) ? '0' : val.toString();
   });
-  const [totalAmountInput, setTotalAmountInput] = useState(() => {
-      const val = order.totalAmount ?? order.estimatedCost ?? 0;
-      return isNaN(val) ? '0' : val.toString();
-  });
 
   const triggerError = () => {
       if (onPermissionError) onPermissionError();
@@ -132,8 +131,8 @@ export const OrderFinancials: React.FC<OrderFinancialsProps> = ({
       setExpenseAmount('');
   };
 
-  const handleAddSimpleExpense = async (desc: string, amount: number, receiptUrl: string, invoiceNumber?: string) => {
-      await onAddExpense(desc, amount, receiptUrl, undefined, undefined, undefined, undefined, undefined, invoiceNumber);
+  const handleAddSimpleExpense = async (desc: string, amount: number, receiptUrl: string, invoiceNumber?: string, vendor?: string, isDuplicate?: boolean) => {
+      await onAddExpense(desc, amount, receiptUrl, undefined, undefined, undefined, undefined, undefined, invoiceNumber, vendor, isDuplicate);
       showNotification('success', 'Gasto registrado con factura.');
   };
 
@@ -142,55 +141,81 @@ export const OrderFinancials: React.FC<OrderFinancialsProps> = ({
       floatingExpenses: { desc: string; amount: number }[],
       receiptUrl: string,
       sharedReceiptId: string,
-      invoiceNumber?: string
+      invoiceNumber?: string,
+      vendor?: string,
+      isDuplicate?: boolean
   ) => {
       // 1. Add to current order
       if (currentOrderExpenses.length > 0) {
           if (onAddExpenses) {
-              const expensesToAdd = currentOrderExpenses.map(exp => ({
+              const expensesToAdd = currentOrderExpenses.map((exp, index) => ({
                   desc: exp.desc,
                   amount: exp.amount,
                   receiptUrl,
                   sharedReceiptId,
-                  invoiceNumber
+                  invoiceNumber,
+                  vendor,
+                  isDuplicate: isDuplicate || index > 0
               }));
               await onAddExpenses(expensesToAdd);
           } else {
-              for (const exp of currentOrderExpenses) {
-                  await onAddExpense(exp.desc, exp.amount, receiptUrl, sharedReceiptId, undefined, undefined, undefined, undefined, invoiceNumber);
+              for (let i = 0; i < currentOrderExpenses.length; i++) {
+                  const exp = currentOrderExpenses[i];
+                  await onAddExpense(exp.desc, exp.amount, receiptUrl, sharedReceiptId, undefined, undefined, undefined, undefined, invoiceNumber, vendor, isDuplicate || i > 0);
               }
           }
       }
 
       // 2. Add to floating expenses
       if (floatingExpenses.length > 0) {
-          const floatingData = floatingExpenses.map(exp => ({
-              description: exp.desc,
-              amount: exp.amount,
-              receipt_url: receiptUrl || null,
-              shared_receipt_id: sharedReceiptId || null,
-              created_by: currentUser?.id || null,
-              branch_id: order.currentBranch || 'T4',
-              invoice_number: invoiceNumber || null
-          }));
+          let savedCount = 0;
+          let errors: string[] = [];
+          
+          for (let i = 0; i < floatingExpenses.length; i++) {
+              const exp = floatingExpenses[i];
+              try {
+                  const floatingData = {
+                      description: exp.desc,
+                      amount: exp.amount,
+                      receipt_url: receiptUrl || null,
+                      shared_receipt_id: sharedReceiptId || null,
+                      created_by: currentUser?.id || null,
+                      branch_id: order.currentBranch || 'T4',
+                      invoice_number: invoiceNumber || null,
+                      vendor: vendor || null,
+                      is_duplicate: isDuplicate || currentOrderExpenses.length > 0 || i > 0
+                  };
 
-          const { error } = await supabase.from('floating_expenses').insert(floatingData);
-          if (error) {
-              console.error("Error inserting floating expenses:", error);
-              showNotification('error', `Error al guardar: ${error.message}`);
-          } else if (currentUser) {
-              // Log creation of floating expenses
-              for (const exp of floatingExpenses) {
-                  await auditService.recordLog(
-                      { id: currentUser.id, name: currentUser.name },
-                      'CREATE_FLOATING_EXPENSE',
-                      `Creó gasto flotante (desde Factura Compartida): ${exp.desc} ($${exp.amount})`
-                  );
+                  const { error } = await supabase.from('floating_expenses').insert([floatingData]);
+                  if (error) throw error;
+                  
+                  if (currentUser) {
+                      await auditService.recordLog(
+                          { id: currentUser.id, name: currentUser.name },
+                          'CREATE_EXPENSE',
+                          `Creó gasto flotante (desde Factura Compartida): ${exp.desc} (${exp.amount})`,
+                          undefined,
+                          'TRANSACTION',
+                          sharedReceiptId
+                      );
+                  }
+                  savedCount++;
+              } catch (err: any) {
+                  console.warn("Error inserting floating expense:", err);
+                  errors.push(`${exp.desc}: ${err.message || 'Error desconocido'}`);
               }
+          }
+          
+          if (errors.length > 0) {
+              alert(`Se guardaron ${savedCount} de ${floatingExpenses.length} gastos flotantes.\nErrores:\n${errors.join('\n')}`);
+          } else {
+              alert(`Se guardaron correctamente los ${savedCount} gastos flotantes.`);
           }
       }
 
-      showNotification('success', 'Factura compartida registrada correctamente.');
+      if (currentOrderExpenses.length > 0 && floatingExpenses.length === 0) {
+          // The alert is already handled by onAddExpenses
+      }
   };
 
   const handleSelectPart = (part: InventoryPart) => {
@@ -206,19 +231,43 @@ export const OrderFinancials: React.FC<OrderFinancialsProps> = ({
   const confirmInventoryUsage = async (mode: 'UNIT' | 'FRACTION', amount?: number) => {
       if (!selectedPart) return;
 
+      const { data: userData } = await supabase.auth.getUser();
+      const userName = userData.user?.user_metadata?.name || userData.user?.email || 'Sistema';
+
       if (mode === 'FRACTION' && amount) {
           // LOGICA PARCIAL (DIVIDIR)
           const newCost = selectedPart.cost - amount;
           await updateInventoryPart(selectedPart.id, { cost: newCost });
           
-          onAddExpense(`Parte de ${selectedPart.name}`, amount);
+          await supabase.from('audit_logs').insert([{
+              action: 'INVENTORY_EXTRACTION',
+              details: `[INV_ID: ${selectedPart.id}] Extracción Fraccionada: $${amount} de ${selectedPart.name} para Orden #${order.readable_id || order.id.slice(-4)}`,
+              user_id: userData.user?.id,
+              user_name: userName,
+              order_id: order.id,
+              created_at: Date.now()
+          }]);
+
+          onAddExpense(`Parte de ${selectedPart.name}`, amount, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, true);
           showNotification('success', `Repuesto particionado. Nuevo valor en inventario: $${newCost}`);
 
       } else if (mode === 'UNIT') {
           // LOGICA ESTANDAR (Unidad completa)
           if (selectedPart.stock > 0) {
+              // We don't use consumePart here directly because we don't have it in props, 
+              // but we can just do the update and log it here.
               await updateInventoryPart(selectedPart.id, { stock: selectedPart.stock - 1 });
-              onAddExpense(selectedPart.name, selectedPart.cost); 
+              
+              await supabase.from('audit_logs').insert([{
+                  action: 'INVENTORY_EXTRACTION',
+                  details: `[INV_ID: ${selectedPart.id}] Extracción: 1x ${selectedPart.name} ($${selectedPart.cost}) para Orden #${order.readable_id || order.id.slice(-4)}`,
+                  user_id: userData.user?.id,
+                  user_name: userName,
+                  order_id: order.id,
+                  created_at: Date.now()
+              }]);
+
+              onAddExpense(selectedPart.name, selectedPart.cost, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, true); 
           } else {
               alert("No hay stock de esta pieza.");
           }
@@ -227,7 +276,7 @@ export const OrderFinancials: React.FC<OrderFinancialsProps> = ({
   };
 
   const handleStoreFinancialUpdate = async () => {
-      if (!canEdit) {
+      if (!canEditPrice) {
           triggerError();
           return;
       }
@@ -263,14 +312,14 @@ export const OrderFinancials: React.FC<OrderFinancialsProps> = ({
   };
 
   const handleClientPriceBlur = () => {
-      if (!canEdit) {
+      if (!canEditPrice) {
           triggerError();
           return;
       }
       
       // CHECK IF PRICE CHANGED
       const newPrice = parseFloat(finalPriceInput);
-      const currentPrice = order.finalPrice > 0 ? order.finalPrice : order.estimatedCost;
+      const currentPrice = order.totalAmount ?? (order.finalPrice !== undefined && order.finalPrice > 0 ? order.finalPrice : order.estimatedCost);
       
       if (!isNaN(newPrice) && newPrice !== currentPrice) {
           const reason = window.prompt("⚠️ AUDITORÍA REQUERIDA:\n\nEstá modificando el precio final de la orden.\nPor favor, ingrese el motivo del cambio (Error, Descuento, etc):");
@@ -287,7 +336,7 @@ export const OrderFinancials: React.FC<OrderFinancialsProps> = ({
       }
   };
 
-  const currentTotalExpenses = expensesList.reduce((sum, item) => sum + item.amount, 0);
+  const currentTotalExpenses = expensesList.reduce((sum, item) => sum + (Number(item.amount) || 0), 0) + (order.partsCost || 0);
   
   // Logic for CLIENT REPAIR
   const totalToCharge = parseFloat(finalPriceInput) || 0;
@@ -358,26 +407,16 @@ export const OrderFinancials: React.FC<OrderFinancialsProps> = ({
             </div>
         )}
 
-        {/* --- INVENTORY SELECTOR --- */}
+        {/* --- INVENTORY SELECTOR MODAL --- */}
         {showInventorySelect && (
-            <div className="mb-3 p-2 bg-slate-50 border border-blue-100 rounded-lg max-h-32 overflow-y-auto animate-in slide-in-from-top-2 shadow-inner">
-                <div className="space-y-1">
-                    {inventory.map(part => (
-                        <button 
-                            key={part.id}
-                            type="button"
-                            onClick={() => handleSelectPart(part)}
-                            className="w-full text-left text-[10px] p-1.5 hover:bg-white rounded flex justify-between items-center border border-transparent hover:border-slate-200 transition-all group"
-                        >
-                            <span className="font-medium text-slate-700">{part.name}</span>
-                            <div className="flex items-center gap-2">
-                                <span className="font-mono font-bold text-slate-500 bg-white px-1 py-0.5 rounded border border-slate-200">${part.cost}</span>
-                                <Scissors className="w-3 h-3 text-slate-300 group-hover:text-blue-400" />
-                            </div>
-                        </button>
-                    ))}
-                </div>
-            </div>
+            <InventorySelectorModal
+                inventory={inventory}
+                onSelect={(part) => {
+                    handleSelectPart(part);
+                    setShowInventorySelect(false);
+                }}
+                onClose={() => setShowInventorySelect(false)}
+            />
         )}
         
         {/* --- EXPENSE LIST --- */}
@@ -459,7 +498,7 @@ export const OrderFinancials: React.FC<OrderFinancialsProps> = ({
                         className="flex-1 bg-amber-50 text-amber-600 border border-amber-200 p-2 rounded-lg flex items-center justify-center gap-2 hover:bg-amber-100 transition shadow-sm font-bold text-xs relative"
                     >
                         <Download className="w-4 h-4"/> 
-                        Asignar gasto de caja
+                        Gastos Flotantes
                         {floatingCount > 0 && (
                             <span className="absolute -top-1 -right-1 bg-red-600 text-white text-[8px] w-4 h-4 rounded-full flex items-center justify-center animate-bounce shadow-lg border border-white">
                                 {floatingCount}
@@ -509,7 +548,7 @@ export const OrderFinancials: React.FC<OrderFinancialsProps> = ({
             <FloatingExpensesModal 
                 onClose={() => setShowFloatingExpensesModal(false)}
                 onAssign={async (floatingExp) => {
-                    await onAddExpense(floatingExp.description, floatingExp.amount, floatingExp.receipt_url, floatingExp.shared_receipt_id, floatingExp.readable_id, true, floatingExp.closing_id, floatingExp.created_at, floatingExp.invoice_number, floatingExp.is_duplicate);
+                    await onAddExpense(floatingExp.description, floatingExp.amount, floatingExp.receipt_url, floatingExp.shared_receipt_id, floatingExp.readable_id, true, floatingExp.closing_id, floatingExp.created_at, floatingExp.invoice_number, floatingExp.vendor, floatingExp.is_duplicate, floatingExp.created_by, false, floatingExp.branch_id);
                     if (recordOrderLog) {
                         await recordOrderLog(
                             order.id,
@@ -666,7 +705,7 @@ export const OrderFinancials: React.FC<OrderFinancialsProps> = ({
                                 value={purchaseCostInput}
                                 onChange={e => setPurchaseCostInput(e.target.value)}
                                 onBlur={handleStoreFinancialUpdate}
-                                readOnly={!canEdit}
+                                readOnly={!canEditPrice}
                             />
                         </div>
                     )}
@@ -678,7 +717,7 @@ export const OrderFinancials: React.FC<OrderFinancialsProps> = ({
                             value={targetPriceInput}
                             onChange={e => setTargetPriceInput(e.target.value)}
                             onBlur={handleStoreFinancialUpdate}
-                            readOnly={!canEdit}
+                            readOnly={!canEditPrice}
                         />
                     </div>
                     {canViewAccounting && (
@@ -694,26 +733,7 @@ export const OrderFinancials: React.FC<OrderFinancialsProps> = ({
                 // CLIENT VIEW
                 <div className="space-y-3">
                     <div>
-                        <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">TOTAL DE LA ORDEN (ESTIMADO)</label>
-                        <div className="relative">
-                            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold">$</span>
-                            <input 
-                                type="number"
-                                className="w-full pl-6 p-2 border border-slate-200 rounded text-lg font-bold text-slate-700 bg-slate-50"
-                                value={totalAmountInput}
-                                onChange={e => setTotalAmountInput(e.target.value)}
-                                onBlur={async () => {
-                                    if (!canEdit) return;
-                                    const val = parseFloat(totalAmountInput) || 0;
-                                    await updateOrderDetails(order.id, { totalAmount: val });
-                                }}
-                                readOnly={!canEdit}
-                            />
-                        </div>
-                    </div>
-
-                    <div>
-                        <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">PRECIO SERVICIO FINAL (A COBRAR)</label>
+                        <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">PRECIO A COBRAR</label>
                         <div className="relative">
                             <span className="absolute left-3 top-1/2 -translate-y-1/2 text-blue-400 font-bold text-lg">$</span>
                             <input 
@@ -722,7 +742,7 @@ export const OrderFinancials: React.FC<OrderFinancialsProps> = ({
                                 value={finalPriceInput}
                                 onChange={e => setFinalPriceInput(e.target.value)}
                                 onBlur={handleClientPriceBlur} 
-                                readOnly={!canEdit}
+                                readOnly={!canEditPrice}
                             />
                         </div>
                     </div>

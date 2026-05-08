@@ -26,12 +26,12 @@ export const orderService = {
         // If it's all digits, it could be a readable_id, but it could also be an IMEI or part of an ID.
         // Prevent integer overflow error in PostgREST by checking length. readable_id is typically small.
         if (cleanTerm.length <= 9) {
-          query = query.or(`readable_id.eq.${cleanTerm},id.ilike.%${cleanTerm}%,imei.ilike.%${cleanTerm}%`); 
+          query = query.or(`readable_id.eq.${cleanTerm},id.ilike.%${cleanTerm}%,imei.ilike.%${cleanTerm}%,devicePassword.ilike.%${cleanTerm}%`); 
         } else {
-          query = query.or(`id.ilike.%${cleanTerm}%,imei.ilike.%${cleanTerm}%`);
+          query = query.or(`id.ilike.%${cleanTerm}%,imei.ilike.%${cleanTerm}%,devicePassword.ilike.%${cleanTerm}%`);
         }
       } else {
-        query = query.or(`id.ilike.%${cleanTerm}%,customer->>name.ilike.%${cleanTerm}%,deviceModel.ilike.%${cleanTerm}%,imei.ilike.%${cleanTerm}%`);
+        query = query.or(`id.ilike.%${cleanTerm}%,customer->>name.ilike.%${cleanTerm}%,deviceModel.ilike.%${cleanTerm}%,imei.ilike.%${cleanTerm}%,devicePassword.ilike.%${cleanTerm}%`);
       }
     }
 
@@ -92,7 +92,7 @@ export const orderService = {
     const { data, error } = await query.order('createdAt', { ascending: false }).limit(1).single();
 
     if (error) {
-      console.error("getOrderById error:", error, "for id:", id);
+      console.warn("getOrderById error:", error, "for id:", id);
       throw error;
     }
     return data as RepairOrder;
@@ -136,20 +136,45 @@ export const orderService = {
     if (error) throw error;
   },
 
-  async getOrdersWithPartRequests() {
+  async getOrdersWithPartRequests(filter: 'ALL' | 'PENDING' | 'HISTORY' = 'PENDING') {
     if (!supabase) throw new Error('Supabase client not initialized');
     
-    // Fetch orders where partRequests is not null
-    // Select only necessary columns to improve performance
-    const { data, error } = await supabase
-      .from('orders')
-      .select('id, readable_id, "orderType", "deviceModel", "deviceIssue", "deviceCondition", status, "partRequests", "currentBranch", "purchaseCost", "partsCost", "targetPrice", "estimatedCost", "devicePhoto"')
-      .not('partRequests', 'is', null);
+    const selectColumns = 'id, readable_id, "orderType", "deviceModel", "deviceIssue", "deviceCondition", status, "partRequests", "currentBranch", "purchaseCost", "partsCost", "targetPrice", "estimatedCost", "devicePhoto", createdAt';
 
-    if (error) throw error;
-    
-    // Filter out orders where partRequests is an empty array
-    return (data as RepairOrder[]).filter(o => o.partRequests && o.partRequests.length > 0);
+    if (filter === 'PENDING') {
+      const { data, error } = await supabase
+        .from('orders')
+        .select(selectColumns)
+        .not('partRequests', 'is', null)
+        .contains('partRequests', '[{"status": "PENDING"}]');
+        
+      if (error) throw error;
+      return (data as RepairOrder[]).filter(o => o.partRequests && o.partRequests.length > 0);
+    } else {
+      // For HISTORY or ALL, fetch pending AND recent history to ensure pendingCount remains accurate
+      const [pendingRes, historyRes] = await Promise.all([
+        supabase
+          .from('orders')
+          .select(selectColumns)
+          .not('partRequests', 'is', null)
+          .contains('partRequests', '[{"status": "PENDING"}]'),
+        supabase
+          .from('orders')
+          .select(selectColumns)
+          .not('partRequests', 'is', null)
+          .order('createdAt', { ascending: false })
+          .limit(150)
+      ]);
+
+      if (pendingRes.error) throw pendingRes.error;
+      if (historyRes.error) throw historyRes.error;
+
+      const allData = [...(pendingRes.data || []), ...(historyRes.data || [])];
+      // Deduplicate by ID
+      const uniqueData = Array.from(new Map(allData.map(item => [item.id, item])).values());
+      
+      return (uniqueData as RepairOrder[]).filter(o => o.partRequests && o.partRequests.length > 0);
+    }
   },
 
   async getDashboardStats(): Promise<DashboardStats> {
@@ -169,13 +194,44 @@ export const orderService = {
     };
   },
 
+  async getOrdersByTab(userId: string, branch: string, role: string, tab: 'STORE' | 'PENDING' | 'IN_REPAIR') {
+    if (!supabase) return [];
+    
+    const { data, error } = await supabase
+      .from('orders')
+      .select('*')
+      .not('status', 'in', `(${OrderStatus.RETURNED},${OrderStatus.CANCELED})`);
+
+    if (error || !data) return [];
+
+    const baseList = data.filter(o => {
+        const isMyBranch = o.currentBranch === branch;
+        const isIncomingTransfer = o.transferStatus === 'PENDING' && o.transferTarget === branch;
+        const isMyExternal = o.status === OrderStatus.EXTERNAL && o.originBranch === branch;
+        
+        if (!isMyBranch && !isIncomingTransfer && !isMyExternal) return false;
+        return true;
+    });
+
+    switch (tab) {
+        case 'STORE':
+            return baseList.filter(o => o.orderType === OrderType.STORE);
+        case 'PENDING':
+            return baseList.filter(o => o.status === OrderStatus.PENDING);
+        case 'IN_REPAIR':
+            return baseList.filter(o => o.status === OrderStatus.IN_REPAIR);
+        default:
+            return [];
+    }
+  },
+
   async getOrderTabCounts(userId: string, branch: string, role: string) {
     if (!supabase) return null;
     
     // Fetch minimal data for all active orders to compute counts correctly
     const { data, error } = await supabase
       .from('orders')
-      .select('id, status, "orderType", "assignedTo", "currentBranch", "externalRepair", "transferStatus", "transferTarget", "originBranch"')
+      .select('id, status, "orderType", "assignedTo", "currentBranch", "externalRepair", "transferStatus", "transferTarget", "originBranch", "partRequests", "returnRequest"')
       .not('status', 'in', `(${OrderStatus.RETURNED},${OrderStatus.CANCELED})`);
 
     if (error || !data) return null;
@@ -200,6 +256,15 @@ export const orderService = {
       warranty: baseList.filter(o => o.orderType === OrderType.WARRANTY).length,
       external: baseList.filter(o => o.status === OrderStatus.EXTERNAL || (o.externalRepair?.status === 'PENDING')).length,
       mine: baseList.filter(o => o.assignedTo === userId).length,
+      tech_pending: baseList.filter(o => {
+        if (o.orderType === OrderType.STORE || o.orderType === OrderType.PART_ONLY) return false;
+        if (o.status === OrderStatus.EXTERNAL || o.externalRepair?.status === 'APPROVED' || o.externalRepair?.status === 'PENDING') return false;
+        if (o.status === OrderStatus.WAITING_APPROVAL) return false;
+        if (o.status === OrderStatus.ON_HOLD || (o.partRequests && o.partRequests.some((pr: any) => pr.status === 'PENDING' || pr.status === 'ORDERED' || pr.status === 'DEBATED'))) return false;
+        if (o.status === OrderStatus.REPAIRED || o.status === OrderStatus.RETURNED || o.status === OrderStatus.CANCELED || o.returnRequest?.status === 'PENDING' || o.returnRequest?.status === 'APPROVED') return false;
+        if (o.transferStatus === 'PENDING' || o.currentBranch !== branch) return false;
+        return true;
+      }).length,
       pending: baseList.filter(o => o.status === OrderStatus.PENDING).length,
       inRepair: baseList.filter(o => o.status === OrderStatus.IN_REPAIR).length,
       repaired: baseList.filter(o => o.status === OrderStatus.REPAIRED || o.status === OrderStatus.QC_PENDING).length
@@ -233,10 +298,73 @@ export const orderService = {
     if (!supabase) throw new Error('Supabase client not initialized');
     const { data, error } = await supabase
       .from('orders')
-      .select('customer, status, "finalPrice", "estimatedCost", "createdAt", "deviceIssue"')
+      .select('customer, status, "finalPrice", "estimatedCost", "totalAmount", "createdAt", "deviceIssue", "deviceModel"')
       .order('createdAt', { ascending: false });
     
     if (error) throw error;
     return data as any[];
+  },
+
+  async getLeads() {
+    if (!supabase) throw new Error('Supabase client not initialized');
+    const { data, error } = await supabase
+      .from('orders')
+      .select('*')
+      .eq('orderType', OrderType.LEAD)
+      .order('createdAt', { ascending: false });
+    
+    if (error) throw error;
+    
+    // Unbundle CRM properties from customer JSONB
+    return (data as any[]).map(o => {
+       if (o.customer) {
+         o.customerNotes = o.customer.notes || o.customerNotes;
+         o.salespersonId = o.customer.salespersonId || o.salespersonId;
+         o.salespersonName = o.customer.salespersonName || o.salespersonName;
+         o.metadata = o.customer.metadata || o.metadata;
+         o.lastContactAt = o.customer.lastContactAt || o.lastContactAt;
+         o.followUpSent = o.customer.followUpSent || o.followUpSent;
+         o.reviewSent = o.customer.reviewSent || o.reviewSent;
+       }
+       return o as RepairOrder;
+    });
+  },
+
+  async createLead(lead: Partial<RepairOrder>) {
+    if (!supabase) throw new Error('Supabase client not initialized');
+
+    // Prevent schema errors by bundling new CRM properties into the existing JSONB "customer" column
+    const safeLead: any = { ...lead, orderType: OrderType.LEAD, status: OrderStatus.PENDING };
+    const crmFields = ['customerNotes', 'salespersonId', 'salespersonName', 'metadata', 'lastContactAt', 'followUpSent', 'reviewSent'];
+    
+    const customerObj = { ...(lead.customer || { name: 'Desconocido', phone: '000' }) };
+    for (const field of crmFields) {
+       if (safeLead[field] !== undefined) {
+          customerObj[field === 'customerNotes' ? 'notes' : field] = safeLead[field];
+          delete safeLead[field];
+       }
+    }
+    safeLead.customer = customerObj;
+
+    const { data, error } = await supabase
+      .from('orders')
+      .insert([safeLead])
+      .select()
+      .single();
+    
+    if (error) throw error;
+    
+    // Unbundle on return
+    const created = data as any;
+    if (created.customer) {
+       created.customerNotes = created.customer.notes;
+       created.salespersonId = created.customer.salespersonId;
+       created.salespersonName = created.customer.salespersonName;
+       created.metadata = created.customer.metadata;
+       created.lastContactAt = created.customer.lastContactAt;
+       created.followUpSent = created.customer.followUpSent;
+       created.reviewSent = created.customer.reviewSent;
+    }
+    return created as RepairOrder;
   }
 };

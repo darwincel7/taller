@@ -65,7 +65,7 @@ export const ConsolidateExpenseModal: React.FC<ConsolidateExpenseModalProps> = (
         setOcrText(richText);
       }
     } catch (error) {
-      console.error("Scan failed", error);
+      console.warn("Scan failed", error);
       setScanError("Error al escanear el recibo. Puedes llenar los datos manualmente.");
     } finally {
       setIsScanning(false);
@@ -124,14 +124,17 @@ export const ConsolidateExpenseModal: React.FC<ConsolidateExpenseModalProps> = (
         await auditService.recordLog(
           { id: currentUser.id, name: currentUser.name },
           ActionType.TRANSACTION_EDITED,
-          `Gasto consolidado: ${formData.vendor} - $${Math.abs(expense.amount)} ${expense.readable_id ? `[Ref: #${expense.readable_id}]` : `(ID: ${expense.id})`}`
+          `Gasto consolidado: ${formData.vendor} - $${Math.abs(expense.amount)} ${expense.readable_id ? `[Ref: #${expense.readable_id}]` : `(ID: ${expense.id})`}`,
+          undefined,
+          'TRANSACTION',
+          expense.id
         );
       }
       
       onSuccess();
       onClose();
     } catch (error: any) {
-      console.error("Consolidation error:", error);
+      console.warn("Consolidation error:", error);
       setSubmitError(error.message || "Error al consolidar el gasto.");
     } finally {
       setIsSubmitting(false);

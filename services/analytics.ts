@@ -1,6 +1,6 @@
 
 import { supabase } from './supabase';
-import { DashboardStats, PaymentMethod, OrderStatus } from '../types';
+import { DashboardStats, PaymentMethod, OrderStatus, OrderType } from '../types';
 
 // Extended interface for flattened payments from RPC
 export interface FlatPayment {
@@ -19,6 +19,9 @@ export interface FlatPayment {
     order_model: string;
     order_customer: string;
     order_branch: string;
+    order_type?: OrderType;
+    order_parts_cost?: number;
+    order_expenses?: any;
     closing_id?: string | null; // Added closing_id
     invoice_number?: string | null;
 }
@@ -31,12 +34,21 @@ export const fetchGlobalPayments = async (
     startTs: number | null, 
     endTs: number | null, 
     cashierId: string | null = null, 
-    branch: string | null = null
+    branch: string | null = null,
+    pendingOnly: boolean = false,
+    closingId: string | null = null
 ): Promise<FlatPayment[]> => {
     if (!supabase) return [];
 
     try {
         let allPayments: FlatPayment[] = [];
+
+        // Fetch all users to map created_by to name and branch
+        const { data: usersData, error: usersError } = await supabase.from('users').select('id, name, branch');
+        const usersMap = new Map<string, { name: string, branch: string }>();
+        if (!usersError && usersData) {
+            usersData.forEach(u => usersMap.set(u.id, { name: u.name, branch: u.branch }));
+        }
 
         // 1. Fetch from order_payments
         let opQuery = supabase
@@ -54,21 +66,33 @@ export const fetchGlobalPayments = async (
                 orders (
                     currentBranch,
                     readable_id,
-                    deviceModel
+                    deviceModel,
+                    orderType,
+                    partsCost,
+                    expenses
                 )
-            `);
+            `)
+            .order('created_at', { ascending: false })
+            .limit(50000);
 
-        if (startTs) opQuery = opQuery.gte('created_at', startTs);
-        if (endTs) opQuery = opQuery.lte('created_at', endTs);
+        if (closingId) {
+            opQuery = opQuery.eq('closing_id', closingId);
+        } else if (pendingOnly) {
+            opQuery = opQuery.is('closing_id', null);
+        } else {
+            if (startTs) opQuery = opQuery.gte('created_at', startTs);
+            if (endTs) opQuery = opQuery.lte('created_at', endTs);
+        }
         if (cashierId) opQuery = opQuery.eq('cashier_id', cashierId);
 
         const { data: opData, error: opError } = await opQuery;
 
         if (opError) {
-            console.error("Error fetching order_payments:", opError);
+            console.warn("Error fetching order_payments:", opError);
         } else if (opData) {
             const mappedOp = opData.map((p: any) => {
                 const orderBranch = p.orders?.currentBranch || 'T4';
+                const orderType = p.orders?.orderType as OrderType;
                 return {
                     payment_id: p.id,
                     id: p.id,
@@ -85,13 +109,23 @@ export const fetchGlobalPayments = async (
                     branch: orderBranch,
                     order_readable_id: p.orders?.readable_id || 0,
                     order_model: p.orders?.deviceModel || '',
+                    order_type: orderType,
+                    order_parts_cost: p.orders?.partsCost || 0,
+                    order_expenses: p.orders?.expenses || [],
                     order_customer: '',
                     notes: ''
                 };
             });
             
-            // Filter by branch if provided
-            const filteredOp = branch ? mappedOp.filter(p => p.order_branch === branch) : mappedOp;
+            // Filter out RECIBIDOS (OrderType.STORE) and by branch if provided
+            const filteredOp = mappedOp.filter(p => {
+                // Filter out 'RECIBIDOS' as they are not workshop sales
+                if (p.order_type === OrderType.STORE) return false;
+                // Filter out WARRANTY orders that are not charged
+                if (p.order_type === OrderType.WARRANTY && p.amount <= 0) return false;
+                if (branch && p.order_branch !== branch) return false;
+                return true;
+            });
             allPayments = [...allPayments, ...filteredOp];
         }
 
@@ -114,8 +148,18 @@ export const fetchGlobalPayments = async (
                     order_id,
                     description
                 `)
-                .in('source', ['STORE', 'ORDER', 'FLOATING', 'MANUAL']);
+                .in('source', ['STORE', 'ORDER', 'FLOATING', 'MANUAL'])
+                .order('created_at', { ascending: false })
+                .limit(50000);
 
+            if (closingId) {
+                atQuery = atQuery.eq('closing_id', closingId);
+            } else if (pendingOnly) {
+                atQuery = atQuery.is('closing_id', null);
+            } else {
+                if (startTs) atQuery = atQuery.gte('created_at', new Date(startTs).toISOString());
+                if (endTs) atQuery = atQuery.lte('created_at', new Date(endTs).toISOString());
+            }
             if (cashierId) atQuery = atQuery.eq('created_by', cashierId);
             if (branch) atQuery = atQuery.eq('branch', branch);
 
@@ -141,8 +185,18 @@ export const fetchGlobalPayments = async (
                         order_id,
                         description
                     `)
-                    .in('source', ['STORE', 'ORDER', 'FLOATING', 'MANUAL']);
+                    .in('source', ['STORE', 'ORDER', 'FLOATING', 'MANUAL'])
+                    .order('created_at', { ascending: false })
+                    .limit(50000);
                 
+                if (closingId) {
+                    fallbackQuery = fallbackQuery.eq('closing_id', closingId);
+                } else if (pendingOnly) {
+                    fallbackQuery = fallbackQuery.is('closing_id', null);
+                } else {
+                    if (startTs) fallbackQuery = fallbackQuery.gte('created_at', new Date(startTs).toISOString());
+                    if (endTs) fallbackQuery = fallbackQuery.lte('created_at', new Date(endTs).toISOString());
+                }
                 if (cashierId) fallbackQuery = fallbackQuery.eq('created_by', cashierId);
                 // Cannot filter by branch in fallback
                 
@@ -181,7 +235,14 @@ export const fetchGlobalPayments = async (
                     } else if (at.source === 'MANUAL') {
                         orderId = 'MANUAL_TX';
                         orderModel = 'Transacción Manual';
+                    } else if (at.source === 'ORDER') {
+                        orderId = at.order_id || 'GASTO_LOCAL';
+                        orderModel = 'Gasto Orden';
                     }
+
+                    const user = usersMap.get(at.created_by);
+                    const cashierName = user?.name || 'Cajero';
+                    const orderBranch = at.branch || user?.branch || 'T4';
 
                     return {
                         payment_id: at.id,
@@ -190,24 +251,27 @@ export const fetchGlobalPayments = async (
                         amount: at.amount,
                         method: (at.method || 'CASH') as PaymentMethod,
                         cashier_id: at.created_by || '',
-                        cashier_name: 'Cajero',
+                        cashier_name: cashierName,
                         is_refund: at.amount < 0,
                         created_at: ts,
                         date: ts,
                         closing_id: at.closing_id || null,
-                        order_branch: at.branch || 'T4',
-                        branch: at.branch || 'T4',
+                        order_branch: orderBranch,
+                        branch: orderBranch,
                         order_readable_id: at.readable_id || 0,
                         order_model: orderModel,
                         order_customer: '',
+                        description: at.description || '', // Add description
                         notes: ''
                     };
                 });
 
                 // Filter by date (since created_at is a string in DB, we filter in JS)
                 let filteredAt = mappedAt.filter(p => {
-                    if (startTs && p.date < startTs) return false;
-                    if (endTs && p.date > endTs) return false;
+                    if (!closingId && !pendingOnly) {
+                        if (startTs && p.date < startTs) return false;
+                        if (endTs && p.date > endTs) return false;
+                    }
                     return true;
                 });
                 
@@ -219,7 +283,7 @@ export const fetchGlobalPayments = async (
                 allPayments = [...allPayments, ...filteredAt];
             }
         } catch (e) {
-            console.error("Error fetching accounting_transactions:", e);
+            console.warn("Error fetching accounting_transactions:", e);
         }
 
         // 3. Fetch from floating_expenses (Try with new columns first, fallback to old)
@@ -233,9 +297,20 @@ export const fetchGlobalPayments = async (
                     created_at,
                     closing_id,
                     readable_id,
-                    approval_status
-                `);
+                    approval_status,
+                    branch_id
+                `)
+                .order('created_at', { ascending: false })
+                .limit(50000);
 
+            if (closingId) {
+                feQuery = feQuery.eq('closing_id', closingId);
+            } else if (pendingOnly) {
+                feQuery = feQuery.is('closing_id', null);
+            } else {
+                if (startTs) feQuery = feQuery.gte('created_at', new Date(startTs).toISOString());
+                if (endTs) feQuery = feQuery.lte('created_at', new Date(endTs).toISOString());
+            }
             if (cashierId) feQuery = feQuery.eq('created_by', cashierId);
 
             let feData: any[] | null = null;
@@ -255,8 +330,13 @@ export const fetchGlobalPayments = async (
                         created_by,
                         created_at,
                         approval_status
-                    `);
+                    `)
+                    .order('created_at', { ascending: false })
+                    .limit(50000);
                 
+                // Note: fallback table doesn't have closing_id, so we can't filter by it here
+                if (startTs) fallbackQuery = fallbackQuery.gte('created_at', new Date(startTs).toISOString());
+                if (endTs) fallbackQuery = fallbackQuery.lte('created_at', new Date(endTs).toISOString());
                 if (cashierId) fallbackQuery = fallbackQuery.eq('created_by', cashierId);
                 
                 const fallbackResult = await fallbackQuery;
@@ -268,6 +348,10 @@ export const fetchGlobalPayments = async (
                 const validFeData = feData.filter((fe: any) => fe.approval_status !== 'REJECTED');
                 const mappedFe = validFeData.map((fe: any) => {
                     const ts = new Date(fe.created_at).getTime();
+                    const user = usersMap.get(fe.created_by);
+                    const cashierName = user?.name || 'Gasto Flotante';
+                    const orderBranch = fe.branch_id || user?.branch || 'T4';
+                    
                     return {
                         payment_id: fe.id,
                         id: fe.id,
@@ -275,13 +359,13 @@ export const fetchGlobalPayments = async (
                         amount: -Math.abs(fe.amount),
                         method: 'CASH' as PaymentMethod,
                         cashier_id: fe.created_by || '',
-                        cashier_name: 'Gasto Flotante',
+                        cashier_name: cashierName,
                         is_refund: true,
                         created_at: ts,
                         date: ts,
                         closing_id: fe.closing_id,
-                        order_branch: 'T4', // Default branch for floating expenses
-                        branch: 'T4',
+                        order_branch: orderBranch,
+                        branch: orderBranch,
                         order_readable_id: fe.readable_id || 0,
                         order_model: 'Gasto Flotante',
                         order_customer: '',
@@ -291,8 +375,10 @@ export const fetchGlobalPayments = async (
 
                 // Filter by date and branch
                 const filteredFe = mappedFe.filter(p => {
-                    if (startTs && p.date < startTs) return false;
-                    if (endTs && p.date > endTs) return false;
+                    if (!closingId && !pendingOnly) {
+                        if (startTs && p.date < startTs) return false;
+                        if (endTs && p.date > endTs) return false;
+                    }
                     if (branch && p.order_branch !== branch) return false;
                     return true;
                 });
@@ -300,7 +386,7 @@ export const fetchGlobalPayments = async (
                 allPayments = [...allPayments, ...filteredFe];
             }
         } catch (e) {
-            console.error("Error fetching floating_expenses:", e);
+            console.warn("Error fetching floating_expenses:", e);
         }
 
         // Sort all payments by date descending
@@ -308,7 +394,7 @@ export const fetchGlobalPayments = async (
 
         return allPayments;
     } catch (e) {
-        console.error("Exception fetching payments:", e);
+        console.warn("Exception fetching payments:", e);
         return [];
     }
 };
@@ -343,7 +429,7 @@ export const fetchRealDashboardStats = async (): Promise<DashboardStats> => {
         // Fallback to V1 or empty
         return empty;
     } catch (e) {
-        console.error("Stats fetch error:", e);
+        console.warn("Stats fetch error:", e);
         return empty;
     }
 };
@@ -361,7 +447,7 @@ export const fetchRevenueChartData = async () => {
 
     const { data } = await supabase
         .from('orders')
-        .select('finalPrice, completedAt')
+        .select('totalAmount, finalPrice, completedAt')
         .in('status', [OrderStatus.REPAIRED, OrderStatus.RETURNED])
         .gte('completedAt', startTs);
 
@@ -372,10 +458,73 @@ export const fetchRevenueChartData = async () => {
     data.forEach((o: any) => {
         if (!o.completedAt) return;
         const dateKey = new Date(o.completedAt).toLocaleDateString('es-ES', { weekday: 'short' });
-        grouped[dateKey] = (grouped[dateKey] || 0) + (o.finalPrice || 0);
+        grouped[dateKey] = (grouped[dateKey] || 0) + (o.totalAmount ?? (o.finalPrice || 0));
     });
 
     return Object.entries(grouped).map(([name, total]) => ({ name, total }));
+};
+
+export const fetchSalesDetails = async (period: 'DAY' | 'WEEK' | 'MONTH' | 'ALL') => {
+    if (!supabase) return [];
+
+    const now = new Date();
+    let startTs = 0;
+
+    if (period === 'DAY') {
+        startTs = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    } else if (period === 'WEEK') {
+        const startOfWeek = new Date(now);
+        startOfWeek.setDate(now.getDate() - now.getDay());
+        startOfWeek.setHours(0, 0, 0, 0);
+        startTs = startOfWeek.getTime();
+    } else if (period === 'MONTH') {
+        startTs = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+    } else if (period === 'ALL') {
+        startTs = 0;
+    }
+
+    // We use fetchGlobalPayments instead of the RPC to ensure we filter out 'RECIBIDOS' (OrderType.STORE)
+    const data = await fetchGlobalPayments(startTs, now.getTime());
+
+    // Filter out refunds and sort by date descending
+    return (data || [])
+        .filter((s: any) => !s.is_refund)
+        .sort((a: any, b: any) => b.created_at - a.created_at);
+};
+
+export const fetchFlowDetails = async (period: 'DAY' | 'WEEK' | 'MONTH') => {
+    if (!supabase) return { in: [], out: [] };
+
+    const now = new Date();
+    let startTs = 0;
+
+    if (period === 'DAY') {
+        startTs = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    } else if (period === 'WEEK') {
+        const startOfWeek = new Date(now);
+        startOfWeek.setDate(now.getDate() - now.getDay());
+        startOfWeek.setHours(0, 0, 0, 0);
+        startTs = startOfWeek.getTime();
+    } else if (period === 'MONTH') {
+        startTs = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+    }
+
+    const { data: flowData, error } = await supabase
+        .from('orders')
+        .select('id, readable_id, "deviceModel", "deviceIssue", status, "createdAt", "completedAt"')
+        .or(`createdAt.gte.${startTs},completedAt.gte.${startTs}`);
+
+    if (error) {
+        console.warn("Error fetching flow details:", error);
+        return { in: [], out: [] };
+    }
+
+    const flow = flowData || [];
+    
+    const inOrders = flow.map(f => ({ ...f, deviceModel: f.deviceModel, issue: f.deviceIssue })).filter(f => f.createdAt >= startTs).sort((a, b) => b.createdAt - a.createdAt);
+    const outOrders = flow.map(f => ({ ...f, deviceModel: f.deviceModel, issue: f.deviceIssue })).filter(f => f.completedAt && f.completedAt >= startTs && [OrderStatus.REPAIRED, OrderStatus.RETURNED].includes(f.status as OrderStatus)).sort((a, b) => b.completedAt - a.completedAt);
+
+    return { in: inOrders, out: outOrders };
 };
 
 export const fetchAdvancedDashboardData = async () => {
@@ -396,40 +545,110 @@ export const fetchAdvancedDashboardData = async () => {
 
     try {
         // 1. Fetch Sales (Actual Payments)
-        const { data: paymentsData } = await supabase.rpc('get_payments_flat', {
-            p_start: sixMonthsAgo,
-            p_end: now.getTime(),
-            p_cashier_id: null,
-            p_branch: null
-        });
-
-        const sales = paymentsData || [];
+        // We use fetchGlobalPayments instead of the RPC to ensure we filter out 'RECIBIDOS' (OrderType.STORE)
+        const sales = await fetchGlobalPayments(sixMonthsAgo, now.getTime());
         
         // 2. Fetch Flow (All Orders created or completed in the last 6 months)
         const { data: flowData } = await supabase
             .from('orders')
             .select('createdAt, completedAt, status')
-            .or(`createdAt.gte.${sixMonthsAgo},completedAt.gte.${sixMonthsAgo}`);
+            .or(`createdAt.gte.${sixMonthsAgo},completedAt.gte.${sixMonthsAgo}`)
+            .order('createdAt', { ascending: false })
+            .limit(50000);
 
         const flow = flowData || [];
 
-        // --- SALES CALCULATIONS (From Payments) ---
-        const daySales = sales.filter((s: any) => s.created_at >= startOfToday && !s.is_refund).reduce((acc: number, s: any) => acc + (s.amount || 0), 0);
-        const daySalesT1 = sales.filter((s: any) => s.created_at >= startOfToday && !s.is_refund && s.branch === 'T1').reduce((acc: number, s: any) => acc + (s.amount || 0), 0);
-        const daySalesT4 = sales.filter((s: any) => s.created_at >= startOfToday && !s.is_refund && s.branch === 'T4').reduce((acc: number, s: any) => acc + (s.amount || 0), 0);
-        
-        const weekSales = sales.filter((s: any) => s.created_at >= startOfWeekTs && !s.is_refund).reduce((acc: number, s: any) => acc + (s.amount || 0), 0);
-        const monthSales = sales.filter((s: any) => s.created_at >= startOfMonth && !s.is_refund).reduce((acc: number, s: any) => acc + (s.amount || 0), 0);
+        // --- SALES & PROFIT CALCULATIONS (From Payments) ---
+        const getSalesAndProfit = (payments: any[], startTs: number, endTs?: number) => {
+            const processedOrders = new Set<string>();
+            let revenue = 0;
+            let revenueTaller = 0;
+            let revenueInventario = 0;
+            let revenueT1 = 0;
+            let revenueT4 = 0;
+            let expenses = 0;
+            let expensesT1 = 0;
+            let expensesT4 = 0;
+            let partsCost = 0;
+            let partsCostT1 = 0;
+            let partsCostT4 = 0;
+
+            for (const p of payments) {
+                if (p.created_at >= startTs && (!endTs || p.created_at < endTs) && !p.is_refund) {
+                    const amount = p.amount || 0;
+                    
+                    if (amount >= 0) {
+                        revenue += amount;
+                        const isModelVenta = p.order_model && String(p.order_model).toLowerCase().includes('venta');
+                        const isInventory = p.order_type === 'Pieza Independiente' || p.order_type === 'PART_ONLY' || p.order_id === 'PRODUCT_SALE' || p.description?.includes('POS') || isModelVenta || p.order_type === 'RECIBIDOS' || String(p.order_id).startsWith('POS-');
+                        
+                        if (isInventory) {
+                            revenueInventario += amount;
+                        } else {
+                            revenueTaller += amount;
+                        }
+
+                        if (p.branch === 'T1') revenueT1 += amount;
+                        if (p.branch === 'T4') revenueT4 += amount;
+                    } else {
+                        // Negative amounts are manual expenses or purchase costs handled through AT
+                        expenses += Math.abs(amount);
+                        if (p.branch === 'T1') expensesT1 += Math.abs(amount);
+                        if (p.branch === 'T4') expensesT4 += Math.abs(amount);
+                    }
+
+                    if (p.order_id && p.order_type !== undefined && !processedOrders.has(p.order_id)) {
+                        let cost = p.order_parts_cost || 0;
+                        
+                        // Add expenses to the cost
+                        if (p.order_expenses) {
+                            const expensesArr = typeof p.order_expenses === 'string' ? JSON.parse(p.order_expenses) : p.order_expenses;
+                            if (Array.isArray(expensesArr)) {
+                                cost += expensesArr.reduce((acc: number, e: any) => acc + (Number(e.amount) || 0), 0);
+                            }
+                        }
+                        
+                        partsCost += cost;
+                        if (p.branch === 'T1') partsCostT1 += cost;
+                        if (p.branch === 'T4') partsCostT4 += cost;
+                        processedOrders.add(p.order_id);
+                    }
+                }
+            }
+            return {
+                current: revenue, 
+                currentTaller: revenueTaller,
+                currentInventario: revenueInventario,
+                t1: revenueT1, 
+                t4: revenueT4,
+                profit: revenue - partsCost - expenses,
+                profitT1: revenueT1 - partsCostT1 - expensesT1,
+                profitT4: revenueT4 - partsCostT4 - expensesT4,
+                partsCost,
+                expenses
+            };
+        };
+
+        const dayData = getSalesAndProfit(sales, startOfToday);
+        const weekData = getSalesAndProfit(sales, startOfWeekTs);
+        const monthData = getSalesAndProfit(sales, startOfMonth);
 
         // Historical Sales (Previous months)
         const historicalSales = [];
         for (let i = 1; i <= 5; i++) {
             const mStart = new Date(now.getFullYear(), now.getMonth() - i, 1).getTime();
             const mEnd = new Date(now.getFullYear(), now.getMonth() - i + 1, 1).getTime();
-            const mSales = sales.filter((s: any) => s.created_at >= mStart && s.created_at < mEnd && !s.is_refund).reduce((acc: number, s: any) => acc + (s.amount || 0), 0);
+            const mData = getSalesAndProfit(sales, mStart, mEnd);
             historicalSales.push({ 
                 month: new Date(mStart).toLocaleDateString('es-ES', { month: 'short' }), 
-                total: mSales 
+                total: mData.current,
+                taller: mData.currentTaller,
+                inventario: mData.currentInventario,
+                profit: mData.profit,
+                t1: mData.t1,
+                t4: mData.t4,
+                profitT1: mData.profitT1,
+                profitT4: mData.profitT4
             });
         }
 
@@ -471,9 +690,9 @@ export const fetchAdvancedDashboardData = async () => {
 
         return {
             sales: {
-                day: { current: daySales, projected: daySales * dayFactor, t1: daySalesT1, t4: daySalesT4 } as { current: number, projected: number, t1: number, t4: number },
-                week: { current: weekSales, projected: weekSales * weekFactor },
-                month: { current: monthSales, projected: monthSales * monthFactor },
+                day: { ...dayData, projected: dayData.current * dayFactor, projectedProfit: dayData.profit * dayFactor },
+                week: { ...weekData, projected: weekData.current * weekFactor, projectedProfit: weekData.profit * weekFactor },
+                month: { ...monthData, projected: monthData.current * monthFactor, projectedProfit: monthData.profit * monthFactor },
                 history: historicalSales.reverse()
             },
             flow: {
@@ -484,7 +703,7 @@ export const fetchAdvancedDashboardData = async () => {
             }
         };
     } catch (e) {
-        console.error("Error fetching advanced dashboard data:", e);
+        console.warn("Error fetching advanced dashboard data:", e);
         return null;
     }
 };
@@ -509,13 +728,17 @@ export const fetchTechnicianLeaderboard = async () => {
 
     try {
         // Fetch orders completed in this range with points
-        const { data } = await supabase
+        const { data, error } = await supabase
             .from('orders')
-            .select('pointsAwarded, pointsSplit, assignedTo, completedAt')
+            .select('*')
             .in('status', [OrderStatus.REPAIRED, OrderStatus.RETURNED])
             .gte('completedAt', startTs)
             .lte('completedAt', endTs);
 
+        if (error) {
+            console.warn("Supabase error in leaderboard:", error);
+            return [];
+        }
         if (!data) return [];
 
         const techPoints: Record<string, number> = {};
@@ -533,8 +756,11 @@ export const fetchTechnicianLeaderboard = async () => {
                 }
             } 
             // Handle Single Tech Points
-            else if (order.assignedTo && order.pointsAwarded) {
-                techPoints[order.assignedTo] = (techPoints[order.assignedTo] || 0) + Number(order.pointsAwarded);
+            else {
+                const techId = order.pointsEarnedBy || order.assignedTo;
+                if (techId && order.pointsAwarded) {
+                    techPoints[techId] = (techPoints[techId] || 0) + Number(order.pointsAwarded);
+                }
             }
         });
 
@@ -544,7 +770,7 @@ export const fetchTechnicianLeaderboard = async () => {
             .sort((a, b) => b.points - a.points);
             
     } catch (e) {
-        console.error("Error fetching technician leaderboard:", e);
+        console.warn("Error fetching technician leaderboard:", e);
         return [];
     }
 };
@@ -587,7 +813,7 @@ export const fetchTechnicianPerformance = async () => {
             totalOrders: stats.total
         })).sort((a, b) => b.successRate - a.successRate);
     } catch (e) {
-        console.error("Error fetching technician performance:", e);
+        console.warn("Error fetching technician performance:", e);
         return [];
     }
 };
@@ -630,9 +856,46 @@ export const fetchWarrantyReport = async () => {
             totalOrders: stats.total
         })).sort((a, b) => b.warrantyRate - a.warrantyRate);
     } catch (e) {
-        console.error("Error fetching warranty report:", e);
+        console.warn("Error fetching warranty report:", e);
         return [];
     }
+};
+
+export const fetchOrdersByModel = async (model: string) => {
+    if (!supabase) return [];
+    
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+
+    const { data, error } = await supabase
+        .from('orders')
+        .select('id, "deviceModel", "deviceIssue", status, "createdAt", readable_id')
+        .eq('deviceModel', model)
+        .gte('createdAt', startOfMonth)
+        .order('createdAt', { ascending: false });
+
+    if (error) {
+        console.warn("Error fetching orders by model:", error);
+        return [];
+    }
+    return (data || []).map(f => ({ ...f, deviceModel: f.deviceModel, issue: f.deviceIssue }));
+};
+
+export const fetchWarrantiesByTech = async (techId: string) => {
+    if (!supabase) return [];
+
+    const { data, error } = await supabase
+        .from('orders')
+        .select('id, "deviceModel", "deviceIssue", status, "createdAt", readable_id, "orderType", "relatedOrderId"')
+        .eq('assignedTo', techId)
+        .or(`orderType.eq.Garantía Externa,relatedOrderId.not.is.null`)
+        .order('createdAt', { ascending: false });
+
+    if (error) {
+        console.warn("Error fetching warranties by tech:", error);
+        return [];
+    }
+    return (data || []).map(f => ({ ...f, deviceModel: f.deviceModel, issue: f.deviceIssue }));
 };
 
 export const fetchTopModels = async () => {
@@ -660,7 +923,7 @@ export const fetchTopModels = async () => {
             .sort((a, b) => b.count - a.count)
             .slice(0, 3);
     } catch (e) {
-        console.error("Error fetching top models:", e);
+        console.warn("Error fetching top models:", e);
         return [];
     }
 };
@@ -674,7 +937,7 @@ export const fetchProfitabilityData = async () => {
     try {
         const { data } = await supabase
             .from('orders')
-            .select('deviceModel, finalPrice, expenses, partsCost')
+            .select('"deviceModel", "totalAmount", "finalPrice", expenses, "partsCost", "orderType"')
             .in('status', [OrderStatus.REPAIRED, OrderStatus.RETURNED])
             .gte('completedAt', startOfMonth);
 
@@ -683,6 +946,11 @@ export const fetchProfitabilityData = async () => {
         const modelProfit: Record<string, { revenue: number, costs: number, count: number }> = {};
 
         data.forEach((o: any) => {
+            // Exclude RECIBIDOS and Warranties from profitability analysis
+            if (o.orderType === OrderType.STORE || o.orderType === OrderType.WARRANTY || o.orderType === 'Garantía Interna') {
+                return;
+            }
+
             const model = o.deviceModel || 'Desconocido';
             if (!modelProfit[model]) modelProfit[model] = { revenue: 0, costs: 0, count: 0 };
             
@@ -690,7 +958,7 @@ export const fetchProfitabilityData = async () => {
             const expensesTotal = Array.isArray(expenses) ? expenses.reduce((acc: number, e: any) => acc + (e.amount || 0), 0) : 0;
             const totalCosts = (o.partsCost || 0) + expensesTotal;
 
-            modelProfit[model].revenue += (o.finalPrice || 0);
+            modelProfit[model].revenue += (o.totalAmount ?? (o.finalPrice || 0));
             modelProfit[model].costs += totalCosts;
             modelProfit[model].count++;
         });
@@ -703,7 +971,7 @@ export const fetchProfitabilityData = async () => {
             count: stats.count
         })).sort((a, b) => a.margin - b.margin); // Sort by lowest margin first for analysis
     } catch (e) {
-        console.error("Error fetching profitability data:", e);
+        console.warn("Error fetching profitability data:", e);
         return [];
     }
 };
@@ -748,8 +1016,11 @@ export const fetchTechnicianPointsDetails = async (techId: string) => {
                 if (split.secondaryTechId === techId) {
                     pointsForTech += Number(split.secondaryPoints) || 0;
                 }
-            } else if (order.assignedTo === techId && order.pointsAwarded) {
-                pointsForTech = Number(order.pointsAwarded);
+            } else {
+                const earnedBy = order.pointsEarnedBy || order.assignedTo;
+                if (earnedBy === techId && order.pointsAwarded) {
+                    pointsForTech = Number(order.pointsAwarded);
+                }
             }
 
             if (pointsForTech > 0) {
@@ -762,7 +1033,7 @@ export const fetchTechnicianPointsDetails = async (techId: string) => {
 
         return techOrders.sort((a: any, b: any) => b.completedAt - a.completedAt);
     } catch (e) {
-        console.error("Error fetching technician points details:", e);
+        console.warn("Error fetching technician points details:", e);
         return [];
     }
 };

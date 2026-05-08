@@ -22,7 +22,24 @@ export const mockAccountingService = {
       prev_income: 12000,
       prev_expenses: 3500,
       prev_purchases: 4000,
-      growth_income: 28.3
+      growth_income: 28.3,
+      ventasNetas: 25000,
+      costoVenta: 10000,
+      margenBruto: 15000,
+      margenBrutoPorcentaje: 60,
+      gastosOperativos: 8000,
+      utilidadOperativa: 7000,
+      utilidadNeta: 7000,
+      flujoEfectivo: 20000,
+      puntoEquilibrio: 13333,
+      capitalTrabajo: 45000,
+      rotacionInventario: 2.5,
+      ticketPromedio: 120,
+      cuentasPorCobrar: 5000,
+      cuentasPorPagar: 0,
+      endeudamiento: 0,
+      roi: 15,
+      rentabilidadTaller: 45
     };
   },
 

@@ -92,32 +92,43 @@ export const Chatbot: React.FC = () => {
       setMessages(newHistory);
       setIsTyping(true);
 
-      // Attempt to extract text first, then chat
-      const extractedId = await analyzeImageForOrder(base64Data);
-      
-      let relevantOrders = orders;
-      if (extractedId) {
-          const numId = parseInt(extractedId);
-          if (!isNaN(numId)) {
-              relevantOrders = orders.filter(o => o.readable_id === numId);
-          }
+      try {
+        // Attempt to extract text first, then chat
+        const extractedId = await analyzeImageForOrder(base64Data);
+        
+        let relevantOrders = orders;
+        if (extractedId) {
+            const numId = parseInt(extractedId);
+            if (!isNaN(numId)) {
+                relevantOrders = orders.filter(o => o.readable_id === numId);
+            }
+        }
+
+        let prompt = extractedId 
+          ? `Encontré este ID de orden en la imagen: ${extractedId}. ¿Cuál es el estado?`
+          : `He enviado una imagen de mi factura. ¿Puedes leer el número de orden y decirme el estado?`;
+        
+        const responseText = await chatWithDarwin(prompt, relevantOrders, base64Data, newHistory);
+
+        const botMsg: ChatMessage = {
+          id: (Date.now() + 1).toString(),
+          role: 'model',
+          text: responseText || "No pude leer la imagen correctamente.",
+          timestamp: Date.now()
+        };
+
+        setMessages(prev => [...prev, botMsg]);
+      } catch (error: any) {
+        const botMsg: ChatMessage = {
+          id: (Date.now() + 1).toString(),
+          role: 'model',
+          text: error.message || "Error al procesar la imagen.",
+          timestamp: Date.now()
+        };
+        setMessages(prev => [...prev, botMsg]);
+      } finally {
+        setIsTyping(false);
       }
-
-      let prompt = extractedId 
-        ? `Encontré este ID de orden en la imagen: ${extractedId}. ¿Cuál es el estado?`
-        : `He enviado una imagen de mi factura. ¿Puedes leer el número de orden y decirme el estado?`;
-      
-      const responseText = await chatWithDarwin(prompt, relevantOrders, base64Data, newHistory);
-
-      const botMsg: ChatMessage = {
-        id: (Date.now() + 1).toString(),
-        role: 'model',
-        text: responseText || "No pude leer la imagen correctamente.",
-        timestamp: Date.now()
-      };
-
-      setMessages(prev => [...prev, botMsg]);
-      setIsTyping(false);
     };
     reader.readAsDataURL(file);
   };

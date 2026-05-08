@@ -42,6 +42,42 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'accounting_transactions' AND column_name = 'method') THEN
         ALTER TABLE public.accounting_transactions ADD COLUMN method text;
     END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'accounting_transactions' AND column_name = 'approval_status') THEN
+        ALTER TABLE public.accounting_transactions ADD COLUMN approval_status text DEFAULT 'APPROVED';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'accounting_transactions' AND column_name = 'expense_destination') THEN
+        ALTER TABLE public.accounting_transactions ADD COLUMN expense_destination text DEFAULT 'STORE';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'accounting_transactions' AND column_name = 'vendor') THEN
+        ALTER TABLE public.accounting_transactions ADD COLUMN vendor text;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'accounting_transactions' AND column_name = 'invoice_number') THEN
+        ALTER TABLE public.accounting_transactions ADD COLUMN invoice_number text;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'accounting_transactions' AND column_name = 'is_duplicate') THEN
+        ALTER TABLE public.accounting_transactions ADD COLUMN is_duplicate boolean DEFAULT false;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'accounting_transactions' AND column_name = 'shared_receipt_id') THEN
+        ALTER TABLE public.accounting_transactions ADD COLUMN shared_receipt_id text;
+    END IF;
+
+    -- audit_logs
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'audit_logs' AND column_name = 'entity_type') THEN
+        ALTER TABLE public.audit_logs ADD COLUMN entity_type text;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'audit_logs' AND column_name = 'entity_id') THEN
+        ALTER TABLE public.audit_logs ADD COLUMN entity_id text;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'audit_logs' AND column_name = 'metadata') THEN
+        ALTER TABLE public.audit_logs ADD COLUMN metadata jsonb;
+    END IF;
+    
+    -- Fix audit_logs missing created_at and set default
+    UPDATE public.audit_logs SET created_at = (extract(epoch from now()) * 1000)::bigint WHERE created_at IS NULL;
+    ALTER TABLE public.audit_logs ALTER COLUMN created_at SET DEFAULT (extract(epoch from now()) * 1000)::bigint;
+
+    -- Create index for faster querying by entity
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_entity ON public.audit_logs(entity_type, entity_id);
 
     -- floating_expenses
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'floating_expenses' AND column_name = 'closing_id') THEN
@@ -50,7 +86,32 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'floating_expenses' AND column_name = 'readable_id') THEN
         ALTER TABLE public.floating_expenses ADD COLUMN readable_id bigint;
     END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'floating_expenses' AND column_name = 'is_duplicate') THEN
+        ALTER TABLE public.floating_expenses ADD COLUMN is_duplicate boolean DEFAULT false;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'floating_expenses' AND column_name = 'invoice_number') THEN
+        ALTER TABLE public.floating_expenses ADD COLUMN invoice_number text;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'floating_expenses' AND column_name = 'vendor') THEN
+        ALTER TABLE public.floating_expenses ADD COLUMN vendor text;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'floating_expenses' AND column_name = 'approval_status') THEN
+        ALTER TABLE public.floating_expenses ADD COLUMN approval_status text DEFAULT 'PENDING';
+    END IF;
 END $$;
+
+-- 1.5 CREAR TABLA DE ALERTAS DE CAJEROS
+CREATE TABLE IF NOT EXISTS public.cashier_alerts (
+    id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+    cashier_id text,
+    cashier_name text,
+    amount numeric,
+    created_at bigint,
+    resolved boolean DEFAULT false
+);
+ALTER TABLE public.cashier_alerts ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Public Cashier Alerts" ON public.cashier_alerts;
+CREATE POLICY "Public Cashier Alerts" ON public.cashier_alerts FOR ALL USING (true);
 
 -- 2. CREAR SECUENCIAS Y TRIGGERS PARA READABLE_ID
 -- Sequence for floating_expenses
@@ -107,7 +168,7 @@ END $$;
 
 
 -- 3. ACTUALIZAR FUNCIONES (RPCs)
--- A. get_closing_details (Corregido para timestamptz)
+-- A. get_closing_details (Corregido para timestamptz e incluye gastos)
 DROP FUNCTION IF EXISTS public.get_closing_details(text);
 CREATE OR REPLACE FUNCTION public.get_closing_details(
     p_closing_id text
@@ -120,6 +181,7 @@ RETURNS TABLE(
     method text,
     created_at timestamptz,
     cashier_name text,
+    order_id text,
     order_readable_id bigint,
     order_model text,
     order_branch text
@@ -129,14 +191,16 @@ SECURITY DEFINER
 AS $$
 BEGIN
     RETURN QUERY
+    -- 1. Pagos de órdenes
     SELECT
         op.id::text,
-        op.amount::numeric,
-        op.original_amount::numeric,
+        COALESCE(op.amount, 0)::numeric,
+        COALESCE(op.original_amount, op.amount, 0)::numeric,
         COALESCE(op.is_edited, false),
         op.method::text,
-        op.created_at,
+        to_timestamp(op.created_at / 1000.0) as created_at,
         op.cashier_name::text,
+        op.order_id::text,
         o.readable_id::bigint,
         o."deviceModel"::text,
         COALESCE(o."currentBranch", 'T4')::text
@@ -146,8 +210,51 @@ BEGIN
         public.orders o ON op.order_id = o.id
     WHERE
         op.closing_id = p_closing_id
+
+    UNION ALL
+
+    -- 2. Gastos contables (accounting_transactions)
+    SELECT
+        at.id::text,
+        COALESCE(at.amount, 0)::numeric,
+        COALESCE(at.amount, 0)::numeric as original_amount,
+        false as is_edited,
+        'CASH'::text as method,
+        at.created_at,
+        (SELECT name FROM public.users WHERE id = at.created_by LIMIT 1)::text as cashier_name,
+        'EXPENSE'::text as order_id,
+        NULL::bigint as order_readable_id,
+        at.description::text as order_model,
+        at.branch::text as order_branch
+    FROM
+        public.accounting_transactions at
+    WHERE
+        at.closing_id = p_closing_id
+        AND (at.approval_status IS NULL OR at.approval_status != 'REJECTED')
+
+    UNION ALL
+
+    -- 3. Gastos flotantes (floating_expenses)
+    SELECT
+        fe.id::text,
+        -(COALESCE(fe.amount, 0))::numeric as amount,
+        -(COALESCE(fe.amount, 0))::numeric as original_amount,
+        false as is_edited,
+        'CASH'::text as method,
+        fe.created_at,
+        (SELECT name FROM public.users WHERE id = fe.created_by LIMIT 1)::text as cashier_name,
+        'GASTO_FLOTANTE'::text as order_id,
+        NULL::bigint as order_readable_id,
+        fe.description::text as order_model,
+        'T4'::text as order_branch
+    FROM
+        public.floating_expenses fe
+    WHERE
+        fe.closing_id = p_closing_id
+        AND (fe.approval_status IS NULL OR fe.approval_status != 'REJECTED')
+
     ORDER BY
-        op.created_at DESC;
+        created_at DESC;
 END;
 $$;
 
@@ -231,6 +338,7 @@ BEGIN
     WHERE
         at.source IN ('STORE', 'ORDER', 'FLOATING', 'MANUAL')
         AND at.status = 'COMPLETED'
+        AND (at.approval_status IS NULL OR at.approval_status != 'REJECTED')
         AND (p_start IS NULL OR (extract(epoch from at.created_at) * 1000)::bigint >= p_start)
         AND (p_end IS NULL OR (extract(epoch from at.created_at) * 1000)::bigint <= p_end)
         AND (p_cashier_id IS NULL OR at.created_by = p_cashier_id)
@@ -256,6 +364,7 @@ BEGIN
         public.floating_expenses fe
     WHERE
         fe.description != 'RECEIPT_UPLOAD_TRIGGER'
+        AND (fe.approval_status IS NULL OR fe.approval_status != 'REJECTED')
         AND (p_start IS NULL OR (extract(epoch from fe.created_at) * 1000)::bigint >= p_start)
         AND (p_end IS NULL OR (extract(epoch from fe.created_at) * 1000)::bigint <= p_end)
         AND (p_cashier_id IS NULL OR fe.created_by = p_cashier_id)
@@ -398,7 +507,12 @@ SECURITY DEFINER
 AS $$
 DECLARE
     v_closing_id text;
-    v_count int;
+    v_count_op int;
+    v_count_at int;
+    v_count_fe int;
+    v_total_op numeric;
+    v_total_at numeric;
+    v_total_fe numeric;
     v_total numeric;
     v_cashier_list text;
 BEGIN
@@ -406,14 +520,28 @@ BEGIN
     v_cashier_list := array_to_string(p_cashier_ids, ',');
 
     SELECT COALESCE(SUM(amount), 0), COUNT(*)
-    INTO v_total, v_count
+    INTO v_total_op, v_count_op
     FROM public.order_payments
     WHERE cashier_id = ANY(p_cashier_ids)
     AND closing_id IS NULL;
 
-    IF v_count = 0 THEN
-        RETURN json_build_object('success', false, 'message', 'No hay pagos pendientes.');
+    SELECT COALESCE(SUM(amount), 0), COUNT(*)
+    INTO v_total_at, v_count_at
+    FROM public.accounting_transactions
+    WHERE created_by = ANY(p_cashier_ids)
+    AND closing_id IS NULL;
+
+    SELECT COALESCE(SUM(amount), 0), COUNT(*)
+    INTO v_total_fe, v_count_fe
+    FROM public.floating_expenses
+    WHERE created_by = ANY(p_cashier_ids)
+    AND closing_id IS NULL;
+
+    IF (v_count_op + v_count_at + v_count_fe) = 0 THEN
+        RETURN json_build_object('success', false, 'message', 'No hay pagos ni gastos pendientes.');
     END IF;
+
+    v_total := v_total_op + v_total_at - ABS(v_total_fe);
 
     INSERT INTO public.cash_closings (
         id, "cashierId", "adminId", "systemTotal", "actualTotal", difference, timestamp, notes
@@ -426,7 +554,17 @@ BEGIN
     WHERE cashier_id = ANY(p_cashier_ids)
     AND closing_id IS NULL;
 
-    RETURN json_build_object('success', true, 'count', v_count, 'total', v_total);
+    UPDATE public.accounting_transactions
+    SET closing_id = v_closing_id
+    WHERE created_by = ANY(p_cashier_ids)
+    AND closing_id IS NULL;
+
+    UPDATE public.floating_expenses
+    SET closing_id = v_closing_id
+    WHERE created_by = ANY(p_cashier_ids)
+    AND closing_id IS NULL;
+
+    RETURN json_build_object('success', true, 'count', (v_count_op + v_count_at + v_count_fe), 'total', v_total);
 EXCEPTION WHEN OTHERS THEN
     RETURN json_build_object('success', false, 'error', SQLERRM);
 END;
@@ -448,7 +586,7 @@ GRANT EXECUTE ON FUNCTION public.force_clear_pending_payments(text[], text) TO s
 export const DbFixModal = ({ onClose }: { onClose: () => void }) => {
   const handleCopy = () => {
     navigator.clipboard.writeText(FULL_SQL);
-    alert("SQL V17 Copiado.\n\nEjecuta esto en Supabase SQL Editor para arreglar la conciliación de caja y gastos.");
+    alert("SQL V18 Copiado.\n\nEjecuta esto en Supabase SQL Editor para arreglar la conciliación de caja y gastos.");
   };
 
   return (
@@ -457,7 +595,7 @@ export const DbFixModal = ({ onClose }: { onClose: () => void }) => {
         <div className="flex items-center gap-3 text-blue-600 mb-4 border-b border-blue-100 dark:border-blue-900 pb-2">
           <Database className="w-8 h-8" />
           <div>
-            <h3 className="text-xl font-bold text-slate-800 dark:text-white">Reparación de Base de Datos (V17)</h3>
+            <h3 className="text-xl font-bold text-slate-800 dark:text-white">Reparación de Base de Datos (V18)</h3>
             <p className="text-sm text-slate-500 dark:text-slate-400">
                 Añade soporte para gastos en la conciliación de caja y corrige errores.
             </p>

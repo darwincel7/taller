@@ -28,9 +28,11 @@ const LoginComponent: React.FC = () => {
     }
   }, [currentUser, navigate]);
 
-  const handleLogin = (userId: string) => {
-    login(userId);
-    navigate('/');
+  const handleLogin = async (userId: string) => {
+    const success = await login(userId);
+    if (success) {
+      navigate('/');
+    }
   };
 
   const handleCopySQL = () => {
@@ -42,16 +44,18 @@ create table if not exists users (id text primary key, name text, role text, ava
 create table if not exists orders (id text primary key, "orderType" text, customer jsonb, "deviceModel" text, "deviceIssue" text, "deviceCondition" text, "devicePassword" text, accessories text, imei text, "devicePhoto" text, status text, priority text, "createdAt" bigint, deadline bigint, history jsonb, "technicianNotes" text, "assignedTo" text, pending_assignment_to text, "isValidated" boolean, "estimatedCost" numeric, expenses jsonb, "partsCost" numeric, "finalPrice" numeric, "isRepairSuccessful" boolean, "purchaseCost" numeric, "targetPrice" numeric, "deviceSource" text, "deviceStorage" text, "batteryHealth" text, "unlockStatus" text, "currentBranch" text, "originBranch" text, "transferTarget" text, "transferStatus" text, "payments" jsonb, "refundRequest" jsonb, "pointsAwarded" numeric, "pointRequest" jsonb, "completedAt" bigint, "relatedOrderId" text, "tempVideoId" text, "repairOutcomeReason" text, "isDiagnosticFee" boolean, "proposedEstimate" text, "returnRequest" jsonb, "pointsSplit" jsonb, "proposalType" text, "holdReason" text, "customerId" text);
 create table if not exists inventory_parts (id uuid default gen_random_uuid() primary key, name text, stock int, min_stock int, cost numeric, price numeric, category text);
 create table if not exists wiki_articles (id uuid default gen_random_uuid() primary key, title text, model text, issue text, solution text, author text, created_at bigint);
-create table if not exists audit_logs (id uuid default gen_random_uuid() primary key, user_id text, user_name text, action text, details text, order_id text, created_at bigint);
+create table if not exists audit_logs (id uuid default gen_random_uuid() primary key, user_id text, user_name text, action text, details text, order_id text, created_at bigint default (extract(epoch from now()) * 1000)::bigint);
 create table if not exists intake_sessions (id uuid default gen_random_uuid() primary key, created_at timestamp with time zone default now(), status text, video_url text, ai_data jsonb);
 create table if not exists cash_closings (id text primary key, "cashierId" text, "adminId" text, timestamp bigint, "systemTotal" numeric, "actualTotal" numeric, difference numeric, note text);
 create table if not exists debt_logs (id text primary key, "cashierId" text, amount numeric, type text, timestamp bigint, "adminId" text, note text, "closingId" text);
 create table if not exists customers (id text primary key, name text not null, phone text not null, email text, address text, notes text, "createdAt" bigint);
 create table if not exists floating_expenses (id uuid default gen_random_uuid() primary key, description text, amount numeric, receipt_url text, shared_receipt_id text, created_by text, branch_id text, created_at timestamp with time zone default now());
+create table if not exists cashier_alerts (id uuid default gen_random_uuid() primary key, cashier_id text, cashier_name text, amount numeric, created_at bigint, resolved boolean default false);
 
 -- 2. MIGRACIÓN DE COLUMNAS FALTANTES (Para arreglar errores de "Column not found")
 alter table orders add column if not exists "proposedEstimate" text;
 alter table orders add column if not exists "returnRequest" jsonb;
+alter table audit_logs alter column created_at set default (extract(epoch from now()) * 1000)::bigint;
 alter table orders add column if not exists "repairOutcomeReason" text;
 alter table orders add column if not exists "isDiagnosticFee" boolean;
 alter table orders add column if not exists "tempVideoId" text;
@@ -82,6 +86,7 @@ alter table cash_closings enable row level security; drop policy if exists "Publ
 alter table debt_logs enable row level security; drop policy if exists "Public DebtLogs" on debt_logs; create policy "Public DebtLogs" on debt_logs for all using (true);
 alter table customers enable row level security; drop policy if exists "Public Customers" on customers; create policy "Public Customers" on customers for all using (true);
 alter table floating_expenses enable row level security; drop policy if exists "Public Floating Expenses" on floating_expenses; create policy "Public Floating Expenses" on floating_expenses for all using (true);
+alter table cashier_alerts enable row level security; drop policy if exists "Public Cashier Alerts" on cashier_alerts; create policy "Public Cashier Alerts" on cashier_alerts for all using (true);
 
 -- 5. CONFIGURACIÓN STORAGE
 insert into storage.buckets (id, name, public) values ('temp-videos', 'temp-videos', true) on conflict (id) do nothing;

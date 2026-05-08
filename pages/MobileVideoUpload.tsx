@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Camera, CheckCircle2, Loader2, UploadCloud } from 'lucide-react';
-import { supabase } from '../services/supabase';
+import { supabase, getCleanStorageUrl } from '../services/supabase';
 
 export const MobileVideoUpload: React.FC = () => {
   const { sessionId } = useParams<{ sessionId: string }>();
@@ -89,7 +89,7 @@ export const MobileVideoUpload: React.FC = () => {
           description: 'RECEIPT_UPLOAD_TRIGGER',
           amount: 0,
           shared_receipt_id: sessionId,
-          receipt_url: publicUrlData.publicUrl
+          receipt_url: getCleanStorageUrl(publicUrlData.publicUrl)
         });
 
       if (insertError) throw insertError;
@@ -100,7 +100,7 @@ export const MobileVideoUpload: React.FC = () => {
       }, 2000);
 
     } catch (err: any) {
-      console.error("Error uploading receipt:", err);
+      console.warn("Error uploading receipt:", err);
       setError(err.message || "Error al subir la imagen");
     } finally {
       setIsUploading(false);

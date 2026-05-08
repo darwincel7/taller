@@ -35,7 +35,7 @@ export const ManageCategoriesModal: React.FC<ManageCategoriesModalProps> = ({ is
       setNewCategory('');
       await fetchCategories();
     } catch (error) {
-      console.error(error);
+      console.warn(error);
     } finally {
       setIsAdding(false);
     }

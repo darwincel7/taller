@@ -2,7 +2,7 @@
 import React from 'react';
 import { 
     ArrowRightLeft, Package, MessageSquare, ShieldCheck, Truck, Reply, 
-    User, HandCoins, CheckCircle2, XCircle, Loader2, Trophy 
+    User, HandCoins, CheckCircle2, XCircle, Loader2, Trophy, AlertCircle, Zap 
 } from 'lucide-react';
 import { RepairOrder, OrderStatus, UserRole, RequestStatus, TransferStatus } from '../../types';
 
@@ -450,6 +450,34 @@ export const OrderBanners: React.FC<OrderBannersProps> = ({
                         <button onClick={() => handlePointsResponse(true)} disabled={isProcessing} className="px-6 py-2 bg-orange-500 text-white rounded-xl text-xs font-bold shadow-lg hover:bg-orange-600 transition disabled:opacity-50 flex items-center gap-2">
                             {isProcessing ? <Loader2 className="w-3 h-3 animate-spin"/> : 'Aprobar'}
                         </button>
+                    </div>
+                </div>
+            )}
+
+            {/* 2.5. POINTS EDITED/REDUCED BANNER */}
+            {order.originalPointsAwarded != null && order.pointsAwarded != null && order.pointsAwarded !== order.originalPointsAwarded && (
+                <div className={`p-4 rounded-2xl shadow-sm border flex items-center justify-between animate-in slide-in-from-top-2 ${
+                    order.pointsAwarded < order.originalPointsAwarded 
+                    ? 'bg-red-50 border-red-200 text-red-800' 
+                    : 'bg-blue-50 border-blue-200 text-blue-800'
+                }`}>
+                    <div className="flex items-center gap-3">
+                        <div className={`p-2 rounded-full ${
+                            order.pointsAwarded < order.originalPointsAwarded ? 'bg-red-100 text-red-600' : 'bg-blue-100 text-blue-600'
+                        }`}>
+                            {order.pointsAwarded < order.originalPointsAwarded ? <AlertCircle className="w-5 h-5" /> : <Zap className="w-5 h-5" />}
+                        </div>
+                        <div>
+                            <h3 className="font-bold text-sm uppercase tracking-tight">
+                                {order.pointsAwarded < order.originalPointsAwarded ? 'Puntos Reducidos' : 'Puntos Editados'}
+                            </h3>
+                            <p className="text-xs opacity-80">
+                                {order.pointsAwarded < order.originalPointsAwarded 
+                                    ? `Esta orden tenía ${order.originalPointsAwarded} puntos y se redujo a ${order.pointsAwarded}.`
+                                    : `Esta orden tenía ${order.originalPointsAwarded} puntos y se editó a ${order.pointsAwarded}.`
+                                }
+                            </p>
+                        </div>
                     </div>
                 </div>
             )}

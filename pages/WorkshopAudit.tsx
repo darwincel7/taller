@@ -8,7 +8,8 @@ import { orderService } from '../services/orderService';
 import { 
   ClipboardCheck, Search, Filter, MapPin, CheckCircle2, 
   AlertTriangle, XCircle, RefreshCw, Smartphone, User as UserIcon,
-  ShieldCheck, Loader2, Info, Eye, History, Save, Trash2, ArrowRight, FileText, ChevronRight, Check, X, Edit2, HelpCircle, PlusCircle, Printer
+  ShieldCheck, Loader2, Info, Eye, History, Save, Trash2, ArrowRight, FileText, ChevronRight, Check, X, Edit2, HelpCircle, PlusCircle, Printer,
+  Clock, MessageCircle, Package, LogOut
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../services/supabase';
@@ -147,7 +148,7 @@ export const WorkshopAudit: React.FC = () => {
               .order('created_at', { ascending: false });
           if (data) setHistoryReports(data);
       } catch (e) {
-          console.error(e);
+          console.warn(e);
       } finally {
           setLoadingHistory(false);
       }
@@ -163,7 +164,7 @@ export const WorkshopAudit: React.FC = () => {
               const data = await orderService.getAllActiveOrders(selectedBranch, selectedTech);
               setAllActiveOrders(data);
           } catch (error) {
-              console.error("Error fetching active orders for audit:", error);
+              console.warn("Error fetching active orders for audit:", error);
               showNotification('error', 'Error al cargar las órdenes para la auditoría.');
           } finally {
               setIsLoadingOrders(false);
@@ -335,7 +336,7 @@ export const WorkshopAudit: React.FC = () => {
           });
 
           // 1. Save Report
-          const { error: reportError } = await supabase.from('audit_reports').insert([{
+          const { data: reportData, error: reportError } = await supabase.from('audit_reports').insert([{
               created_at: Date.now(),
               user_id: currentUser.id,
               user_name: currentUser.name,
@@ -345,15 +346,19 @@ export const WorkshopAudit: React.FC = () => {
               total_missing: totalMissing, 
               discrepancies: allDiscrepancies, // Save EVERYTHING (Found, Missing, Review, Pending)
               notes: note || ''
-          }]);
+          }]).select();
 
           if (reportError) throw reportError;
+          const auditId = reportData?.[0]?.id;
 
           // Record global audit log
           await auditService.recordLog(
               { id: currentUser.id, name: currentUser.name },
               ActionType.WORKSHOP_AUDIT_SUBMITTED,
-              `Reporte de auditoría enviado: ${selectedBranch === 'all' ? 'Multisucursal' : selectedBranch}. Encontrados: ${totalFound}/${totalExpected}. Faltantes: ${totalMissing}.`
+              `Reporte de auditoría enviado: ${selectedBranch === 'all' ? 'Multisucursal' : selectedBranch}. Encontrados: ${totalFound}/${totalExpected}. Faltantes: ${totalMissing}.`,
+              undefined,
+              'AUDIT',
+              auditId
           );
 
           // 2. Log discrepancies in each order history
@@ -494,46 +499,102 @@ export const WorkshopAudit: React.FC = () => {
       showNotification('success', 'Equipo agregado al reporte');
   };
 
-  // 2. Change Status of Discrepancy (MISSING <-> PENDING <-> FOUND)
-  const handleUpdateStatus = async (index: number, newStatus: AuditStatus.MISSING | AuditStatus.FOUND | AuditStatus.PENDING) => {
+  // 1b. Remove Item from Report
+  const handleRemoveDiscrepancy = async (itemId: string) => {
       if (!selectedReport || !supabase) return;
-      
-      const newDiscrepancies = [...selectedReport.discrepancies];
-      const item = newDiscrepancies[index];
-      
-      newDiscrepancies[index] = {
-          ...item,
-          status: newStatus,
-          resolved: newStatus === AuditStatus.FOUND, // Legacy support
-          resolvedBy: newStatus === AuditStatus.FOUND ? currentUser?.name : '',
-          resolvedAt: newStatus === AuditStatus.FOUND ? Date.now() : 0
-      };
+      if (!confirm("¿Seguro que deseas eliminar este equipo del reporte?")) return;
 
-      // Recalculate Totals
-      const missingCount = newDiscrepancies.filter((d: any) => d.status === AuditStatus.MISSING).length;
-      const foundCount = selectedReport.total_expected - missingCount - newDiscrepancies.filter((d: any) => d.status === AuditStatus.PENDING).length;
+      const newDiscrepancies = selectedReport.discrepancies.filter((d: any) => d.id !== itemId);
+      
+      const total_missing = newDiscrepancies.filter((d: any) => d.status === AuditStatus.MISSING).length;
+      const total_found = newDiscrepancies.filter((d: any) => [AuditStatus.FOUND, AuditStatus.READY, AuditStatus.ALREADY_LEFT].includes(d.status)).length > 0 
+              ? newDiscrepancies.filter((d: any) => [AuditStatus.FOUND, AuditStatus.READY, AuditStatus.ALREADY_LEFT].includes(d.status)).length 
+              : Math.max(0, selectedReport.total_expected - 1 - total_missing - newDiscrepancies.filter((d: any) => d.status === AuditStatus.PENDING).length);
 
       const updatedReport = {
           ...selectedReport,
           discrepancies: newDiscrepancies,
-          total_missing: missingCount,
-          total_found: foundCount
+          total_missing,
+          total_found,
+          total_expected: Math.max(0, selectedReport.total_expected - 1)
       };
 
       setSelectedReport(updatedReport);
 
-      await supabase.from('audit_reports')
-        .update({ 
-            discrepancies: newDiscrepancies,
-            total_missing: missingCount,
-            total_found: foundCount
-        })
-        .eq('id', selectedReport.id);
-        
-      if (newStatus === AuditStatus.FOUND) {
-          await addOrderLog(item.id, OrderStatus.IN_REPAIR, `✅ CORRECCIÓN AUDITORÍA: Equipo localizado post-auditoría por ${currentUser?.name}.`, currentUser?.name, LogType.SUCCESS);
-      } else if (newStatus === AuditStatus.PENDING) {
-          await addOrderLog(item.id, OrderStatus.ON_HOLD, `🟠 AUDITORÍA: Equipo marcado como 'Pendiente de Revisión' por ${currentUser?.name}.`, currentUser?.name, LogType.WARNING);
+      try {
+          await supabase.from('audit_reports')
+            .update({ 
+                discrepancies: newDiscrepancies,
+                total_missing: updatedReport.total_missing,
+                total_found: updatedReport.total_found,
+                total_expected: updatedReport.total_expected
+            })
+            .eq('id', selectedReport.id);
+            
+          showNotification('success', 'Equipo eliminado del reporte.');
+      } catch(e) {
+          console.warn("Error removing:", e);
+      }
+  };
+
+  // 2. Change Status of Discrepancy (100% Modificable)
+  const handleUpdateStatus = async (itemId: string, newStatus: AuditStatus) => {
+      if (!selectedReport || !supabase) return;
+      
+      const newDiscrepancies = selectedReport.discrepancies.map((d: any) => {
+          if (d.id === itemId) {
+              return {
+                  ...d,
+                  status: newStatus,
+                  resolved: [AuditStatus.FOUND, AuditStatus.READY, AuditStatus.ALREADY_LEFT].includes(newStatus),
+                  resolvedBy: currentUser?.name || '',
+                  resolvedAt: Date.now()
+              };
+          }
+          return d;
+      });
+
+      // Recalcular los totales reales basados en el arreglo actual editado
+      const total_missing = newDiscrepancies.filter((d: any) => d.status === AuditStatus.MISSING).length;
+      
+      // Total found es la suma de FOUND, READY, ALREADY_LEFT, O lo que dicte la logica usada en el current mode.
+      const total_found = newDiscrepancies.filter((d: any) => d.status === AuditStatus.FOUND || d.status === AuditStatus.READY || d.status === AuditStatus.ALREADY_LEFT).length;
+
+      const updatedReport = {
+          ...selectedReport,
+          discrepancies: newDiscrepancies,
+          total_missing,
+          // Dependiendo cómo calcularan el total_found originalmente, si era `total_expected - missing - pending`:
+          total_found: newDiscrepancies.filter((d: any) => [AuditStatus.FOUND, AuditStatus.READY, AuditStatus.ALREADY_LEFT].includes(d.status)).length > 0 
+              ? newDiscrepancies.filter((d: any) => [AuditStatus.FOUND, AuditStatus.READY, AuditStatus.ALREADY_LEFT].includes(d.status)).length 
+              : selectedReport.total_expected - total_missing - newDiscrepancies.filter((d: any) => d.status === AuditStatus.PENDING).length
+      };
+
+      setSelectedReport(updatedReport);
+
+      try {
+          await supabase.from('audit_reports')
+            .update({ 
+                discrepancies: newDiscrepancies,
+                total_missing: updatedReport.total_missing,
+                total_found: updatedReport.total_found
+            })
+            .eq('id', selectedReport.id);
+          
+          // DO NOT CALL addOrderLog with hardcoded OrderStatus.IN_REPAIR here, because it actually overrides the MAIN order's status!
+          // Use auditService.recordLog for silent non-destructive tracking, OR find the order's existing status.
+          const realOrder = orders.find(o => o.id === itemId);
+          const currentStatus = realOrder ? realOrder.status : OrderStatus.PENDING;
+
+          if (newStatus === AuditStatus.FOUND || newStatus === AuditStatus.READY) {
+              await addOrderLog(itemId, currentStatus, `✅ AUDITORÍA EDITADA: Equipo re-catalogado como '${newStatus}' en el inventario por ${currentUser?.name}.`, currentUser?.name, LogType.SUCCESS);
+          } else if (newStatus === AuditStatus.MISSING) {
+              await addOrderLog(itemId, OrderStatus.ON_HOLD, `🚨 AUDITORÍA EDITADA: Equipo reportado como FALTANTE en edición posterior por ${currentUser?.name}.`, currentUser?.name, LogType.DANGER);
+          } else {
+               await addOrderLog(itemId, currentStatus, `📋 AUDITORÍA EDITADA: Estado actualizado a '${newStatus}' por ${currentUser?.name}.`, currentUser?.name, LogType.INFO);
+          }
+      } catch (e: any) {
+          console.warn("Error editando status de auditoria:", e);
       }
   };
 
@@ -779,56 +840,117 @@ export const WorkshopAudit: React.FC = () => {
                                 <p className="text-white/80 text-sm">{new Date(selectedReport.created_at).toLocaleString()} • {selectedReport.branch}</p>
                             </div>
                             <div className="flex gap-2">
-                                <button onClick={() => printAuditReport(selectedReport)} className="p-2 bg-white/20 rounded-full hover:bg-white/40" title="Imprimir Reporte"><Printer className="w-5 h-5"/></button>
-                                {currentUser?.role === UserRole.ADMIN && !isEditingReport && (
-                                    <button onClick={() => setIsEditingReport(true)} className="p-2 bg-white/20 rounded-full hover:bg-white/40"><Edit2 className="w-5 h-5"/></button>
+                                <button onClick={() => printAuditReport(selectedReport, expandedSections)} className="p-2 bg-white/20 rounded-full hover:bg-white/40" title="Imprimir Reporte"><Printer className="w-5 h-5"/></button>
+                                {currentUser?.role === UserRole.ADMIN && (
+                                    <button onClick={() => setIsEditingReport(!isEditingReport)} className={`p-2 rounded-full transition ${isEditingReport ? 'bg-blue-500 text-white shadow-lg' : 'bg-white/20 hover:bg-white/40'}`} title="Modo Edición"><Edit2 className="w-5 h-5"/></button>
                                 )}
                                 <button onClick={() => setSelectedReport(null)} className="p-2 bg-white/20 rounded-full hover:bg-white/40"><X className="w-6 h-6"/></button>
                             </div>
                         </div>
-                        <div className="grid grid-cols-3 gap-4 mb-6">
-                            <button 
-                                onClick={() => toggleSection('ALL')}
-                                className={`p-4 rounded-2xl border transition-all duration-200 flex flex-col items-center justify-center gap-2 group ${expandedSections.has('ALL') ? 'bg-blue-600 border-blue-500 ring-4 ring-blue-500/20 shadow-xl scale-[1.02]' : 'bg-white/10 border-white/10 hover:bg-white/20 hover:scale-105'}`}
-                            >
-                                <div className={`p-2 rounded-full ${expandedSections.has('ALL') ? 'bg-white/20' : 'bg-white/10'}`}>
-                                    <ClipboardCheck className="w-5 h-5 text-white" />
-                                </div>
-                                <div className="text-center">
-                                    <p className="text-[10px] font-bold uppercase opacity-70 tracking-widest text-white">Esperado</p>
-                                    <p className="text-3xl font-black text-white">{selectedReport.total_expected}</p>
-                                </div>
-                                {expandedSections.has('ALL') && <div className="w-1.5 h-1.5 rounded-full bg-white mt-1 animate-bounce"/>}
-                            </button>
+                        
+                        {(() => {
+                            const discrepancies = selectedReport.discrepancies || [];
+                            const totalPending = discrepancies.filter((d: any) => d.status === AuditStatus.PENDING).length;
+                            const totalReview = discrepancies.filter((d: any) => d.status === AuditStatus.REVIEW).length;
+                            const totalWaitingResponse = discrepancies.filter((d: any) => d.status === AuditStatus.WAITING_RESPONSE).length;
+                            const totalWaitingPart = discrepancies.filter((d: any) => d.status === AuditStatus.WAITING_PART).length;
+                            const totalReady = discrepancies.filter((d: any) => d.status === AuditStatus.READY).length;
+                            const totalAlreadyLeft = discrepancies.filter((d: any) => d.status === AuditStatus.ALREADY_LEFT).length;
 
-                            <button 
-                                onClick={() => toggleSection('FOUND')}
-                                className={`p-4 rounded-2xl border transition-all duration-200 flex flex-col items-center justify-center gap-2 group ${expandedSections.has('FOUND') ? 'bg-green-500 border-green-400 ring-4 ring-green-500/20 shadow-xl scale-[1.02]' : 'bg-white/10 border-white/10 hover:bg-white/20 hover:scale-105'}`}
-                            >
-                                <div className={`p-2 rounded-full ${expandedSections.has('FOUND') ? 'bg-white/20' : 'bg-white/10'}`}>
-                                    <CheckCircle2 className="w-5 h-5 text-white" />
-                                </div>
-                                <div className="text-center">
-                                    <p className="text-[10px] font-bold uppercase opacity-70 tracking-widest text-white">Encontrado</p>
-                                    <p className="text-3xl font-black text-white">{selectedReport.total_found}</p>
-                                </div>
-                                {expandedSections.has('FOUND') && <div className="w-1.5 h-1.5 rounded-full bg-white mt-1 animate-bounce"/>}
-                            </button>
+                            return (
+                                <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3 mb-6">
+                                    <button 
+                                        onClick={() => toggleSection('ALL')}
+                                        className={`p-3 rounded-xl border transition-all duration-200 flex flex-col items-center justify-center gap-1 group ${expandedSections.has('ALL') ? 'bg-blue-600 border-blue-500 ring-2 ring-blue-500/20 shadow-lg scale-[1.02]' : 'bg-white/10 border-white/10 hover:bg-white/20 hover:scale-105'}`}
+                                    >
+                                        <div className="text-center">
+                                            <p className="text-[9px] font-bold uppercase opacity-70 tracking-widest text-white">Esperado</p>
+                                            <p className="text-xl font-black text-white">{selectedReport.total_expected}</p>
+                                        </div>
+                                    </button>
 
-                            <button 
-                                onClick={() => toggleSection('MISSING')}
-                                className={`p-4 rounded-2xl border transition-all duration-200 flex flex-col items-center justify-center gap-2 group ${expandedSections.has('MISSING') ? 'bg-red-500 border-red-400 ring-4 ring-red-500/20 shadow-xl scale-[1.02]' : 'bg-white/10 border-white/10 hover:bg-white/20 hover:scale-105'}`}
-                            >
-                                <div className={`p-2 rounded-full ${expandedSections.has('MISSING') ? 'bg-white/20' : 'bg-white/10'}`}>
-                                    <AlertTriangle className="w-5 h-5 text-white" />
+                                    <button 
+                                        onClick={() => toggleSection('FOUND')}
+                                        className={`p-3 rounded-xl border transition-all duration-200 flex flex-col items-center justify-center gap-1 group ${expandedSections.has('FOUND') ? 'bg-green-500 border-green-400 ring-2 ring-green-500/20 shadow-lg scale-[1.02]' : 'bg-white/10 border-white/10 hover:bg-white/20 hover:scale-105'}`}
+                                    >
+                                        <div className="text-center">
+                                            <p className="text-[9px] font-bold uppercase opacity-70 tracking-widest text-white">Confirmados</p>
+                                            <p className="text-xl font-black text-white">{selectedReport.total_found}</p>
+                                        </div>
+                                    </button>
+
+                                    <button 
+                                        onClick={() => toggleSection('MISSING')}
+                                        className={`p-3 rounded-xl border transition-all duration-200 flex flex-col items-center justify-center gap-1 group ${expandedSections.has('MISSING') ? 'bg-red-500 border-red-400 ring-2 ring-red-500/20 shadow-lg scale-[1.02]' : 'bg-white/10 border-white/10 hover:bg-white/20 hover:scale-105'}`}
+                                    >
+                                        <div className="text-center">
+                                            <p className="text-[9px] font-bold uppercase opacity-70 tracking-widest text-white">Faltantes</p>
+                                            <p className="text-xl font-black text-white">{selectedReport.total_missing}</p>
+                                        </div>
+                                    </button>
+
+                                    <button 
+                                        onClick={() => toggleSection('PENDING')}
+                                        className={`p-3 rounded-xl border transition-all duration-200 flex flex-col items-center justify-center gap-1 group ${expandedSections.has('PENDING') ? 'bg-slate-500 border-slate-400 ring-2 ring-slate-500/20 shadow-lg scale-[1.02]' : 'bg-white/10 border-white/10 hover:bg-white/20 hover:scale-105'}`}
+                                    >
+                                        <div className="text-center">
+                                            <p className="text-[9px] font-bold uppercase opacity-70 tracking-widest text-white">Pendientes</p>
+                                            <p className="text-xl font-black text-white">{totalPending}</p>
+                                        </div>
+                                    </button>
+
+                                    <button 
+                                        onClick={() => toggleSection('REVIEW')}
+                                        className={`p-3 rounded-xl border transition-all duration-200 flex flex-col items-center justify-center gap-1 group ${expandedSections.has('REVIEW') ? 'bg-amber-500 border-amber-400 ring-2 ring-amber-500/20 shadow-lg scale-[1.02]' : 'bg-white/10 border-white/10 hover:bg-white/20 hover:scale-105'}`}
+                                    >
+                                        <div className="text-center">
+                                            <p className="text-[9px] font-bold uppercase opacity-70 tracking-widest text-white">Revisar</p>
+                                            <p className="text-xl font-black text-white">{totalReview}</p>
+                                        </div>
+                                    </button>
+
+                                    <button 
+                                        onClick={() => toggleSection('WAITING_RESPONSE')}
+                                        className={`p-3 rounded-xl border transition-all duration-200 flex flex-col items-center justify-center gap-1 group ${expandedSections.has('WAITING_RESPONSE') ? 'bg-blue-400 border-blue-300 ring-2 ring-blue-400/20 shadow-lg scale-[1.02]' : 'bg-white/10 border-white/10 hover:bg-white/20 hover:scale-105'}`}
+                                    >
+                                        <div className="text-center">
+                                            <p className="text-[9px] font-bold uppercase opacity-70 tracking-widest text-white">Espera Resp.</p>
+                                            <p className="text-xl font-black text-white">{totalWaitingResponse}</p>
+                                        </div>
+                                    </button>
+
+                                    <button 
+                                        onClick={() => toggleSection('WAITING_PART')}
+                                        className={`p-3 rounded-xl border transition-all duration-200 flex flex-col items-center justify-center gap-1 group ${expandedSections.has('WAITING_PART') ? 'bg-purple-500 border-purple-400 ring-2 ring-purple-500/20 shadow-lg scale-[1.02]' : 'bg-white/10 border-white/10 hover:bg-white/20 hover:scale-105'}`}
+                                    >
+                                        <div className="text-center">
+                                            <p className="text-[9px] font-bold uppercase opacity-70 tracking-widest text-white">Espera Pieza</p>
+                                            <p className="text-xl font-black text-white">{totalWaitingPart}</p>
+                                        </div>
+                                    </button>
+
+                                    <button 
+                                        onClick={() => toggleSection('READY')}
+                                        className={`p-3 rounded-xl border transition-all duration-200 flex flex-col items-center justify-center gap-1 group ${expandedSections.has('READY') ? 'bg-teal-500 border-teal-400 ring-2 ring-teal-500/20 shadow-lg scale-[1.02]' : 'bg-white/10 border-white/10 hover:bg-white/20 hover:scale-105'}`}
+                                    >
+                                        <div className="text-center">
+                                            <p className="text-[9px] font-bold uppercase opacity-70 tracking-widest text-white">Listos</p>
+                                            <p className="text-xl font-black text-white">{totalReady}</p>
+                                        </div>
+                                    </button>
+
+                                    <button 
+                                        onClick={() => toggleSection('ALREADY_LEFT')}
+                                        className={`p-3 rounded-xl border transition-all duration-200 flex flex-col items-center justify-center gap-1 group ${expandedSections.has('ALREADY_LEFT') ? 'bg-orange-500 border-orange-400 ring-2 ring-orange-500/20 shadow-lg scale-[1.02]' : 'bg-white/10 border-white/10 hover:bg-white/20 hover:scale-105'}`}
+                                    >
+                                        <div className="text-center">
+                                            <p className="text-[9px] font-bold uppercase opacity-70 tracking-widest text-white">Ya Salió</p>
+                                            <p className="text-xl font-black text-white">{totalAlreadyLeft}</p>
+                                        </div>
+                                    </button>
                                 </div>
-                                <div className="text-center">
-                                    <p className="text-[10px] font-bold uppercase opacity-70 tracking-widest text-white">Faltante</p>
-                                    <p className="text-3xl font-black text-white">{selectedReport.total_missing}</p>
-                                </div>
-                                {expandedSections.has('MISSING') && <div className="w-1.5 h-1.5 rounded-full bg-white mt-1 animate-bounce"/>}
-                            </button>
-                        </div>
+                            );
+                        })()}
                     </div>
                     
                     <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-slate-50/50 dark:bg-slate-900/50">
@@ -882,7 +1004,7 @@ export const WorkshopAudit: React.FC = () => {
                         <div>
                             {/* Render Lists based on Expanded Sections */}
                             <div className="space-y-6">
-                                {['ALL', 'MISSING', 'FOUND'].map(section => {
+                                {['ALL', 'MISSING', 'FOUND', 'PENDING', 'REVIEW', 'WAITING_RESPONSE', 'WAITING_PART', 'READY', 'ALREADY_LEFT'].map(section => {
                                     if (!expandedSections.has(section)) return null;
                                     
                                     let items = [];
@@ -905,6 +1027,36 @@ export const WorkshopAudit: React.FC = () => {
                                         title = "Equipos Encontrados";
                                         colorClass = "text-green-600 bg-green-50 border-green-100";
                                         icon = <CheckCircle2 className="w-4 h-4"/>;
+                                    } else if (section === 'PENDING') {
+                                        items = (selectedReport.discrepancies || []).filter((d: any) => d.status === AuditStatus.PENDING);
+                                        title = "Equipos Pendientes";
+                                        colorClass = "text-slate-600 bg-slate-50 border-slate-100";
+                                        icon = <Clock className="w-4 h-4"/>;
+                                    } else if (section === 'REVIEW') {
+                                        items = (selectedReport.discrepancies || []).filter((d: any) => d.status === AuditStatus.REVIEW);
+                                        title = "Equipos a Revisar";
+                                        colorClass = "text-amber-600 bg-amber-50 border-amber-100";
+                                        icon = <Search className="w-4 h-4"/>;
+                                    } else if (section === 'WAITING_RESPONSE') {
+                                        items = (selectedReport.discrepancies || []).filter((d: any) => d.status === AuditStatus.WAITING_RESPONSE);
+                                        title = "Espera Respuesta";
+                                        colorClass = "text-blue-500 bg-blue-50 border-blue-100";
+                                        icon = <MessageCircle className="w-4 h-4"/>;
+                                    } else if (section === 'WAITING_PART') {
+                                        items = (selectedReport.discrepancies || []).filter((d: any) => d.status === AuditStatus.WAITING_PART);
+                                        title = "Espera Pieza";
+                                        colorClass = "text-purple-600 bg-purple-50 border-purple-100";
+                                        icon = <Package className="w-4 h-4"/>;
+                                    } else if (section === 'READY') {
+                                        items = (selectedReport.discrepancies || []).filter((d: any) => d.status === AuditStatus.READY);
+                                        title = "Equipos Listos";
+                                        colorClass = "text-teal-600 bg-teal-50 border-teal-100";
+                                        icon = <CheckCircle2 className="w-4 h-4"/>;
+                                    } else if (section === 'ALREADY_LEFT') {
+                                        items = (selectedReport.discrepancies || []).filter((d: any) => d.status === AuditStatus.ALREADY_LEFT);
+                                        title = "Ya Salió";
+                                        colorClass = "text-orange-600 bg-orange-50 border-orange-100";
+                                        icon = <LogOut className="w-4 h-4"/>;
                                     }
 
                                     return (
@@ -960,17 +1112,43 @@ export const WorkshopAudit: React.FC = () => {
                                                                         <div className="text-xs text-slate-500 flex items-center gap-1"><UserIcon className="w-3 h-3"/> {item.customer}</div>
                                                                     </div>
                                                                 </div>
-                                                                <div className="flex items-center gap-3 pl-14 sm:pl-0">
-                                                                    {item.resolvedBy && (
-                                                                        <div className="text-right hidden sm:block">
-                                                                            <p className="text-[10px] text-slate-400 uppercase font-bold">Auditado por</p>
-                                                                            <p className="text-xs font-medium text-slate-600 dark:text-slate-300">{item.resolvedBy}</p>
-                                                                        </div>
-                                                                    )}
-                                                                    <div className="w-8 h-8 rounded-full bg-slate-50 dark:bg-slate-900 flex items-center justify-center group-hover:bg-blue-600 group-hover:text-white transition">
-                                                                        <ChevronRight className="w-4 h-4"/>
+                                                                {isEditingReport ? (
+                                                                    <div className="flex items-center gap-2 pl-14 sm:pl-0" onClick={e => e.stopPropagation()}>
+                                                                        <select
+                                                                            value={item.status || AuditStatus.PENDING}
+                                                                            onChange={(e) => handleUpdateStatus(item.id, e.target.value as AuditStatus)}
+                                                                            className="bg-slate-50 border border-slate-200 text-slate-700 text-xs font-bold rounded-lg px-2 py-1 outline-none dark:bg-slate-900 dark:border-slate-700 dark:text-slate-300"
+                                                                        >
+                                                                            <option value={AuditStatus.PENDING}>No Verificado</option>
+                                                                            <option value={AuditStatus.FOUND}>Encontrado</option>
+                                                                            <option value={AuditStatus.MISSING}>Faltante</option>
+                                                                            <option value={AuditStatus.REVIEW}>Revisión</option>
+                                                                            <option value={AuditStatus.WAITING_RESPONSE}>Espera Resp.</option>
+                                                                            <option value={AuditStatus.WAITING_PART}>Espera Pieza</option>
+                                                                            <option value={AuditStatus.READY}>Listos</option>
+                                                                            <option value={AuditStatus.ALREADY_LEFT}>Ya Salió</option>
+                                                                        </select>
+                                                                        <button 
+                                                                            onClick={(e) => { e.stopPropagation(); handleRemoveDiscrepancy(item.id); }}
+                                                                            className="p-1 hover:bg-red-100 text-slate-400 hover:text-red-600 rounded-md transition"
+                                                                            title="Eliminar de la lista"
+                                                                        >
+                                                                            <Trash2 className="w-4 h-4" />
+                                                                        </button>
                                                                     </div>
-                                                                </div>
+                                                                ) : (
+                                                                    <div className="flex items-center gap-3 pl-14 sm:pl-0">
+                                                                        {item.resolvedBy && (
+                                                                            <div className="text-right hidden sm:block">
+                                                                                <p className="text-[10px] text-slate-400 uppercase font-bold">Auditado por</p>
+                                                                                <p className="text-xs font-medium text-slate-600 dark:text-slate-300">{item.resolvedBy}</p>
+                                                                            </div>
+                                                                        )}
+                                                                        <div className="w-8 h-8 rounded-full bg-slate-50 dark:bg-slate-900 flex items-center justify-center group-hover:bg-blue-600 group-hover:text-white transition">
+                                                                            <ChevronRight className="w-4 h-4"/>
+                                                                        </div>
+                                                                    </div>
+                                                                )}
                                                             </div>
                                                         );
                                                     })}
@@ -996,29 +1174,7 @@ export const WorkshopAudit: React.FC = () => {
                         <span className="text-xs font-bold text-slate-500 uppercase">Auditado por: <span className="text-slate-800 dark:text-white">{selectedReport.user_name}</span></span>
                         <div className="flex gap-2">
                             <button 
-                                onClick={() => {
-                                    const visibleStatuses = new Set<string>();
-                                    if (expandedSections.has('MISSING')) visibleStatuses.add('MISSING');
-                                    if (expandedSections.has('REVIEW')) visibleStatuses.add('REVIEW');
-                                    if (expandedSections.has('FOUND')) visibleStatuses.add('FOUND');
-                                    
-                                    // Default to printing everything if nothing selected
-                                    const printAll = visibleStatuses.size === 0;
-
-                                    const filteredDiscrepancies = selectedReport.discrepancies.filter((d: any) => {
-                                        let status = d.status;
-                                        if (!status && !d.resolved) status = 'MISSING';
-                                        if (!status && d.resolved) status = 'FOUND';
-                                        if (status === 'PENDING') status = 'REVIEW';
-                                        
-                                        return printAll || visibleStatuses.has(status);
-                                    });
-                                    
-                                    printAuditReport({
-                                        ...selectedReport,
-                                        discrepancies: filteredDiscrepancies
-                                    });
-                                }}
+                                onClick={() => printAuditReport(selectedReport, expandedSections)}
                                 className="px-4 py-2 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-xl font-bold text-sm flex items-center gap-2"
                             >
                                 <Printer className="w-4 h-4"/> Imprimir {expandedSections.size > 0 ? 'Selección' : 'Todo'}

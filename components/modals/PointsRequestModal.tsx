@@ -1,18 +1,19 @@
 
 import React, { useState, useEffect } from 'react';
 import { X, Minus, Plus, Split, Loader2 } from 'lucide-react';
-import { UserRole, PointSplit } from '../../types';
+import { UserRole, PointSplit, OrderType } from '../../types';
 
 interface PointsRequestModalProps {
     users: any[];
     currentUser: any;
+    orderType?: OrderType;
     onConfirm: (points: number, reason: string, split?: PointSplit) => void;
     onCancel: () => void;
     isSubmitting: boolean;
 }
 
-export const PointsRequestModal: React.FC<PointsRequestModalProps> = ({ users, currentUser, onConfirm, onCancel, isSubmitting }) => {
-    const [pts, setPts] = useState(1);
+export const PointsRequestModal: React.FC<PointsRequestModalProps> = ({ users, currentUser, orderType, onConfirm, onCancel, isSubmitting }) => {
+    const [pts, setPts] = useState(orderType === OrderType.WARRANTY ? 0 : 1);
     const [isSplit, setIsSplit] = useState(false);
     const [partnerId, setPartnerId] = useState('');
     const [myShare, setMyShare] = useState(1); 
@@ -59,7 +60,11 @@ export const PointsRequestModal: React.FC<PointsRequestModalProps> = ({ users, c
                     <h3 className="text-2xl font-black text-slate-800 flex items-center justify-center gap-2">
                         {pts === 0 ? '🚫 Sin Puntos' : '¡Reparación Lista!'}
                     </h3>
-                    <p className="text-slate-500 text-sm">¿Cuántos puntos exige este trabajo?</p>
+                    <p className="text-slate-500 text-sm">
+                        {orderType === OrderType.WARRANTY 
+                            ? 'Las garantías no generan puntos por defecto. ¿Deseas solicitar puntos por este caso extraordinario?' 
+                            : '¿Cuántos puntos exige este trabajo?'}
+                    </p>
                 </div>
 
                 <div className="flex items-center justify-center gap-6 mb-8">

@@ -34,9 +34,16 @@ export const accountingService = {
       if (filters.search) {
         const searchStr = filters.search.trim();
         const searchNum = Number(searchStr);
-        if (searchStr && !isNaN(searchNum)) {
-          // If it's a number, search amount as well (positive or negative)
-          query = query.or(`description.ilike.%${filters.search}%,vendor.ilike.%${filters.search}%,search_text.ilike.%${filters.search}%,amount.eq.${searchNum},amount.eq.-${searchNum}`);
+        
+        // Check if it's an ID search like "g-5284", "G-5284", "g5284", "g 5284"
+        const idMatch = searchStr.match(/^[a-zA-Z][-\s]?(\d+)$/);
+        
+        if (idMatch) {
+          const idNum = Number(idMatch[1]);
+          query = query.or(`description.ilike.%${filters.search}%,vendor.ilike.%${filters.search}%,search_text.ilike.%${filters.search}%,readable_id.eq.${idNum}`);
+        } else if (searchStr && !isNaN(searchNum)) {
+          // If it's a number, search amount as well (positive or negative) and readable_id
+          query = query.or(`description.ilike.%${filters.search}%,vendor.ilike.%${filters.search}%,search_text.ilike.%${filters.search}%,amount.eq.${searchNum},amount.eq.-${searchNum},readable_id.eq.${searchNum}`);
         } else {
           // Search in search_text column (which includes OCR data) OR fallback to description/vendor
           query = query.or(`description.ilike.%${filters.search}%,vendor.ilike.%${filters.search}%,search_text.ilike.%${filters.search}%`);
@@ -53,7 +60,7 @@ export const accountingService = {
 
     const { data, error } = await query;
     if (error) {
-      console.error('Error fetching transactions:', error);
+      console.warn('Error fetching transactions:', error);
       return [];
     }
     
@@ -71,7 +78,7 @@ export const accountingService = {
       .upload(fileName, file);
 
     if (error) {
-      console.error("Upload error:", error);
+      console.warn("Upload error:", error);
       return null;
     }
     
@@ -100,15 +107,34 @@ export const accountingService = {
         ${transaction.search_text || ''}
     `.toLowerCase();
 
+    let finalInvoiceNumber = transaction.invoice_number;
+    if (transaction.is_duplicate && finalInvoiceNumber) {
+        // Strip any existing -DUP- suffix to avoid chaining them
+        const baseInvoiceNumber = finalInvoiceNumber.split('-DUP-')[0];
+        // Append a unique suffix to bypass the unique constraint on (vendor, invoice_number)
+        finalInvoiceNumber = `${baseInvoiceNumber}-DUP-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+    }
+
     const finalTransaction = {
         status: TransactionStatus.CONSOLIDATED,
         source: 'MANUAL',
         ...transaction,
+        invoice_number: finalInvoiceNumber,
         receipt_url: receiptUrl,
         shared_receipt_id: transaction.shared_receipt_id,
         search_text: searchText,
         is_duplicate: transaction.is_duplicate || false
     };
+
+    // If no category_id is provided, try to find a default one
+    if (!finalTransaction.category_id) {
+        const categories = await accountingService.getCategories();
+        const type = (finalTransaction.amount || 0) > 0 ? 'INCOME' : 'EXPENSE';
+        const defaultCat = categories.find(c => c.type === type);
+        if (defaultCat) {
+            finalTransaction.category_id = defaultCat.id;
+        }
+    }
 
     const { data, error } = await supabase
       .from('accounting_transactions')
@@ -117,7 +143,7 @@ export const accountingService = {
       .single();
 
     if (error) {
-      console.error('Supabase Error:', error);
+      console.warn('Supabase Error:', error);
       if (error.code === '23505') {
         throw new Error('DUPLICATE_INVOICE');
       }
@@ -126,24 +152,24 @@ export const accountingService = {
     return data;
   },
 
-  checkDuplicateInvoice: async (invoiceNumber: string): Promise<boolean> => {
-    if (!supabase || !invoiceNumber) return false;
+  checkDuplicateInvoice: async (invoiceNumber: string, vendor: string): Promise<boolean> => {
+    if (!supabase || (!invoiceNumber && !vendor)) return false;
     
     // Check in accounting_transactions
-    const { data: transData, error: transError } = await supabase
-      .from('accounting_transactions')
-      .select('id')
-      .eq('invoice_number', invoiceNumber)
-      .limit(1);
+    let transQuery = supabase.from('accounting_transactions').select('id').limit(1);
+    if (invoiceNumber) transQuery = transQuery.eq('invoice_number', invoiceNumber);
+    if (vendor) transQuery = transQuery.ilike('vendor', vendor);
+    
+    const { data: transData, error: transError } = await transQuery;
       
     if (transData && transData.length > 0) return true;
     
     // Check in floating_expenses
-    const { data: floatData, error: floatError } = await supabase
-      .from('floating_expenses')
-      .select('id')
-      .eq('invoice_number', invoiceNumber)
-      .limit(1);
+    let floatQuery = supabase.from('floating_expenses').select('id').limit(1);
+    if (invoiceNumber) floatQuery = floatQuery.eq('invoice_number', invoiceNumber);
+    if (vendor) floatQuery = floatQuery.ilike('vendor', vendor);
+    
+    const { data: floatData, error: floatError } = await floatQuery;
       
     if (floatData && floatData.length > 0) return true;
     
@@ -182,7 +208,7 @@ export const accountingService = {
       .limit(1);
       
     if (fetchError) {
-      console.error('Error fetching transaction to update:', fetchError);
+      console.warn('Error fetching transaction to update:', fetchError);
       return;
     }
     
@@ -196,7 +222,7 @@ export const accountingService = {
         .eq('id', data[0].id);
         
       if (updateError) {
-        console.error('Error updating transaction:', updateError);
+        console.warn('Error updating transaction:', updateError);
         throw updateError;
       }
     }
@@ -216,7 +242,7 @@ export const accountingService = {
       .limit(1);
       
     if (fetchError) {
-      console.error('Error fetching transaction to delete:', fetchError);
+      console.warn('Error fetching transaction to delete:', fetchError);
       return null;
     }
     
@@ -227,7 +253,7 @@ export const accountingService = {
         .eq('id', data[0].id);
         
       if (deleteError) {
-        console.error('Error deleting transaction:', deleteError);
+        console.warn('Error deleting transaction:', deleteError);
         throw deleteError;
       }
       return data[0] as AccountingTransaction;
@@ -277,143 +303,48 @@ export const accountingService = {
   },
 
   // --- DASHBOARD DATA (Using RPCs created in accounting_module.sql) ---
-  getKPIs: async (): Promise<FinancialKPIs> => {
-    if (!supabase) return { current_income: 0, current_expenses: 0, current_purchases: 0, net_profit: 0, prev_income: 0, prev_expenses: 0, prev_purchases: 0, growth_income: 0 };
+  getKPIs: async (filters?: { startDate?: string, endDate?: string }): Promise<FinancialKPIs> => {
+    const { financialMetricsService } = await import('./FinancialMetricsService');
+    const result = await financialMetricsService.getMetrics(filters?.startDate, filters?.endDate);
     
-    const now = new Date();
-    
-    // Clean way to get start of previous month string
-    const prevMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-    const startOfPrevMonthStr = `${prevMonthDate.getFullYear()}-${String(prevMonthDate.getMonth() + 1).padStart(2, '0')}-01`;
-    
-    const { data: transactions, error } = await supabase
-      .from('accounting_transactions')
-      .select('amount, transaction_date, accounting_categories(name)')
-      .eq('status', 'COMPLETED')
-      .gte('transaction_date', startOfPrevMonthStr);
-
-    if (error || !transactions) {
-      return { current_income: 0, current_expenses: 0, current_purchases: 0, net_profit: 0, prev_income: 0, prev_expenses: 0, prev_purchases: 0, growth_income: 0 };
-    }
-
-    let curr_inc = 0, curr_exp = 0, curr_pur = 0;
-    let prev_inc = 0, prev_exp = 0, prev_pur = 0;
-
-    const currentMonthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-
-    transactions.forEach((t: any) => {
-      const dateParts = t.transaction_date.split('-');
-      const monthKey = `${dateParts[0]}-${dateParts[1]}`;
-      const isCurrentMonth = monthKey === currentMonthStr;
-      const amount = Number(t.amount);
-      const isPurchase = t.accounting_categories?.name?.toLowerCase() === 'compras';
-
-      if (isCurrentMonth) {
-        if (amount > 0) curr_inc += amount;
-        else if (isPurchase) curr_pur += Math.abs(amount);
-        else curr_exp += Math.abs(amount);
-      } else {
-        if (amount > 0) prev_inc += amount;
-        else if (isPurchase) prev_pur += Math.abs(amount);
-        else prev_exp += Math.abs(amount);
-      }
-    });
-
-    const growth_income = prev_inc > 0 ? ((curr_inc - prev_inc) / prev_inc) * 100 : 0;
-    const net_profit = curr_inc - curr_exp; // Beneficio Operativo (sin contar compras de inventario)
-
+    // Fallback for missing/undefined values to maintain compatibility
     return {
-      current_income: curr_inc,
-      current_expenses: curr_exp,
-      current_purchases: curr_pur,
-      net_profit: net_profit,
-      prev_income: prev_inc,
-      prev_expenses: prev_exp,
-      prev_purchases: prev_pur,
-      growth_income: growth_income
+      current_income: result.current_income || 0,
+      current_expenses: result.current_expenses || 0,
+      current_purchases: result.current_purchases || 0,
+      net_profit: result.net_profit || 0,
+      prev_income: result.prev_income || 0,
+      prev_expenses: result.prev_expenses || 0,
+      prev_purchases: result.prev_purchases || 0,
+      growth_income: result.growth_income || 0,
+      
+      ventasNetas: result.ventasNetas || 0,
+      costoVenta: result.costoVenta || 0,
+      margenBruto: result.margenBruto || 0,
+      margenBrutoPorcentaje: result.margenBrutoPorcentaje || 0,
+      gastosOperativos: result.gastosOperativos || 0,
+      utilidadOperativa: result.utilidadOperativa || 0,
+      utilidadNeta: result.utilidadNeta || 0,
+      flujoEfectivo: result.flujoEfectivo || 0,
+      puntoEquilibrio: result.puntoEquilibrio || 0,
+      capitalTrabajo: result.capitalTrabajo || 0,
+      rotacionInventario: result.rotacionInventario || 0,
+      ticketPromedio: result.ticketPromedio || 0,
+      cuentasPorCobrar: result.cuentasPorCobrar || 0,
+      cuentasPorPagar: result.cuentasPorPagar || 0,
+      endeudamiento: result.endeudamiento || 0,
+      roi: result.roi || 0,
+      rentabilidadTaller: result.rentabilidadTaller || 0
     };
   },
 
-  getCashflow: async (): Promise<CashflowData[]> => {
-    if (!supabase) return [];
-    
-    const now = new Date();
-    const sixMonthsAgoDate = new Date(now.getFullYear(), now.getMonth() - 5, 1);
-    const sixMonthsAgo = `${sixMonthsAgoDate.getFullYear()}-${String(sixMonthsAgoDate.getMonth() + 1).padStart(2, '0')}-01`;
-    
-    const { data: transactions, error } = await supabase
-      .from('accounting_transactions')
-      .select('amount, transaction_date, accounting_categories(name)')
-      .eq('status', 'COMPLETED')
-      .gte('transaction_date', sixMonthsAgo);
-
-    if (error || !transactions) return [];
-
-    const monthlyData: { [key: string]: { income: number, expenses: number, purchases: number } } = {};
-
-    transactions.forEach((t: any) => {
-      const dateParts = t.transaction_date.split('-');
-      const monthKey = `${dateParts[0]}-${dateParts[1]}`;
-      
-      if (!monthlyData[monthKey]) {
-        monthlyData[monthKey] = { income: 0, expenses: 0, purchases: 0 };
-      }
-
-      const amount = Number(t.amount);
-      const isPurchase = t.accounting_categories?.name?.toLowerCase() === 'compras';
-
-      if (amount > 0) {
-        monthlyData[monthKey].income += amount;
-      } else if (isPurchase) {
-        monthlyData[monthKey].purchases += Math.abs(amount);
-      } else {
-        monthlyData[monthKey].expenses += Math.abs(amount);
-      }
-    });
-
-    const result: CashflowData[] = [];
-    for (let i = 5; i >= 0; i--) {
-      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-      const monthName = d.toLocaleString('es-ES', { month: 'short' }).toUpperCase();
-      
-      result.push({
-        month: monthName,
-        income: monthlyData[monthKey]?.income || 0,
-        expenses: monthlyData[monthKey]?.expenses || 0,
-        purchases: monthlyData[monthKey]?.purchases || 0,
-      });
-    }
-
-    return result;
+  getCashflow: async (filters?: { startDate?: string, endDate?: string }): Promise<CashflowData[]> => {
+    const { financialMetricsService } = await import('./FinancialMetricsService');
+    return await financialMetricsService.getCashflow(filters?.startDate, filters?.endDate);
   },
 
-  getExpenseDistribution: async (): Promise<ExpenseDistribution[]> => {
-    if (!supabase) return [];
-    
-    const now = new Date();
-    const startOfCurrentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
-    
-    const { data: transactions, error } = await supabase
-      .from('accounting_transactions')
-      .select('amount, accounting_categories(name)')
-      .eq('status', 'COMPLETED')
-      .lt('amount', 0)
-      .gte('transaction_date', startOfCurrentMonth);
-
-    if (error || !transactions) return [];
-
-    const distribution: { [key: string]: number } = {};
-
-    transactions.forEach((t: any) => {
-      const categoryName = t.accounting_categories?.name || 'Sin Categoría';
-      if (categoryName.toLowerCase() !== 'compras') {
-        distribution[categoryName] = (distribution[categoryName] || 0) + Math.abs(Number(t.amount));
-      }
-    });
-
-    return Object.entries(distribution)
-      .map(([category_name, total_amount]) => ({ category_name, total_amount }))
-      .sort((a, b) => b.total_amount - a.total_amount);
+  getExpenseDistribution: async (filters?: { startDate?: string, endDate?: string }): Promise<ExpenseDistribution[]> => {
+    const { financialMetricsService } = await import('./FinancialMetricsService');
+    return await financialMetricsService.getExpenseDistribution(filters?.startDate, filters?.endDate);
   }
 };

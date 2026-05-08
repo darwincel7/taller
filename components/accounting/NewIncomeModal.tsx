@@ -68,7 +68,7 @@ export const NewIncomeModal: React.FC<NewIncomeModalProps> = ({ isOpen, onClose,
     setSubmitError(null);
 
     try {
-      await accountingService.addTransaction({
+      const newTransaction = await accountingService.addTransaction({
         amount: Math.abs(parseFloat(formData.amount)), // Income is positive
         transaction_date: formData.date,
         vendor: formData.source_name, // Reusing vendor field for Payer/Source
@@ -76,15 +76,19 @@ export const NewIncomeModal: React.FC<NewIncomeModalProps> = ({ isOpen, onClose,
         category_id: formData.category,
         source: formData.source,
         status: TransactionStatus.COMPLETED,
-        search_text: file ? `FILE_UPLOADED: ${file.name}` : '' // Simple search text for file presence
+        search_text: file ? `FILE_UPLOADED: ${file.name}` : '',
+        created_by: currentUser?.id
       }, file || undefined);
 
       // Record audit log
-      if (currentUser) {
+      if (currentUser && newTransaction) {
         await auditService.recordLog(
           currentUser,
           ActionType.TRANSACTION_ADDED,
-          `Ingreso registrado: ${formData.source_name} - $${formData.amount} (${formData.description})`
+          `Ingreso registrado: ${formData.source_name} - $${formData.amount} (${formData.description})`,
+          undefined,
+          'TRANSACTION',
+          newTransaction.id
         );
       }
       
@@ -101,7 +105,7 @@ export const NewIncomeModal: React.FC<NewIncomeModalProps> = ({ isOpen, onClose,
       });
       setFile(null);
     } catch (error) {
-      console.error("Submit failed", error);
+      console.warn("Submit failed", error);
       setSubmitError("Error al guardar. Verifica la conexión o el almacenamiento.");
     } finally {
       setIsSubmitting(false);

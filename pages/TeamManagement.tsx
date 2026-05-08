@@ -175,7 +175,7 @@ export const TeamManagement: React.FC = () => {
           alert("Perfil creado exitosamente.");
           resetForm();
       } catch (error: any) {
-          console.error(error);
+          console.warn(error);
           const msg = error.message || JSON.stringify(error);
           alert("Error al crear perfil.\nDetalle técnico: " + msg);
       } finally {
@@ -200,7 +200,7 @@ export const TeamManagement: React.FC = () => {
           });
           resetForm();
       } catch (error: any) {
-          console.error(error);
+          console.warn(error);
           alert("Error al actualizar: " + error.message);
       } finally {
           setIsSaving(false);
@@ -338,6 +338,7 @@ export const TeamManagement: React.FC = () => {
                                   <DollarSign className="w-4 h-4"/> CAJA Y DINERO
                               </h5>
                               <PermissionToggle label="Cobrar y Entregar" desc="Finalizar orden y facturar." checked={!!formData.permissions?.canDeliverOrder} onChange={(v: boolean) => updatePermission('canDeliverOrder', v)} />
+                              <PermissionToggle label="Entregar Eq. Recibidos" desc="Entregar equipos de tienda." checked={!!formData.permissions?.canDeliverStoreOrders} onChange={(v: boolean) => updatePermission('canDeliverStoreOrders', v)} />
                               <PermissionToggle label="Editar Gastos" desc="Agregar/Borrar costos." checked={!!formData.permissions?.canEditExpenses} onChange={(v: boolean) => updatePermission('canEditExpenses', v)} />
                               <PermissionToggle label="Ver Contabilidad" desc="Ver ganancias totales." checked={!!formData.permissions?.canViewAccounting} onChange={(v: boolean) => updatePermission('canViewAccounting', v)} />
                               <PermissionToggle label="Aplicar Descuentos" desc="Permitir descuentos." checked={!!formData.permissions?.canManageDiscounts} onChange={(v: boolean) => updatePermission('canManageDiscounts', v)} />

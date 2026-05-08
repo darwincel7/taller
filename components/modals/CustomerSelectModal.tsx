@@ -27,7 +27,7 @@ export const CustomerSelectModal: React.FC<CustomerSelectModalProps> = ({ onSele
         if (error) throw error;
         setCustomers(data || []);
       } catch (err) {
-        console.error("Error fetching customers:", err);
+        console.warn("Error fetching customers:", err);
       } finally {
         setLoading(false);
       }

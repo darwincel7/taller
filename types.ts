@@ -50,7 +50,9 @@ export enum OrderType {
   REPAIR = 'Reparación Cliente',
   STORE = 'RECIBIDOS',
   WARRANTY = 'Garantía Externa',
-  PART_ONLY = 'Pieza Independiente'
+  PART_ONLY = 'Pieza Independiente',
+  LEAD = 'Prospecto',
+  CAMBIAZO = 'Cambiazo'
 }
 
 export enum RequestStatus {
@@ -93,7 +95,7 @@ export interface Customer {
   lastVisit?: number;
 }
 
-export type PaymentMethod = 'CASH' | 'TRANSFER' | 'CARD' | 'CREDIT';
+export type PaymentMethod = 'CASH' | 'TRANSFER' | 'CARD' | 'CREDIT' | 'CAMBIAZO';
 
 export interface Payment {
   id: string;
@@ -203,6 +205,7 @@ export interface UserPermissions {
   canViewAccounting: boolean;
   canEditExpenses: boolean;
   canDeliverOrder: boolean;
+  canDeliverStoreOrders?: boolean;
   canManageDiscounts: boolean;
   canProcessRefunds: boolean;
   canCreateOrders: boolean;
@@ -333,6 +336,9 @@ export enum ActionType {
   USER_DELETED = 'USER_DELETED',
   PERMISSIONS_UPDATED = 'PERMISSIONS_UPDATED',
   SETTINGS_UPDATED = 'SETTINGS_UPDATED',
+  LEAD_CREATED = 'LEAD_CREATED',
+  LEAD_UPDATED = 'LEAD_UPDATED',
+  LEAD_DELETED = 'LEAD_DELETED',
 }
 
 export interface HistoryLog {
@@ -360,6 +366,7 @@ export interface Expense {
   receiptUrl?: string; // Link to the uploaded receipt image
   sharedReceiptId?: string; // ID to link multiple expenses from the same receipt
   invoiceNumber?: string; // Added for invoice/receipt number
+  vendor?: string; // Added for vendor name
   addedBy?: string; // User who added the expense
   isExternal?: boolean; // Indicates if this expense originated from a floating expense
   is_duplicate?: boolean; // Indicates if the invoice number is a duplicate
@@ -373,6 +380,7 @@ export interface FloatingExpense {
   receipt_url?: string;
   shared_receipt_id?: string;
   invoice_number?: string;
+  vendor?: string;
   created_by?: string;
   created_at?: string;
   branch_id?: string;
@@ -389,6 +397,9 @@ export interface AuditLog {
   details: string;
   order_id?: string;
   created_at: number;
+  entity_type?: 'ORDER' | 'USER' | 'TRANSACTION' | 'INVENTORY' | 'SYSTEM';
+  entity_id?: string;
+  metadata?: any;
 }
 
 export interface InventoryPart {
@@ -398,8 +409,97 @@ export interface InventoryPart {
   min_stock: number;
   cost: number;
   price: number;
-  category?: string;
+  category?: string; // JSON
 }
+
+export interface InventoryExtraction {
+  id: string;
+  inventory_id: string;
+  part_name: string;
+  amount: number;
+  order_id?: string;
+  user_id: string;
+  user_name: string;
+  created_at: number;
+}
+
+export interface StoreAttributeData {
+  type: 'STORE_ATTRIBUTE';
+  subType: 'BRAND' | 'CATEGORY' | 'PROVIDER';
+}
+
+export interface StorePurchaseData {
+  type: 'STORE_PURCHASE';
+  providerId?: string;
+  isCredit?: boolean;
+  creditPaid?: boolean;
+  usedAmount?: number;
+  receiptUrl?: string;
+  readable_id?: number;
+}
+
+export interface StoreProductAttributes {
+  type: 'STORE_PRODUCT';
+  readable_id?: number;
+  brandId?: string;
+  categoryId?: string;
+  description?: string;
+  imageUrl?: string;
+  // For backwards compatibility and filtering
+  legacyCategory?: string;
+}
+
+export interface StoreItemAttributes {
+  type: 'STORE_ITEM';
+  readable_id?: number;
+  parentId: string;
+  purchaseId?: string;
+  imei?: string;
+  status: 'AVAILABLE' | 'SOLD' | 'UNAVAILABLE' | 'PENDING_ACCEPTANCE';
+  imageUrl?: string;
+  oldImageUrl?: string;
+  workshopOrderId?: string;
+  branch?: string;
+  history?: { action: string; date: string; user: string; details: string; imageUrl?: string; }[];
+}
+
+export type ParsedInventoryCategory = 
+  | { type: 'PART' | 'DONOR' | 'SUPPLY', initialCost: number, isExpenseRecorded: boolean, legacyCategory: string, imageUrl?: string }
+  | StoreAttributeData
+  | StorePurchaseData
+  | StoreProductAttributes
+  | StoreItemAttributes;
+
+import { getCleanStorageUrl } from './services/supabase';
+
+export const parseInventoryCategory = (category?: string): ParsedInventoryCategory => {
+  if (!category) return { type: 'PART', initialCost: 0, isExpenseRecorded: false, legacyCategory: '' };
+  try {
+    let categoryStr = category;
+    // First pass fallback to fix raw strings from proxy saved accidentally previously
+    if (categoryStr.includes('/api/supabase-tunnel')) {
+        categoryStr = categoryStr.replace(/https?:\/\/[^\/]+\/api\/supabase-tunnel/g, 'https://ruwcektpadeqovwtdixd.supabase.co')
+                                 .replace(/\/api\/supabase-tunnel/g, 'https://ruwcektpadeqovwtdixd.supabase.co');
+    }
+    const parsed = JSON.parse(categoryStr);
+
+    // Apply cleaner that handles adapting to proxy environment or direct connection automatically
+    if (parsed.imageUrl) parsed.imageUrl = getCleanStorageUrl(parsed.imageUrl);
+    if (parsed.oldImageUrl) parsed.oldImageUrl = getCleanStorageUrl(parsed.oldImageUrl);
+    if (parsed.history && Array.isArray(parsed.history)) {
+       parsed.history.forEach((h: any) => {
+          if (h.imageUrl) h.imageUrl = getCleanStorageUrl(h.imageUrl);
+       });
+    }
+
+    return {
+      type: parsed.type || 'PART',
+      ...parsed
+    };
+  } catch (e) {
+    return { type: 'PART', initialCost: 0, isExpenseRecorded: false, legacyCategory: category };
+  }
+};
 
 export interface WikiArticle {
   id: string;
@@ -441,6 +541,10 @@ export interface RepairOrder {
   assignedTo?: string | null;
   pending_assignment_to?: string | null;
   
+  salespersonId?: string;
+  salespersonName?: string;
+  metadata?: any;
+
   estimatedCost: number;
   totalAmount?: number;
   partsCost?: number;
@@ -465,11 +569,14 @@ export interface RepairOrder {
   refundRequest?: RefundRequest;
 
   pointsAwarded?: number;
+  originalPointsAwarded?: number;
+  pointsEarnedBy?: string;
   pointRequest?: PointRequest;
   pointsSplit?: PointSplit;
 
   completedAt?: number;
   relatedOrderId?: string;
+  returnDate?: string;
   
   tempVideoId?: string;
 
@@ -487,6 +594,10 @@ export interface RepairOrder {
   techMessage?: { message: string, sender: string, timestamp: number, pending: boolean }; // Deprecated in favor of InternalChat, kept for legacy
   
   holdReason?: string;
+  followUpSent?: boolean;
+  reviewSent?: boolean;
+  lastContactAt?: number;
+  updatedAt?: number;
 }
 
 export interface AppNotification {
@@ -589,6 +700,7 @@ export interface Obligation {
 }
 
 export interface FinancialKPIs {
+  // Original
   current_income: number;
   current_expenses: number;
   current_purchases: number;
@@ -597,6 +709,25 @@ export interface FinancialKPIs {
   prev_expenses: number;
   prev_purchases: number;
   growth_income: number;
+  
+  // New Integration KPIs
+  ventasNetas?: number;
+  costoVenta?: number;
+  margenBruto?: number;
+  margenBrutoPorcentaje?: number;
+  gastosOperativos?: number;
+  utilidadOperativa?: number;
+  utilidadNeta?: number;
+  flujoEfectivo?: number;
+  puntoEquilibrio?: number;
+  capitalTrabajo?: number;
+  rotacionInventario?: number;
+  ticketPromedio?: number;
+  cuentasPorCobrar?: number;
+  cuentasPorPagar?: number;
+  endeudamiento?: number;
+  roi?: number;
+  rentabilidadTaller?: number;
 }
 
 export interface AIInsight {
@@ -605,8 +736,55 @@ export interface AIInsight {
   metric?: string;
 }
 
+export interface ClientCredit {
+  id: string;
+  order_id?: string;
+  customer_id?: string;
+  client_name: string;
+  client_phone: string;
+  amount: number;
+  due_date: string;
+  cashier_id: string;
+  cashier_name: string;
+  status: 'PENDING' | 'PAID';
+  notification_sent?: boolean;
+  paid_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface AIChatMessage {
   role: 'user' | 'assistant';
   content: string;
   timestamp: Date;
+}
+
+// --- CRM & LEADS TYPES ---
+
+export enum LeadStatus {
+  NEW = 'Nuevo',
+  CONTACTED = 'Contactado',
+  FOLLOW_UP_3D = 'Seguimiento 3 Días',
+  REVIEW_REQUESTED = 'Reseña Solicitada',
+  CONVERTED = 'Convertido',
+  LOST = 'Perdido'
+}
+
+export interface Lead {
+  id: string;
+  readable_id?: number;
+  name: string;
+  phone: string;
+  email?: string;
+  deviceModel?: string;
+  deviceIssue?: string;
+  status: LeadStatus;
+  notes?: string;
+  createdAt: number;
+  lastContactAt: number;
+  followUpSent: boolean;
+  reviewSent: boolean;
+  source?: string;
+  assignedTo?: string;
+  branch?: string;
 }

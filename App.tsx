@@ -12,6 +12,7 @@ import { Login } from './pages/Login';
 import { TeamManagement } from './pages/TeamManagement';
 import { ActivityLog } from './pages/ActivityLog';
 import { StoreStock } from './pages/StoreStock';
+import { StoreInventory } from './pages/StoreInventory';
 import { Inventory } from './pages/Inventory';
 import { KnowledgeBase } from './pages/KnowledgeBase';
 import { CashRegister } from './pages/CashRegister';
@@ -23,11 +24,18 @@ import { FinancialDashboard } from './pages/FinancialDashboard';
 import { StrategicVault } from './pages/StrategicVault';
 import { CRM } from './pages/CRM';
 import { Customers } from './pages/Customers';
+import { WhatsAppSettings } from './pages/WhatsAppSettings';
+import { Commissions } from './pages/Commissions';
 import { OrderProvider } from './contexts/OrderContext';
 import { InventoryProvider } from './contexts/InventoryContext'; 
 import { CashProvider } from './contexts/CashContext'; 
 import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { GlobalClickTracker } from './components/GlobalClickTracker';
+import { GlobalPinger } from './components/GlobalPinger';
 import { Loader2 } from 'lucide-react';
+
+import { CashierAlerts } from './components/CashierAlerts';
+import { CreditAlerts } from './components/CreditAlerts';
 
 const queryClient = new QueryClient();
 
@@ -47,17 +55,37 @@ const ProtectedRoute = ({ children }: { children?: React.ReactNode }) => {
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
-  return <Layout>{children}</Layout>;
+  return (
+    <Layout>
+      {children}
+      <CashierAlerts />
+      <CreditAlerts />
+    </Layout>
+  );
 };
 
+import { Toaster } from 'sonner';
+import { connectQZ } from './services/qzService';
+
 const App: React.FC = () => {
+  React.useEffect(() => {
+    // Attempt to connect to QZ Tray silently on app load
+    connectQZ().catch(err => {
+      // Intentionally ignoring. We know many users don't have it installed.
+      // The error is suppressed so it doesn't show in the console unless explicitly printing locally.
+    });
+  }, []);
+
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
+        <GlobalClickTracker />
+        <GlobalPinger />
         <OrderProvider>
           <InventoryProvider>
             <CashProvider>
               <HashRouter>
+                <Toaster position="top-center" richColors />
                 <Routes>
                   <Route path="/login" element={<Login />} />
                   <Route path="/client" element={<ClientView />} />
@@ -68,7 +96,10 @@ const App: React.FC = () => {
                   <Route path="/vault" element={<ProtectedRoute><StrategicVault /></ProtectedRoute>} />
                   <Route path="/crm" element={<ProtectedRoute><CRM /></ProtectedRoute>} />
                   <Route path="/customers" element={<ProtectedRoute><Customers /></ProtectedRoute>} />
+                  <Route path="/whatsapp" element={<ProtectedRoute><WhatsAppSettings /></ProtectedRoute>} />
+                  <Route path="/commissions" element={<ProtectedRoute><Commissions /></ProtectedRoute>} />
                   <Route path="/store" element={<ProtectedRoute><StoreStock /></ProtectedRoute>} />
+                  <Route path="/store-inventory" element={<ProtectedRoute><StoreInventory /></ProtectedRoute>} />
                   <Route path="/intake" element={<ProtectedRoute><Intake /></ProtectedRoute>} />
                   <Route path="/orders" element={<ProtectedRoute><OrderList /></ProtectedRoute>} />
                   <Route path="/orders/:id" element={<ProtectedRoute><OrderDetails /></ProtectedRoute>} />

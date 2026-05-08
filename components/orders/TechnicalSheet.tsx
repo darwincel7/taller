@@ -1,8 +1,11 @@
 
-import React, { useState } from 'react';
-import { Smartphone, Maximize2, FileText, Wrench, X } from 'lucide-react';
+import React, { useState, useRef } from 'react';
+import { Smartphone, Maximize2, FileText, Wrench, X, Upload, Loader2 } from 'lucide-react';
 import { RepairOrder, OrderType } from '../../types';
 import { OrderInfoEdit } from '../OrderInfoEdit';
+import { useOrders } from '../../contexts/OrderContext';
+import { supabase } from '../../services/supabase';
+import { toast } from 'sonner';
 
 interface TechnicalSheetProps {
   order: RepairOrder;
@@ -30,6 +33,29 @@ export const TechnicalSheet: React.FC<TechnicalSheetProps> = ({
   onSearchCustomer
 }) => {
   const [isZoomed, setIsZoomed] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const { updateOrderDetails } = useOrders();
+
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files?.length) return;
+    const file = e.target.files[0];
+    setIsUploading(true);
+    try {
+      const ext = file.name.split('.').pop();
+      const fileName = `order_${order.id}_${Date.now()}_${Math.random().toString(36).substring(7)}.${ext}`;
+      const { error } = await supabase.storage.from('receipts').upload(fileName, file, { cacheControl: '3600' });
+      if (error) throw error;
+      const { data } = supabase.storage.from('receipts').getPublicUrl(fileName);
+      
+      await updateOrderDetails(order.id, { devicePhoto: data.publicUrl });
+      toast.success('Imagen actualizada correctamente');
+    } catch (err: any) {
+      toast.error('Error al subir imagen: ' + err.message);
+    } finally {
+      setIsUploading(false);
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -59,6 +85,13 @@ export const TechnicalSheet: React.FC<TechnicalSheetProps> = ({
         onClick={() => { if(order.devicePhoto) setIsZoomed(true); }}
         className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden h-48 flex items-center justify-center bg-slate-100 relative group cursor-pointer"
       >
+        {isUploading && (
+          <div className="absolute inset-0 bg-white/80 z-20 flex flex-col items-center justify-center backdrop-blur-sm">
+            <Loader2 className="w-8 h-8 text-blue-500 animate-spin mb-2" />
+            <span className="text-sm font-bold text-slate-700">Subiendo...</span>
+          </div>
+        )}
+      
         {order.devicePhoto ? (
           <img src={order.devicePhoto} className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105" alt="Evidencia" />
         ) : (
@@ -66,12 +99,32 @@ export const TechnicalSheet: React.FC<TechnicalSheetProps> = ({
         )}
         
         {order.devicePhoto && (
-          <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center backdrop-blur-[1px]">
+          <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center backdrop-blur-[1px] gap-3">
             <p className="text-white font-bold flex items-center gap-2 bg-black/50 px-4 py-2 rounded-full border border-white/20 transform translate-y-2 group-hover:translate-y-0 transition-transform">
               <Maximize2 className="w-5 h-5"/> Ver en HD
             </p>
           </div>
         )}
+
+        {canEdit && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              fileInputRef.current?.click();
+            }}
+            className="absolute bottom-4 right-4 bg-white/90 text-slate-800 p-2 rounded-full shadow-lg border border-slate-200 hover:bg-blue-50 hover:text-blue-600 transition-all z-10"
+            title="Cambiar imagen"
+          >
+            <Upload className="w-5 h-5" />
+          </button>
+        )}
+        <input 
+          type="file" 
+          accept="image/*" 
+          className="hidden" 
+          ref={fileInputRef} 
+          onChange={handleImageUpload} 
+        />
       </div>
 
       {/* TECHNICAL INFO CARD */}

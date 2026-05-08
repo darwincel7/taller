@@ -89,7 +89,7 @@ export const OrderTable: React.FC<OrderTableProps> = ({ list, onClaim, onPreview
                                 </td>
                                 <td className="p-4">
                                     <div className="flex flex-col">
-                                        <span className="text-xs font-black text-slate-800">${(order.finalPrice || order.estimatedCost || 0).toLocaleString()}</span>
+                                        <span className="text-xs font-black text-slate-800">${(order.totalAmount ?? (order.finalPrice || order.estimatedCost || 0)).toLocaleString()}</span>
                                     </div>
                                 </td>
                                 <td className="p-4 text-right">

@@ -11,6 +11,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { useDebounce } from '../../hooks/useDebounce';
 import { supabase } from '../../services/supabase';
+import { EditTransactionModal } from './EditTransactionModal';
 
 interface TransactionsTableProps {
   transactions?: AccountingTransaction[]; // Optional now as we fetch internally for pagination
@@ -22,23 +23,28 @@ export const TransactionsTable: React.FC<TransactionsTableProps> = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const debouncedSearch = useDebounce(searchTerm, 500);
   const [selectedTransaction, setSelectedTransaction] = useState<AccountingTransaction | null>(null);
+  const [editingTransaction, setEditingTransaction] = useState<AccountingTransaction | null>(null);
   const [page, setPage] = useState(0);
   const pageSize = 20;
   
   // Filters
   const [filterType, setFilterType] = useState<'ALL' | 'INCOME' | 'EXPENSE'>('ALL');
   const [filterSource, setFilterSource] = useState<'ALL' | 'MANUAL' | 'ORDER' | 'STORE'>('ALL');
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
 
   // Fetch transactions with pagination and search
   const { data, isLoading, isFetching } = useQuery({
-    queryKey: ['transactions', page, debouncedSearch, filterType, filterSource],
+    queryKey: ['transactions', page, debouncedSearch, filterType, filterSource, startDate, endDate],
     queryFn: () => accountingService.getTransactions({
         limit: pageSize,
         offset: page * pageSize,
         search: debouncedSearch,
         type: filterType === 'ALL' ? undefined : filterType,
         source: filterSource === 'ALL' ? undefined : filterSource,
-        excludeStatus: TransactionStatus.PENDING
+        excludeStatus: TransactionStatus.PENDING,
+        startDate: startDate || undefined,
+        endDate: endDate || undefined
     }),
     keepPreviousData: true
   } as any);
@@ -54,7 +60,7 @@ export const TransactionsTable: React.FC<TransactionsTableProps> = () => {
       await accountingService.updateTransaction(transaction.id, { status: TransactionStatus.COMPLETED });
       return transaction.id;
     },
-    onSuccess: (_, id) => {
+    onSuccess: (_, transaction) => {
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
       queryClient.invalidateQueries({ queryKey: ['kpis'] });
       queryClient.invalidateQueries({ queryKey: ['cashflow'] });
@@ -65,7 +71,10 @@ export const TransactionsTable: React.FC<TransactionsTableProps> = () => {
         auditService.recordLog(
           currentUser,
           ActionType.TRANSACTION_EDITED,
-          `Consolidó transacción: ${id}`
+          `Consolidó transacción: ${transaction.id}`,
+          undefined,
+          'TRANSACTION',
+          transaction.id
         );
       }
     },
@@ -114,6 +123,7 @@ export const TransactionsTable: React.FC<TransactionsTableProps> = () => {
               
             // Return to floating expenses (gastos en espera) ONLY if it was originally a floating expense
             if (expenseToRemove.isExternal) {
+                const originalInvoiceNumber = expenseToRemove.invoiceNumber ? expenseToRemove.invoiceNumber.split('-DUP-')[0] : null;
                 await supabase.from('floating_expenses').insert([{
                   description: expenseToRemove.description,
                   amount: expenseToRemove.amount,
@@ -121,7 +131,12 @@ export const TransactionsTable: React.FC<TransactionsTableProps> = () => {
                   shared_receipt_id: expenseToRemove.sharedReceiptId || null,
                   created_by: currentUser?.id || null,
                   branch_id: currentUser?.branch || 'T4',
-                  approval_status: 'APPROVED'
+                  approval_status: 'APPROVED',
+                  closing_id: transaction.closing_id || null,
+                  created_at: transaction.created_at || new Date().toISOString(),
+                  invoice_number: originalInvoiceNumber,
+                  vendor: expenseToRemove.vendor || null,
+                  is_duplicate: expenseToRemove.is_duplicate || false
                 }]);
             }
           }
@@ -132,7 +147,7 @@ export const TransactionsTable: React.FC<TransactionsTableProps> = () => {
       await accountingService.deleteTransaction(transaction.id);
       return transaction.id;
     },
-    onSuccess: (_, id) => {
+    onSuccess: (_, transaction) => {
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
       queryClient.invalidateQueries({ queryKey: ['orders'] });
       setSelectedTransaction(null);
@@ -142,7 +157,10 @@ export const TransactionsTable: React.FC<TransactionsTableProps> = () => {
         auditService.recordLog(
           currentUser,
           ActionType.TRANSACTION_DELETED,
-          `Transacción eliminada`
+          `Transacción eliminada`,
+          undefined,
+          'TRANSACTION',
+          transaction.id
         );
       }
     }
@@ -158,6 +176,34 @@ export const TransactionsTable: React.FC<TransactionsTableProps> = () => {
         
         <div className="flex flex-wrap gap-2 w-full md:w-auto items-center">
           {/* Filters */}
+          <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl px-2 py-1">
+            <Calendar className="w-3 h-3 text-slate-400" />
+            <input 
+              type="date" 
+              className="bg-transparent text-xs font-bold text-slate-600 outline-none w-28"
+              value={startDate}
+              onChange={e => { setStartDate(e.target.value); setPage(0); }}
+              title="Fecha Inicio"
+            />
+            <span className="text-slate-300 text-xs">-</span>
+            <input 
+              type="date" 
+              className="bg-transparent text-xs font-bold text-slate-600 outline-none w-28"
+              value={endDate}
+              onChange={e => { setEndDate(e.target.value); setPage(0); }}
+              title="Fecha Fin"
+            />
+            {(startDate || endDate) && (
+              <button 
+                onClick={() => { setStartDate(''); setEndDate(''); setPage(0); }}
+                className="p-1 hover:bg-slate-200 rounded-full text-slate-400 hover:text-slate-600 transition-colors"
+                title="Limpiar fechas"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            )}
+          </div>
+
           <select 
             className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-600 outline-none"
             value={filterType}
@@ -202,6 +248,9 @@ export const TransactionsTable: React.FC<TransactionsTableProps> = () => {
               <th className="px-6 py-4">Categoría</th>
               <th className="px-6 py-4">Origen</th>
               <th className="px-6 py-4 text-right">Monto</th>
+              {currentUser?.email?.toLowerCase() === 'daruingmejia@gmail.com' && (
+                <th className="px-6 py-4 text-right">Acciones</th>
+              )}
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-50">
@@ -254,6 +303,20 @@ export const TransactionsTable: React.FC<TransactionsTableProps> = () => {
                 <td className={`px-6 py-4 text-right font-black text-sm ${t.amount > 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
                   {t.amount > 0 ? '+' : ''}{t.amount.toLocaleString('en-US', { style: 'currency', currency: 'USD' })}
                 </td>
+                {currentUser?.email?.toLowerCase() === 'daruingmejia@gmail.com' && (
+                  <td className="px-6 py-4 text-right">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setEditingTransaction(t);
+                      }}
+                      className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                      title="Editar transacción"
+                    >
+                      <Edit className="w-4 h-4" />
+                    </button>
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>
@@ -422,6 +485,17 @@ export const TransactionsTable: React.FC<TransactionsTableProps> = () => {
                 </div>
 
                 <div className="pt-6 border-t border-slate-100 flex gap-3">
+                  {currentUser?.email?.toLowerCase() === 'daruingmejia@gmail.com' && (
+                    <button 
+                      onClick={() => {
+                        setEditingTransaction(selectedTransaction);
+                        setSelectedTransaction(null);
+                      }}
+                      className="flex-1 py-3 bg-blue-50 text-blue-600 rounded-xl font-bold hover:bg-blue-100 transition flex items-center justify-center gap-2"
+                    >
+                      <Edit className="w-4 h-4" /> Editar
+                    </button>
+                  )}
                   {selectedTransaction.status === TransactionStatus.PENDING && currentUser?.role !== UserRole.CASHIER && (
                     <button 
                       onClick={() => consolidateMutation.mutate(selectedTransaction)}
@@ -444,6 +518,17 @@ export const TransactionsTable: React.FC<TransactionsTableProps> = () => {
           </>
         )}
       </AnimatePresence>
+
+      <EditTransactionModal 
+        isOpen={!!editingTransaction}
+        onClose={() => setEditingTransaction(null)}
+        transaction={editingTransaction}
+        onSuccess={() => {
+          queryClient.invalidateQueries({ queryKey: ['transactions'] });
+          queryClient.invalidateQueries({ queryKey: ['kpis'] });
+          queryClient.invalidateQueries({ queryKey: ['cashflow'] });
+        }}
+      />
     </div>
   );
 };

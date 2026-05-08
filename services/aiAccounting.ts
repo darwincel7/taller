@@ -1,12 +1,42 @@
 import { GoogleGenAI } from "@google/genai";
 
 const getAiClient = () => {
-    const key = process.env.GEMINI_API_KEY;
-    if (!key) {
-        console.warn("Gemini API Key missing. AI features will be disabled.");
-        throw new Error("API Key not found.");
+    // Return a mock of GoogleGenAI that intercepts generateContent and routes it through our backend
+    return {
+        models: {
+            generateContent: async (params: any) => {
+                const res = await fetch('/api/gemini/generateContent', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(params)
+                });
+                const data = await res.json();
+                if (!res.ok) {
+                    const errMsg = data.fault || data.error || data.details?.message || "Failed to generate content";
+                    throw errMsg;
+                }
+                // data.text will contain the generated text from the server
+                return { text: data.text };
+            }
+        }
+    };
+};
+
+export const handleGeminiError = (e: any): string => {
+    let errorMsg = e?.message || e?.toString() || "";
+    
+    // Handle nested error object from Gemini API
+    if (e?.error) {
+        errorMsg = e.error.message || errorMsg;
+        if (e.error.status) errorMsg += ` [${e.error.status}]`;
+        if (e.error.code) errorMsg += ` (${e.error.code})`;
     }
-    return new GoogleGenAI({ apiKey: key });
+
+    if (e?.status === 429 || e?.error?.code === 429 || errorMsg.includes("429") || errorMsg.includes("RESOURCE_EXHAUSTED") || errorMsg.includes("quota")) {
+        return "Has excedido tu cuota de uso de la API de Gemini. Por favor, verifica tu plan y detalles de facturación en https://ai.google.dev/gemini-api/docs/rate-limits.";
+    }
+    console.warn("Gemini Accounting API Error:", e);
+    return `Error comunicándose con la IA: ${errorMsg}`;
 };
 
 const SYSTEM_PROMPT_OCR = `
@@ -50,22 +80,11 @@ Tus responsabilidades:
 
 export const aiAccountingService = {
   checkApiKey: async () => {
-    const key = process.env.GEMINI_API_KEY;
-    if (key) return true;
-    // @ts-ignore
-    if (typeof window !== 'undefined' && window.aistudio && window.aistudio.hasSelectedApiKey) {
-        // @ts-ignore
-        return await window.aistudio.hasSelectedApiKey();
-    }
-    return false;
+    return true; // Configured in backend
   },
 
   promptApiKey: async () => {
-    // @ts-ignore
-    if (typeof window !== 'undefined' && window.aistudio && window.aistudio.openSelectKey) {
-        // @ts-ignore
-        await window.aistudio.openSelectKey();
-    }
+    // Replaced by backend config
   },
 
   scanReceipt: async (file: File) => {
@@ -74,7 +93,7 @@ export const aiAccountingService = {
       const base64Data = await fileToGenerativePart(file);
       
       const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
+        model: "gemini-2.5-flash",
         contents: {
           parts: [
             { 
@@ -96,9 +115,9 @@ export const aiAccountingService = {
       if (!jsonMatch) throw new Error("No JSON found in response");
       
       return JSON.parse(jsonMatch[0]);
-    } catch (error) {
-      console.error("AI Scan Error:", error);
-      return { error: "Failed to scan receipt" };
+    } catch (error: any) {
+      const msg = handleGeminiError(error);
+      return { error: msg };
     }
   },
 
@@ -121,7 +140,7 @@ export const aiAccountingService = {
       `;
 
       const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
+        model: "gemini-2.5-flash",
         contents: {
           parts: [
             { 
@@ -142,9 +161,9 @@ export const aiAccountingService = {
       if (!jsonMatch) throw new Error("No JSON found in response");
       
       return JSON.parse(jsonMatch[0]);
-    } catch (error) {
-      console.error("AI Validation Error:", error);
-      return { isValid: false, error: "Failed to validate receipt" };
+    } catch (error: any) {
+      const msg = handleGeminiError(error);
+      return { isValid: false, error: msg };
     }
   },
 
@@ -152,7 +171,7 @@ export const aiAccountingService = {
     try {
       const ai = getAiClient();
       const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
+        model: "gemini-2.5-flash",
         contents: {
           parts: [
             { text: SYSTEM_PROMPT_INSIGHTS },
@@ -168,13 +187,13 @@ export const aiAccountingService = {
       if (!jsonMatch) throw new Error("No JSON array found in response");
       
       return JSON.parse(jsonMatch[0]);
-    } catch (error) {
-      console.error("AI Insights Error:", error);
+    } catch (error: any) {
+      const msg = handleGeminiError(error);
+      console.warn("AI Insights Issue:", msg);
       // Fallback insights if AI fails
       return [
-        { type: 'info', message: 'Gastos estables este mes.', metric: '0%' },
-        { type: 'success', message: 'Buen margen de beneficio.', metric: '+15%' },
-        { type: 'warning', message: 'Revisar inventario de pantallas.', metric: 'Low' }
+        { type: 'info', message: msg, metric: 'Error' },
+        { type: 'warning', message: 'No se pudieron cargar los insights.', metric: 'N/A' }
       ];
     }
   },
@@ -196,16 +215,15 @@ export const aiAccountingService = {
       });
 
       const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
+        model: "gemini-2.5-flash",
         contents: contents,
         config: {
           systemInstruction: SYSTEM_PROMPT_CFO,
         }
       });
       return response.text;
-    } catch (error) {
-      console.error("AI Chat Error:", error);
-      return "Lo siento, no puedo procesar tu consulta financiera en este momento.";
+    } catch (error: any) {
+      return handleGeminiError(error);
     }
   }
 };

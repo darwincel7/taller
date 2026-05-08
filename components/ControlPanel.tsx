@@ -8,6 +8,7 @@ interface ControlPanelProps {
   isAdmin: boolean;
   currentUser: User | null;
   canDeliver: boolean;
+  canDeliverStoreOrders?: boolean;
   onReturn: () => void;
   onDeliver: () => void;
   onAssign: () => void;
@@ -30,6 +31,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   isAdmin,
   currentUser,
   canDeliver,
+  canDeliverStoreOrders,
   onReturn,
   onDeliver,
   onAssign,
@@ -120,6 +122,11 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
       {/* ACTIVE ORDER CONTROLS */}
       {order.status !== OrderStatus.RETURNED && (
         <div className="grid grid-cols-2 gap-3 mb-4">
+          {(order.orderType === OrderType.STORE || order.orderType === OrderType.CAMBIAZO) && canDeliverStoreOrders && (
+            <button type="button" onClick={onDeliver} className="col-span-2 py-3 bg-emerald-50 text-emerald-600 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-emerald-100 transition border border-emerald-100 cursor-pointer active:scale-95">
+              <Sparkles className="w-4 h-4"/> <span className="text-[9px] uppercase">ENTREGAR A INVENTARIO</span>
+            </button>
+          )}
           <button type="button" onClick={onReturn} className="py-3 bg-red-50 text-red-600 rounded-xl font-bold flex flex-col items-center justify-center gap-1 hover:bg-red-100 transition border border-red-100 cursor-pointer active:scale-95">
             <Reply className="w-4 h-4"/> <span className="text-[9px] uppercase">DEVOLVER</span>
           </button>

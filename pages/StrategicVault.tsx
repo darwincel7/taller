@@ -150,7 +150,8 @@ export const StrategicVault: React.FC = () => {
         description: `Pago automático: ${selectedObligation.name}`,
         category_id: expenseCat ? expenseCat.id : undefined,
         source: paymentSource,
-        status: TransactionStatus.COMPLETED
+        status: TransactionStatus.COMPLETED,
+        created_by: currentUser?.id
       });
 
       // 2. Update remaining balance in the Vault
@@ -170,7 +171,10 @@ export const StrategicVault: React.FC = () => {
         await auditService.recordLog(
           currentUser,
           ActionType.OBLIGATION_PAID,
-          `Pago de obligación ejecutado: ${selectedObligation.name} - $${selectedObligation.amount} (${paymentSource})`
+          `Pago de obligación ejecutado: ${selectedObligation.name} - $${selectedObligation.amount} (${paymentSource})`,
+          undefined,
+          'OBLIGATION',
+          selectedObligation.id
         );
       }
 
@@ -181,7 +185,7 @@ export const StrategicVault: React.FC = () => {
       }, 1000);
 
     } catch (error) {
-      console.error("Error executing payment:", error);
+      console.warn("Error executing payment:", error);
       setIsPaying(false);
       alert("Error al ejecutar el pago");
     }

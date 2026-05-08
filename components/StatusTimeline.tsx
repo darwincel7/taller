@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { OrderStatus, UserRole } from '../types';
+import { OrderStatus, UserRole, OrderType } from '../types';
 import { useAuth } from '../contexts/AuthContext';
 import { CheckCircle2, Clock, Wrench, PackageCheck, FileSearch, UserCheck, Lock, RotateCcw } from 'lucide-react';
 
@@ -18,9 +18,10 @@ interface StatusTimelineProps {
   onStepClick?: (status: OrderStatus) => void;
   disabled?: boolean;
   isReturn?: boolean;
+  orderType?: OrderType;
 }
 
-export const StatusTimeline: React.FC<StatusTimelineProps> = ({ currentStatus, onStepClick, disabled = false, isReturn = false }) => {
+export const StatusTimeline: React.FC<StatusTimelineProps> = ({ currentStatus, onStepClick, disabled = false, isReturn = false, orderType }) => {
   const { currentUser } = useAuth();
   const currentIndex = steps.findIndex(s => s.status === currentStatus);
   const activeIndex = currentIndex === -1 ? 0 : currentIndex;
@@ -34,7 +35,7 @@ export const StatusTimeline: React.FC<StatusTimelineProps> = ({ currentStatus, o
       if (currentUser?.role === UserRole.ADMIN) return true;
       
       // EXCEPTION: Cashier can ALWAYS click "RETURNED" if current state is REPAIRED
-      if (status === OrderStatus.RETURNED && currentStatus === OrderStatus.REPAIRED && (currentUser?.role === UserRole.CASHIER || currentUser?.permissions?.canDeliverOrder)) {
+      if (status === OrderStatus.RETURNED && currentStatus === OrderStatus.REPAIRED && (currentUser?.role === UserRole.CASHIER || currentUser?.permissions?.canDeliverOrder || currentUser?.permissions?.canDeliverStoreOrders)) {
           return true;
       }
       
@@ -112,7 +113,7 @@ export const StatusTimeline: React.FC<StatusTimelineProps> = ({ currentStatus, o
                         ${isActive ? `${labelActiveParams.text} ${labelActiveParams.bg}` : 'text-slate-500'}
                     `}
                     >
-                    {step.label}
+                    {step.status === OrderStatus.RETURNED && orderType === OrderType.STORE ? 'Entregar a Inventario' : step.label}
                     </span>
                 </div>
               </div>

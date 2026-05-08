@@ -1,20 +1,21 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { X, Camera, CheckCircle2, Loader2, Plus, Trash2, SplitSquareHorizontal, FileText, Download, Maximize2, Sparkles, Upload } from 'lucide-react';
-import { supabase } from '../../services/supabase';
+import { supabase, finalUrl, finalKey } from '../../services/supabase';
 import { Expense, FloatingExpense } from '../../types';
 import { analyzeInvoiceImage, urlToBase64 } from '../../services/geminiService';
 import { accountingService } from '../../services/accountingService';
 
 interface AddExpenseModalProps {
   onClose: () => void;
-  onAddSimple: (desc: string, amount: number, receiptUrl: string, invoiceNumber?: string, isDuplicate?: boolean) => Promise<void>;
+  onAddSimple: (desc: string, amount: number, receiptUrl: string, invoiceNumber?: string, vendor?: string, isDuplicate?: boolean) => Promise<void>;
   onAddMultiple: (
     currentOrderExpenses: { desc: string; amount: number }[],
     floatingExpenses: { desc: string; amount: number }[],
     receiptUrl: string,
     sharedReceiptId: string,
     invoiceNumber?: string,
+    vendor?: string,
     isDuplicate?: boolean
   ) => Promise<void>;
 }
@@ -39,17 +40,19 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({ onClose, onAdd
   ]);
   
   const [invoiceNumber, setInvoiceNumber] = useState<string>('');
+  const [vendor, setVendor] = useState<string>('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showImageModal, setShowImageModal] = useState(false);
   const [isDuplicate, setIsDuplicate] = useState(false);
   const [checkingDuplicate, setCheckingDuplicate] = useState(false);
+  const [aiAnalysisError, setAiAnalysisError] = useState<string | null>(null);
 
   useEffect(() => {
     const check = async () => {
-      if (invoiceNumber.trim()) {
+      if (invoiceNumber.trim() || vendor.trim()) {
         setCheckingDuplicate(true);
-        const exists = await accountingService.checkDuplicateInvoice(invoiceNumber);
+        const exists = await accountingService.checkDuplicateInvoice(invoiceNumber, vendor);
         setIsDuplicate(exists);
         setCheckingDuplicate(false);
       } else {
@@ -58,34 +61,63 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({ onClose, onAdd
     };
     const timer = setTimeout(check, 500);
     return () => clearTimeout(timer);
-  }, [invoiceNumber]);
+  }, [invoiceNumber, vendor]);
 
   const processInvoiceImage = async (url: string) => {
     setIsAnalyzing(true);
+    setAiAnalysisError(null);
     try {
-      const base64 = await urlToBase64(url);
-      const result = await analyzeInvoiceImage(base64);
+      const { base64, mimeType } = await urlToBase64(url);
+      const result = await analyzeInvoiceImage(base64, mimeType);
       if (result) {
-        if (result.invoiceNumber) setInvoiceNumber(result.invoiceNumber);
+        if (result.invoiceNumber && result.invoiceNumber !== "null") setInvoiceNumber(result.invoiceNumber);
+        if (result.vendor && result.vendor !== "null") setVendor(result.vendor);
         
         if (result.articles && result.articles.length > 0) {
           if (result.articles.length === 1) {
             setExpenseType('simple');
             setSimpleDesc(result.articles[0].description);
-            setSimpleAmount(result.articles[0].amount.toString());
+            
+            let parsedAmount = 0;
+            if (typeof result.articles[0].amount === 'number') {
+              parsedAmount = result.articles[0].amount;
+            } else if (typeof result.articles[0].amount === 'string') {
+              const cleanStr = (result.articles[0].amount as string).replace(/[^0-9.-]+/g,"");
+              parsedAmount = parseFloat(cleanStr);
+            }
+            setSimpleAmount(isNaN(parsedAmount) ? '' : parsedAmount.toString());
           } else {
             setExpenseType('multiple');
-            setMultipleItems(result.articles.map(art => ({
-              id: crypto.randomUUID(),
-              desc: art.description,
-              amount: art.amount.toString(),
-              isCurrentOrder: true
-            })));
+            setMultipleItems(result.articles.map(art => {
+              let parsedAmount = 0;
+              if (typeof art.amount === 'number') {
+                parsedAmount = art.amount;
+              } else if (typeof art.amount === 'string') {
+                const cleanStr = (art.amount as string).replace(/[^0-9.-]+/g,"");
+                parsedAmount = parseFloat(cleanStr);
+              }
+              
+              return {
+                id: crypto.randomUUID(),
+                desc: art.description,
+                amount: isNaN(parsedAmount) ? '' : parsedAmount.toString(),
+                isCurrentOrder: true
+              };
+            }));
           }
+        } else {
+            setAiAnalysisError("La inteligencia artificial procesó la imagen pero no pudo detectar textos o artículos claros.");
+            setExpenseType('simple');
+            setSimpleDesc('Servicio / Repuesto');
+            setSimpleAmount('0');
         }
+      } else {
+        setAiAnalysisError("No se pudo formatear la información desde la imagen. Intenta ajustarlo manualmente.");
+        setExpenseType('simple');
       }
-    } catch (e) {
-      console.error("Error processing invoice image:", e);
+    } catch (e: any) {
+      console.warn("Issue processing invoice image:", e);
+      setAiAnalysisError(e.message || e || "Error al procesar la imagen de la factura.");
     } finally {
       setIsAnalyzing(false);
       setStep('fill_details');
@@ -126,7 +158,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({ onClose, onAdd
           clearInterval(pollInterval);
         }
       } catch (err) {
-        console.error("Error polling for receipt:", err);
+        console.warn("Error polling for receipt:", err);
       }
     }, 3000);
 
@@ -162,7 +194,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({ onClose, onAdd
         .eq('shared_receipt_id', sessionId)
         .eq('description', 'RECEIPT_UPLOAD_TRIGGER');
     } catch (e) {
-      console.error("Cleanup error:", e);
+      console.warn("Cleanup error:", e);
     }
     onClose();
   };
@@ -182,7 +214,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({ onClose, onAdd
           setIsSubmitting(false);
           return;
         }
-        await onAddSimple(simpleDesc, amount, finalReceiptUrl, invoiceNumber, isDuplicate);
+        await onAddSimple(simpleDesc, amount, finalReceiptUrl, invoiceNumber, vendor, isDuplicate);
       } else {
         const currentOrderExpenses: { desc: string; amount: number }[] = [];
         const floatingExpenses: { desc: string; amount: number }[] = [];
@@ -207,18 +239,18 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({ onClose, onAdd
           return;
         }
 
-        await onAddMultiple(currentOrderExpenses, floatingExpenses, finalReceiptUrl, sessionId, invoiceNumber, isDuplicate);
+        await onAddMultiple(currentOrderExpenses, floatingExpenses, finalReceiptUrl, sessionId, invoiceNumber, vendor, isDuplicate);
       }
       handleClose();
     } catch (error) {
-      console.error(error);
+      console.warn(error);
       alert("Error al guardar el gasto.");
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  const uploadUrl = `${window.location.origin}/#/mobile-upload/${sessionId}`;
+  const uploadUrl = `${window.location.origin}/#/mobile-upload/${sessionId}?sbUrl=${encodeURIComponent(finalUrl || '')}&sbKey=${encodeURIComponent(finalKey || '')}`;
 
   return (
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -301,7 +333,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({ onClose, onAdd
                         alert("Todavía no se ha recibido la foto. Asegúrese de haberla enviado desde su teléfono y que haya aparecido el check verde.");
                       }
                     } catch (err) {
-                      console.error(err);
+                      console.warn(err);
                     }
                   }}
                   className="text-sm text-slate-500 hover:text-blue-600 underline underline-offset-2 transition-colors font-medium"
@@ -334,29 +366,58 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({ onClose, onAdd
                           reader.readAsDataURL(file);
                           reader.onload = async () => {
                             try {
-                              const base64 = (reader.result as string).split(',')[1];
-                              const result = await analyzeInvoiceImage(base64);
+                              const resultStr = reader.result as string;
+                              const mimeType = resultStr.split(';')[0].split(':')[1] || 'image/jpeg';
+                              const base64 = resultStr.split(',')[1];
+                              const result = await analyzeInvoiceImage(base64, mimeType);
                               if (result) {
                                 if (result.invoiceNumber) setInvoiceNumber(result.invoiceNumber);
+                                if (result.vendor) setVendor(result.vendor);
                                 
                                 if (result.articles && result.articles.length > 0) {
                                   if (result.articles.length === 1) {
                                     setExpenseType('simple');
                                     setSimpleDesc(result.articles[0].description);
-                                    setSimpleAmount(result.articles[0].amount.toString());
+                                    
+                                    let parsedAmount = 0;
+                                    if (typeof result.articles[0].amount === 'number') {
+                                      parsedAmount = result.articles[0].amount;
+                                    } else if (typeof result.articles[0].amount === 'string') {
+                                      const cleanStr = (result.articles[0].amount as string).replace(/[^0-9.-]+/g,"");
+                                      parsedAmount = parseFloat(cleanStr);
+                                    }
+                                    setSimpleAmount(isNaN(parsedAmount) ? '' : parsedAmount.toString());
                                   } else {
                                     setExpenseType('multiple');
-                                    setMultipleItems(result.articles.map(art => ({
-                                      id: crypto.randomUUID(),
-                                      desc: art.description,
-                                      amount: art.amount.toString(),
-                                      isCurrentOrder: true
-                                    })));
+                                    setMultipleItems(result.articles.map(art => {
+                                      let parsedAmount = 0;
+                                      if (typeof art.amount === 'number') {
+                                        parsedAmount = art.amount;
+                                      } else if (typeof art.amount === 'string') {
+                                        const cleanStr = (art.amount as string).replace(/[^0-9.-]+/g,"");
+                                        parsedAmount = parseFloat(cleanStr);
+                                      }
+                                      
+                                      return {
+                                        id: crypto.randomUUID(),
+                                        desc: art.description,
+                                        amount: isNaN(parsedAmount) ? '' : parsedAmount.toString(),
+                                        isCurrentOrder: true
+                                      };
+                                    }));
                                   }
+                                } else {
+                                  alert("⚠️ La inteligencia artificial procesó la imagen pero no pudo detectar textos o artículos claros. Por favor, desglosa los repuestos manualmente.");
+                                  setExpenseType('simple');
+                                  setSimpleDesc('Servicio / Repuesto');
+                                  setSimpleAmount('0');
                                 }
+                              } else {
+                                alert("⚠️ No se pudo formatear la información desde la imagen. Intenta ajustarlo manualmente.");
+                                setExpenseType('simple');
                               }
                             } catch (err) {
-                              console.error("Error analyzing invoice file:", err);
+                              console.warn("Issue analyzing invoice file:", err);
                             } finally {
                               setIsAnalyzing(false);
                               setStep('fill_details');
@@ -367,7 +428,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({ onClose, onAdd
                             setStep('fill_details');
                           };
                         } catch (err) {
-                          console.error("Error processing invoice file:", err);
+                          console.warn("Issue processing invoice file:", err);
                           setIsAnalyzing(false);
                           setStep('fill_details');
                         }
@@ -434,28 +495,23 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({ onClose, onAdd
               </div>
 
               <div className="lg:col-span-2 space-y-4">
-                <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
-                  <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Número de Factura / Recibo (Opcional)</label>
-                  <div className="relative">
+                {aiAnalysisError && (
+                  <div className="flex items-start gap-2 bg-amber-50 text-amber-700 p-3 rounded-lg border border-amber-200 text-sm">
+                    <span className="mt-0.5">⚠️</span>
+                    <p className="flex-1">{aiAnalysisError}</p>
+                  </div>
+                )}
+                <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-4">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Proveedor (Opcional)</label>
                     <input 
                       type="text" 
-                      value={invoiceNumber}
-                      onChange={e => setInvoiceNumber(e.target.value)}
-                      className={`w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all ${isDuplicate ? 'border-amber-500 bg-amber-50' : 'border-slate-300'}`}
-                      placeholder="Ej. FAC-00123"
+                      value={vendor}
+                      onChange={e => setVendor(e.target.value)}
+                      className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                      placeholder="Ej. Supermercado, Ferretería, etc."
                     />
-                    {checkingDuplicate && (
-                      <div className="absolute right-3 top-1/2 -translate-y-1/2">
-                        <Loader2 className="w-4 h-4 animate-spin text-slate-400" />
-                      </div>
-                    )}
                   </div>
-                  {isDuplicate && (
-                    <div className="mt-2 flex items-center gap-2 text-amber-600 bg-amber-100/50 p-2 rounded-lg border border-amber-200">
-                      <Sparkles className="w-4 h-4" />
-                      <span className="text-xs font-bold uppercase tracking-tight">⚠️ Factura Duplicada Detectada</span>
-                    </div>
-                  )}
                 </div>
 
                 {expenseType === 'simple' ? (

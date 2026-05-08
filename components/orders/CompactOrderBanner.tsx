@@ -41,7 +41,7 @@ export const CompactOrderBanner: React.FC<CompactOrderBannerProps> = ({ order, o
                 </div>
                 <div className="text-right shrink-0 ml-2 hidden sm:block">
                     <p className="text-[9px] sm:text-[10px] font-bold text-slate-400 uppercase">Costo Est.</p>
-                    <p className="text-sm sm:text-base font-black text-slate-700">${(order.finalPrice || order.estimatedCost || 0).toLocaleString()}</p>
+                    <p className="text-sm sm:text-base font-black text-slate-700">${(order.totalAmount ?? (order.finalPrice || order.estimatedCost || 0)).toLocaleString()}</p>
                 </div>
             </div>
             <button 

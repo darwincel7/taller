@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { X, Download, Loader2, Image as ImageIcon, CheckCircle2, Trash2 } from 'lucide-react';
+import { X, Download, Loader2, Image as ImageIcon, CheckCircle2, Trash2, Building2, Receipt } from 'lucide-react';
 import { supabase } from '../../services/supabase';
-import { FloatingExpense } from '../../types';
+import { FloatingExpense, TransactionStatus, ApprovalStatus, ExpenseDestination } from '../../types';
 import { useAuth } from '../../contexts/AuthContext';
 import { auditService } from '../../services/auditService';
+import { accountingService } from '../../services/accountingService';
 
 interface FloatingExpensesModalProps {
   onClose: () => void;
@@ -33,7 +34,7 @@ export const FloatingExpensesModal: React.FC<FloatingExpensesModalProps> = ({ on
       if (error) throw error;
       setExpenses(data || []);
     } catch (error) {
-      console.error("Error fetching floating expenses:", error);
+      console.warn("Error fetching floating expenses:", error);
     } finally {
       setIsLoading(false);
     }
@@ -56,8 +57,62 @@ export const FloatingExpensesModal: React.FC<FloatingExpensesModalProps> = ({ on
       // 3. Remove from local state
       setExpenses(prev => prev.filter(e => e.id !== expense.id));
     } catch (error) {
-      console.error("Error assigning floating expense:", error);
+      console.warn("Error assigning floating expense:", error);
       alert("Error al asignar el gasto.");
+    } finally {
+      setAssigningId(null);
+    }
+  };
+
+  const handleConvertToLocal = async (expense: FloatingExpense) => {
+    if (!window.confirm(`¿Está seguro de convertir "${expense.description}" a Gasto Local? Esto lo enviará directamente a finanzas y lo quitará de los gastos flotantes.`)) return;
+    
+    setAssigningId(expense.id); // Reusing assigningId for loading state
+    try {
+      // 1. Insert into accounting_transactions using accountingService
+      await accountingService.addTransaction({
+        amount: -Math.abs(expense.amount),
+        description: expense.description,
+        transaction_date: new Date().toISOString().split('T')[0],
+        receipt_url: expense.receipt_url,
+        status: TransactionStatus.COMPLETED,
+        approval_status: ApprovalStatus.APPROVED,
+        expense_destination: ExpenseDestination.STORE,
+        source: 'STORE',
+        branch: currentUser?.branch || 'T4',
+        created_by: expense.created_by,
+        invoice_number: expense.invoice_number,
+        vendor: expense.vendor,
+        shared_receipt_id: expense.shared_receipt_id,
+        is_duplicate: expense.is_duplicate
+        // category_id is omitted so accountingService applies the default EXPENSE category
+      });
+
+      // 2. Delete from floating_expenses
+      const { error: deleteError } = await supabase
+        .from('floating_expenses')
+        .delete()
+        .eq('id', expense.id);
+        
+      if (deleteError) throw deleteError;
+      
+      // Log conversion
+      if (currentUser) {
+        await auditService.recordLog(
+          { id: currentUser.id, name: currentUser.name },
+          'UPDATE_EXPENSE',
+          `Convirtió gasto flotante a Gasto Local: ${expense.description} ($${expense.amount})`,
+          undefined,
+          'TRANSACTION',
+          expense.id
+        );
+      }
+      
+      setExpenses(prev => prev.filter(e => e.id !== expense.id));
+      alert("Gasto convertido a local exitosamente.");
+    } catch (error) {
+      console.warn("Error converting floating expense:", error);
+      alert("Error al convertir el gasto.");
     } finally {
       setAssigningId(null);
     }
@@ -79,14 +134,17 @@ export const FloatingExpensesModal: React.FC<FloatingExpensesModalProps> = ({ on
       if (currentUser) {
         await auditService.recordLog(
           { id: currentUser.id, name: currentUser.name },
-          'DELETE_FLOATING_EXPENSE',
-          `Eliminó gasto flotante: ${expense.description} ($${expense.amount})`
+          'DELETE_EXPENSE',
+          `Eliminó gasto flotante: ${expense.description} ($${expense.amount})`,
+          undefined,
+          'TRANSACTION',
+          expense.id
         );
       }
       
       setExpenses(prev => prev.filter(e => e.id !== expense.id));
     } catch (error) {
-      console.error("Error deleting floating expense:", error);
+      console.warn("Error deleting floating expense:", error);
       alert("Error al eliminar el gasto.");
     } finally {
       setDeletingId(null);
@@ -99,7 +157,7 @@ export const FloatingExpensesModal: React.FC<FloatingExpensesModalProps> = ({ on
         <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
           <h2 className="text-lg font-black text-slate-800 uppercase tracking-tight flex items-center gap-2">
             <Download className="w-5 h-5 text-amber-600" />
-            Asignar gasto de caja
+            Gastos Flotantes
           </h2>
           <button onClick={onClose} className="p-2 hover:bg-slate-200 rounded-full transition-colors">
             <X className="w-5 h-5 text-slate-500" />
@@ -151,15 +209,26 @@ export const FloatingExpensesModal: React.FC<FloatingExpensesModalProps> = ({ on
                         ${expense.amount.toLocaleString()}
                       </span>
                     </div>
-                    {expense.invoice_number && (
-                      <div className="flex items-center gap-2 mb-2">
-                        <p className="text-xs text-slate-500 font-medium">
-                          Factura: <span className="text-slate-700">{expense.invoice_number}</span>
-                        </p>
-                        {expense.is_duplicate && (
-                          <span className="bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-tighter border border-amber-200 leading-none">
-                            DUPLICADA
-                          </span>
+                    {(expense.invoice_number || expense.vendor) && (
+                      <div className="flex flex-col gap-1 mb-2">
+                        {expense.invoice_number && (
+                          <div className="flex items-center gap-2">
+                            <p className="text-xs text-slate-500 font-medium flex items-center gap-1">
+                              <Receipt className="w-3 h-3" />
+                              Factura: <span className="text-slate-700">{expense.invoice_number}</span>
+                            </p>
+                            {expense.is_duplicate && (
+                              <span className="bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-tighter border border-amber-200 leading-none">
+                                DUPLICADA
+                              </span>
+                            )}
+                          </div>
+                        )}
+                        {expense.vendor && (
+                          <p className="text-xs text-slate-500 font-medium flex items-center gap-1">
+                            <Building2 className="w-3 h-3" />
+                            Prov: <span className="text-slate-700">{expense.vendor}</span>
+                          </p>
                         )}
                       </div>
                     )}
@@ -178,6 +247,14 @@ export const FloatingExpensesModal: React.FC<FloatingExpensesModalProps> = ({ on
                     </div>
                     
                     <div className="mt-auto flex gap-2">
+                      <button
+                        onClick={() => handleConvertToLocal(expense)}
+                        disabled={deletingId !== null || assigningId !== null}
+                        className="bg-amber-50 hover:bg-amber-100 text-amber-600 font-bold py-2 px-3 rounded-lg text-xs flex items-center justify-center transition-colors disabled:opacity-50"
+                        title="Convertir a Gasto Local"
+                      >
+                        <Building2 className="w-4 h-4" />
+                      </button>
                       <button
                         onClick={() => handleDelete(expense)}
                         disabled={deletingId !== null || assigningId !== null}

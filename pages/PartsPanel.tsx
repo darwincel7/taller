@@ -12,13 +12,13 @@ export const PartsPanel: React.FC = () => {
     const { currentUser } = useAuth();
     const navigate = useNavigate();
     
+    const [filter, setFilter] = useState<'ALL' | 'PENDING' | 'HISTORY'>('PENDING');
+
     const { data: orders = [], isLoading } = useQuery({
-        queryKey: ['ordersWithPartRequests'],
-        queryFn: () => orderService.getOrdersWithPartRequests(),
+        queryKey: ['ordersWithPartRequests', filter],
+        queryFn: () => orderService.getOrdersWithPartRequests(filter),
         refetchInterval: 1000 * 60 // Refetch every minute
     });
-
-    const [filter, setFilter] = useState<'ALL' | 'PENDING' | 'HISTORY'>('PENDING');
     const [viewMode, setViewMode] = useState<'PARTS' | 'ORDERS'>('PARTS');
     const [searchTerm, setSearchTerm] = useState('');
     const [selectedRequest, setSelectedRequest] = useState<PartRequest | null>(null);
@@ -35,43 +35,56 @@ export const PartsPanel: React.FC = () => {
     const [independentPartName, setIndependentPartName] = useState('');
     const [independentNotes, setIndependentNotes] = useState('');
 
+    // Order Details Modal
+    const [selectedOrderDetails, setSelectedOrderDetails] = useState<RepairOrder | null>(null);
+    const [showOrderDetailsModal, setShowOrderDetailsModal] = useState(false);
+    const [isSubmitting, setIsSubmitting] = useState(false);
+
     const handleCreateIndependentPart = async () => {
+        if (isSubmitting) return;
         if (!independentPartName.trim() || !currentUser) return;
-
-        const orderId = `ind-${Date.now()}`;
-        const newOrder: RepairOrder = {
-            id: orderId,
-            orderType: OrderType.PART_ONLY,
-            customer: { name: 'Taller Interno', phone: '0000000000', id: 'taller' },
-            deviceModel: 'Pieza Independiente',
-            deviceIssue: independentPartName,
-            deviceCondition: 'N/A',
-            status: OrderStatus.PENDING,
-            priority: PriorityLevel.NORMAL,
-            createdAt: Date.now(),
-            deadline: Date.now() + 7 * 24 * 60 * 60 * 1000,
-            estimatedCost: 0,
-            history: [{
-                date: new Date().toISOString(),
+        
+        setIsSubmitting(true);
+        try {
+            const orderId = `ind-${Date.now()}`;
+            const newOrder: RepairOrder = {
+                id: orderId,
+                orderType: OrderType.PART_ONLY,
+                customer: { name: 'Taller Interno', phone: '0000000000', id: 'taller' },
+                deviceModel: 'Pieza Independiente',
+                deviceIssue: independentPartName,
+                deviceCondition: 'N/A',
                 status: OrderStatus.PENDING,
-                note: `Pieza solicitada: ${independentPartName}`,
-                technician: currentUser.name,
-                logType: LogType.INFO
-            }],
-            partRequests: [{
-                id: `pr-${Date.now()}`,
-                orderId: orderId,
-                partName: independentPartName,
-                requestedBy: currentUser.name,
-                requestedAt: Date.now(),
-                status: RequestStatus.PENDING
-            }]
-        };
+                priority: PriorityLevel.NORMAL,
+                createdAt: Date.now(),
+                deadline: Date.now() + 7 * 24 * 60 * 60 * 1000,
+                estimatedCost: 0,
+                history: [{
+                    date: new Date().toISOString(),
+                    status: OrderStatus.PENDING,
+                    note: `Pieza solicitada: ${independentPartName}`,
+                    technician: currentUser.name,
+                    logType: LogType.INFO
+                }],
+                partRequests: [{
+                    id: `pr-${Date.now()}`,
+                    orderId: orderId,
+                    partName: independentPartName,
+                    requestedBy: currentUser.name,
+                    requestedAt: Date.now(),
+                    status: RequestStatus.PENDING
+                }]
+            };
 
-        await addOrder(newOrder);
-        setShowIndependentModal(false);
-        setIndependentPartName('');
-        setIndependentNotes('');
+            await addOrder(newOrder);
+            setShowIndependentModal(false);
+            setIndependentPartName('');
+            setIndependentNotes('');
+        } catch (e) {
+            console.error(e);
+        } finally {
+            setIsSubmitting(false);
+        }
     };
 
     // Aggregate all requests
@@ -257,7 +270,17 @@ export const PartsPanel: React.FC = () => {
                         </div>
                     ) : (
                         filteredRequests.map(req => (
-                            <div key={req.id} className="bg-white rounded-xl p-3 shadow-sm border border-slate-100 hover:shadow-md transition-all group relative overflow-hidden">
+                            <div 
+                                key={req.id} 
+                                onClick={() => {
+                                    const order = orders.find(o => o.id === req.orderId);
+                                    if (order) {
+                                        setSelectedOrderDetails(order);
+                                        setShowOrderDetailsModal(true);
+                                    }
+                                }}
+                                className="bg-white rounded-xl p-3 shadow-sm border border-slate-100 hover:shadow-md transition-all group relative overflow-hidden cursor-pointer"
+                            >
                                 {/* Status Stripe */}
                                 <div className={`absolute left-0 top-0 bottom-0 w-1 ${
                                     req.status === RequestStatus.PENDING ? 'bg-blue-500' : 
@@ -301,7 +324,7 @@ export const PartsPanel: React.FC = () => {
                                     </div>
 
                                     {/* RIGHT: ACTIONS */}
-                                    <div className="flex flex-col gap-1.5 min-w-[130px]">
+                                    <div className="flex flex-col gap-1.5 min-w-[130px]" onClick={e => e.stopPropagation()}>
                                         {req.status === RequestStatus.PENDING ? (
                                             <div className="flex gap-1.5">
                                                 <button 
@@ -511,15 +534,73 @@ export const PartsPanel: React.FC = () => {
 
                             <button 
                                 onClick={handleCreateIndependentPart}
-                                disabled={!independentPartName.trim()}
+                                disabled={!independentPartName.trim() || isSubmitting}
                                 className="w-full py-4 rounded-xl font-black text-white shadow-lg transform active:scale-95 transition-all bg-blue-600 hover:bg-blue-700 shadow-blue-200 disabled:opacity-50 disabled:cursor-not-allowed"
                             >
-                                Crear Solicitud
+                                {isSubmitting ? 'Creando...' : 'Crear Solicitud'}
                             </button>
                         </div>
                     </div>
                 </div>
             )}
+            {/* ORDER DETAILS MODAL */}
+            {showOrderDetailsModal && selectedOrderDetails && (
+                <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in">
+                    <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden flex flex-col max-h-[90vh]">
+                        <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+                            <h2 className="text-lg font-black text-slate-800 flex items-center gap-2">
+                                <ShoppingBag className="w-5 h-5 text-blue-600" />
+                                Detalles de la Orden #{selectedOrderDetails.readable_id || selectedOrderDetails.id.slice(0, 6)}
+                            </h2>
+                            <button onClick={() => setShowOrderDetailsModal(false)} className="text-slate-400 hover:text-slate-600">
+                                <XCircle className="w-6 h-6" />
+                            </button>
+                        </div>
+                        <div className="p-6 overflow-y-auto flex-1 space-y-4">
+                            <div>
+                                <h3 className="text-xs font-bold text-slate-400 uppercase mb-1">Dispositivo</h3>
+                                <p className="text-sm font-medium text-slate-800">{selectedOrderDetails.deviceModel}</p>
+                            </div>
+                            <div>
+                                <h3 className="text-xs font-bold text-slate-400 uppercase mb-1">Problema Reportado</h3>
+                                <p className="text-sm font-medium text-slate-800">{selectedOrderDetails.deviceIssue}</p>
+                            </div>
+                            <div>
+                                <h3 className="text-xs font-bold text-slate-400 uppercase mb-1">Condición</h3>
+                                <p className="text-sm font-medium text-slate-800">{selectedOrderDetails.deviceCondition}</p>
+                            </div>
+                            <div>
+                                <h3 className="text-xs font-bold text-slate-400 uppercase mb-1">Estado Actual</h3>
+                                <p className="text-sm font-medium text-slate-800">{selectedOrderDetails.status}</p>
+                            </div>
+                            {selectedOrderDetails.estimatedCost > 0 && (
+                                <div>
+                                    <h3 className="text-xs font-bold text-slate-400 uppercase mb-1">Costo Estimado</h3>
+                                    <p className="text-sm font-medium text-slate-800">${selectedOrderDetails.estimatedCost}</p>
+                                </div>
+                            )}
+                        </div>
+                        <div className="p-4 border-t border-slate-100 bg-slate-50 flex gap-3">
+                            <button
+                                onClick={() => setShowOrderDetailsModal(false)}
+                                className="flex-1 px-4 py-2 text-slate-600 font-bold hover:bg-slate-200 rounded-xl transition"
+                            >
+                                Cerrar
+                            </button>
+                            <button
+                                onClick={() => {
+                                    setShowOrderDetailsModal(false);
+                                    navigate(`/orders/${selectedOrderDetails.id}`);
+                                }}
+                                className="flex-1 px-4 py-2 bg-blue-600 text-white font-bold hover:bg-blue-700 rounded-xl transition flex items-center justify-center gap-2"
+                            >
+                                Ir a la Orden <ArrowRight className="w-4 h-4" />
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
         </div>
     );
 };

@@ -59,8 +59,13 @@ export const useFilteredOrders = () => {
                   const pA = priorityMap[a.priority as PriorityLevel] ?? 2;
                   const pB = priorityMap[b.priority as PriorityLevel] ?? 2;
                   if (pA !== pB) return pA - pB;
+                  if (a.deadline === 0 && b.deadline !== 0) return 1;
+                  if (b.deadline === 0 && a.deadline !== 0) return -1;
                   return a.deadline - b.deadline;
-              case 'DEADLINE': return a.deadline - b.deadline;
+              case 'DEADLINE': 
+                  if (a.deadline === 0 && b.deadline !== 0) return 1;
+                  if (b.deadline === 0 && a.deadline !== 0) return -1;
+                  return a.deadline - b.deadline;
               case 'NEWEST': return b.createdAt - a.createdAt;
               case 'ID': return (b.readable_id || 0) - (a.readable_id || 0);
               default: return 0;
@@ -95,6 +100,16 @@ export const useFilteredOrders = () => {
               return o.externalRepair?.targetWorkshop === externalFilter;
           }
           
+          if (filterTab === 'PENDIENTES_TECNICOS') {
+              if (o.orderType === OrderType.STORE || o.orderType === OrderType.PART_ONLY) return false;
+              if (o.status === OrderStatus.EXTERNAL || o.externalRepair?.status === RequestStatus.APPROVED || o.externalRepair?.status === RequestStatus.PENDING) return false;
+              if (o.status === OrderStatus.WAITING_APPROVAL) return false;
+              if (o.status === OrderStatus.ON_HOLD || (o.partRequests && o.partRequests.some(pr => pr.status === RequestStatus.PENDING || pr.status === RequestStatus.ORDERED || pr.status === RequestStatus.DEBATED))) return false;
+              if (o.status === OrderStatus.REPAIRED || o.status === OrderStatus.RETURNED || o.status === OrderStatus.CANCELED || o.returnRequest?.status === RequestStatus.PENDING || o.returnRequest?.status === RequestStatus.APPROVED) return false;
+              if (o.transferStatus === TransferStatus.PENDING || o.currentBranch !== myBranch) return false;
+              return true;
+          }
+          
           if (filterTab === 'MINE') return o.status !== OrderStatus.RETURNED && o.status !== OrderStatus.CANCELED && o.orderType === OrderType.REPAIR;
           return true;
       });
@@ -121,6 +136,7 @@ export const useFilteredOrders = () => {
         warranty: globalCounts.warranty,
         history: orders.filter(o => o.status === OrderStatus.RETURNED || o.status === OrderStatus.CANCELED).length, // Keep history local or add to global
         external: globalCounts.external,
+        tech_pending: globalCounts.tech_pending || 0,
         mine: globalCounts.mine
       };
     }
@@ -142,6 +158,15 @@ export const useFilteredOrders = () => {
       warranty: baseLocalList.filter(o => o.orderType === OrderType.WARRANTY && o.status !== OrderStatus.RETURNED && o.status !== OrderStatus.CANCELED).length,
       history: baseLocalList.filter(o => o.status === OrderStatus.RETURNED || o.status === OrderStatus.CANCELED).length,
       external: baseLocalList.filter(o => o.status === OrderStatus.EXTERNAL || (o.externalRepair?.status === RequestStatus.PENDING && o.status !== OrderStatus.RETURNED && o.status !== OrderStatus.CANCELED)).length,
+      tech_pending: baseLocalList.filter(o => {
+        if (o.orderType === OrderType.STORE || o.orderType === OrderType.PART_ONLY) return false;
+        if (o.status === OrderStatus.EXTERNAL || o.externalRepair?.status === RequestStatus.APPROVED || o.externalRepair?.status === RequestStatus.PENDING) return false;
+        if (o.status === OrderStatus.WAITING_APPROVAL) return false;
+        if (o.status === OrderStatus.ON_HOLD || (o.partRequests && o.partRequests.some(pr => pr.status === RequestStatus.PENDING || pr.status === RequestStatus.ORDERED || pr.status === RequestStatus.DEBATED))) return false;
+        if (o.status === OrderStatus.REPAIRED || o.status === OrderStatus.RETURNED || o.status === OrderStatus.CANCELED || o.returnRequest?.status === RequestStatus.PENDING || o.returnRequest?.status === RequestStatus.APPROVED) return false;
+        if (o.transferStatus === TransferStatus.PENDING || o.currentBranch !== myBranch) return false;
+        return true;
+      }).length,
       mine: baseLocalList.filter(o => o.assignedTo === currentUser?.id && o.status !== OrderStatus.RETURNED && o.status !== OrderStatus.CANCELED).length
     };
   }, [orders, currentUser, globalCounts]);

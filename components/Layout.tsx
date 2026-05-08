@@ -1,8 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { NavLink, Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, PlusCircle, List, UserCheck, Smartphone, LogOut, Users, Activity, ShoppingBag, Package, Book, Wifi, WifiOff, CheckCircle2, XCircle, MapPin, ChevronDown, Wallet, Moon, Sun, ClipboardCheck, Shield, Calculator } from 'lucide-react';
+import { LayoutDashboard, PlusCircle, List, UserCheck, Smartphone, LogOut, Users, Activity, ShoppingBag, Package, Book, Wifi, WifiOff, CheckCircle2, XCircle, MapPin, ChevronDown, Wallet, Moon, Sun, ClipboardCheck, Shield, Calculator, MessageSquare, Printer, Search } from 'lucide-react';
 import { PriorityAlert } from './PriorityAlert';
+import { CreditAlerts } from './CreditAlerts';
 import { FloatingBackButton } from './FloatingBackButton';
+import { LabelPrinterModal } from './LabelPrinterModal';
+import { PrinterSettingsModal } from './PrinterSettingsModal';
+import { WhatsAppAlert } from './WhatsAppAlert';
+import { AITestModal } from './AITestModal';
 import { useAuth } from '../contexts/AuthContext';
 import { useOrders } from '../contexts/OrderContext';
 import { UserRole } from '../types';
@@ -25,7 +30,8 @@ const LayoutComponent: React.FC<LayoutProps> = ({ children }) => {
       const { count, error } = await supabase
         .from('floating_expenses')
         .select('*', { count: 'exact', head: true })
-        .neq('description', 'RECEIPT_UPLOAD_TRIGGER');
+        .neq('description', 'RECEIPT_UPLOAD_TRIGGER')
+        .eq('approval_status', 'APPROVED');
       if (error) throw error;
       return count || 0;
     },
@@ -34,6 +40,13 @@ const LayoutComponent: React.FC<LayoutProps> = ({ children }) => {
   
   // MOBILE MENU STATE
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
+  // LABEL PRINTER STATE
+  const [isLabelPrinterOpen, setIsLabelPrinterOpen] = useState(false);
+  const [isPrinterSettingsOpen, setIsPrinterSettingsOpen] = useState(false);
+  
+  // AI TEST STATE
+  const [isAITestOpen, setIsAITestOpen] = useState(false);
 
   // DARK MODE STATE
   const [darkMode, setDarkMode] = useState(() => {
@@ -61,7 +74,8 @@ const LayoutComponent: React.FC<LayoutProps> = ({ children }) => {
     }`;
   };
 
-  const canSeeCash = currentUser?.role === UserRole.ADMIN || currentUser?.role === UserRole.CASHIER || currentUser?.role === UserRole.MONITOR || currentUser?.permissions?.canDeliverOrder;
+  const canSeeCash = currentUser?.role === UserRole.ADMIN || currentUser?.role === UserRole.CASHIER || currentUser?.permissions?.canDeliverOrder;
+  const canSeeFinance = currentUser?.role === UserRole.ADMIN || currentUser?.role === UserRole.CASHIER || currentUser?.role === UserRole.MONITOR || currentUser?.permissions?.canDeliverOrder;
   const isTech = currentUser?.role === UserRole.TECHNICIAN;
 
   return (
@@ -110,54 +124,63 @@ const LayoutComponent: React.FC<LayoutProps> = ({ children }) => {
           </div>
         </div>
 
-        <nav className="flex-1 p-4 space-y-1 overflow-y-auto" onClick={() => { if(window.innerWidth < 768) setIsMobileMenuOpen(false); }}>
+        {/* GLOBAL SEARCH FOR ORDERS */}
+        <div className="px-4 py-2">
+            <form onSubmit={async (e) => {
+                e.preventDefault();
+                const form = e.target as HTMLFormElement;
+                const search = (form.elements.namedItem('globalSearch') as HTMLInputElement).value;
+                if (!search) return;
+                
+                // If it's just numbers, it's likely a readable_id or phone
+                const isNumeric = /^\d+$/.test(search.trim());
+                
+                try {
+                    let query = supabase.from('orders').select('id, readable_id, customer').order('createdAt', { ascending: false }).limit(1);
+                    
+                    if (isNumeric) {
+                        query = query.or(`readable_id.eq.${search.trim()}`);
+                    } else {
+                        // Very basic text search for customer name
+                        query = query.textSearch('customer', search.trim(), { config: 'spanish' });
+                    }
+                    
+                    const { data } = await query;
+                    if (data && data.length > 0) {
+                        window.location.href = `/orders/${data[0].id}`;
+                    } else {
+                        alert('No se encontró ninguna orden o factura con este criterio.');
+                    }
+                } catch(e) {
+                    console.error(e);
+                }
+                
+                if(window.innerWidth < 768) setIsMobileMenuOpen(false);
+            }}>
+                <div className="relative">
+                    <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input 
+                        type="text" 
+                        name="globalSearch"
+                        placeholder="Buscar Factura o Cliente..." 
+                        className="w-full bg-slate-100 dark:bg-slate-800 border-none rounded-xl pl-9 pr-3 py-2 text-sm text-slate-700 dark:text-slate-300 focus:ring-2 focus:ring-blue-500 font-medium placeholder:font-normal"
+                        autoComplete="off"
+                    />
+                </div>
+            </form>
+        </div>
+
+        <nav className="flex-1 p-4 space-y-1 overflow-y-auto" onClick={(e) => { 
+            // Avoid closing if clicking inside the search form
+            if ((e.target as HTMLElement).closest('form')) return;
+            if(window.innerWidth < 768) setIsMobileMenuOpen(false); 
+        }}>
           <div className="pb-1 text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest pl-2">Principal</div>
           <Link to="/" className={getNavLinkClass('/')}>
             <LayoutDashboard className="w-4 h-4" />
             Dashboard
           </Link>
-          <Link to="/store" className={getNavLinkClass('/store', true)}>
-            <ShoppingBag className="w-4 h-4" />
-            RECIBIDOS
-          </Link>
           
-          {canSeeCash && (
-            <>
-              <Link to="/pos" className={getNavLinkClass('/pos')}>
-                <Calculator className="w-4 h-4" />
-                Punto de Venta
-              </Link>
-              <Link to="/cash" className={getNavLinkClass('/cash')}>
-                <Wallet className="w-4 h-4" />
-                Caja y Pagos
-              </Link>
-            </>
-          )}
-
-          <div className="pt-3 pb-1 text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest pl-2">Finanzas</div>
-          {canSeeCash && (
-            <>
-              <Link to="/finance" className={getNavLinkClass('/finance')}>
-                <Activity className="w-4 h-4" />
-                Dashboard Financiero
-              </Link>
-            </>
-          )}
-
-          <div className="pt-3 pb-1 text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest pl-2">Operaciones</div>
-          
-          <Link to="/customers" className={getNavLinkClass('/customers')}>
-            <Users className="w-4 h-4" />
-            Directorio Clientes
-          </Link>
-
-          {currentUser?.role === UserRole.ADMIN && (
-            <Link to="/crm" className={getNavLinkClass('/crm')}>
-              <Users className="w-4 h-4" />
-              CRM & Marketing
-            </Link>
-          )}
-
           {/* HIDE INTAKE FOR TECHNICIANS */}
           {!isTech && (
             <Link to="/intake" className={getNavLinkClass('/intake')}>
@@ -179,6 +202,53 @@ const LayoutComponent: React.FC<LayoutProps> = ({ children }) => {
               )}
             </div>
           </Link>
+
+          <Link to="/store" className={getNavLinkClass('/store', true)}>
+            <ShoppingBag className="w-4 h-4" />
+            RECIBIDOS
+          </Link>
+          
+          {canSeeCash && (
+            <>
+              <Link to="/pos" className={getNavLinkClass('/pos')}>
+                <Calculator className="w-4 h-4" />
+                Punto de Venta
+              </Link>
+              <Link to="/cash" className={getNavLinkClass('/cash')}>
+                <Wallet className="w-4 h-4" />
+                Caja y Pagos
+              </Link>
+            </>
+          )}
+
+          <Link to="/store-inventory" className={getNavLinkClass('/store-inventory')}>
+            <Smartphone className="w-4 h-4" />
+            INVENTARIO
+          </Link>
+
+          <div className="pt-3 pb-1 text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest pl-2">Finanzas</div>
+          {canSeeFinance && (
+            <>
+              <Link to="/finance" className={getNavLinkClass('/finance')}>
+                <Activity className="w-4 h-4" />
+                Dashboard Financiero
+              </Link>
+            </>
+          )}
+
+          <div className="pt-3 pb-1 text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest pl-2">Operaciones</div>
+          
+          <Link to="/customers" className={getNavLinkClass('/customers')}>
+            <Users className="w-4 h-4" />
+            Directorio Clientes
+          </Link>
+
+          {currentUser?.role === UserRole.ADMIN && (
+            <Link to="/crm" className={getNavLinkClass('/crm')}>
+              <Users className="w-4 h-4" />
+              CRM & Marketing
+            </Link>
+          )}
           
           <div className="pt-3 pb-1 text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest pl-2">Herramientas</div>
           
@@ -192,7 +262,7 @@ const LayoutComponent: React.FC<LayoutProps> = ({ children }) => {
 
           <Link to="/inventory" className={getNavLinkClass('/inventory')}>
             <Package className="w-4 h-4" />
-            Inventario
+            PARTES
           </Link>
           <Link to="/parts" className={getNavLinkClass('/parts')}>
             <ShoppingBag className="w-4 h-4" />
@@ -202,6 +272,27 @@ const LayoutComponent: React.FC<LayoutProps> = ({ children }) => {
             <Book className="w-4 h-4" />
             Wiki Técnica
           </Link>
+          <button 
+            onClick={() => {
+              setIsLabelPrinterOpen(true);
+              if(window.innerWidth < 768) setIsMobileMenuOpen(false);
+            }} 
+            className="w-full flex items-center gap-3 px-4 py-2 rounded-xl transition-all duration-200 font-medium text-sm text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100"
+          >
+            <Printer className="w-4 h-4" />
+            Imprimir Etiqueta
+          </button>
+
+          <button 
+            onClick={() => {
+              setIsPrinterSettingsOpen(true);
+              if(window.innerWidth < 768) setIsMobileMenuOpen(false);
+            }} 
+            className="w-full flex items-center gap-3 px-4 py-2 rounded-xl transition-all duration-200 font-medium text-sm text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100"
+          >
+            <Printer className="w-4 h-4" />
+            Configurar Impresoras
+          </button>
 
           {currentUser?.role === UserRole.ADMIN && (
             <>
@@ -210,6 +301,28 @@ const LayoutComponent: React.FC<LayoutProps> = ({ children }) => {
                     <Users className="w-4 h-4" />
                     Equipo
                 </Link>
+                <Link to="/commissions" className={getNavLinkClass('/commissions')}>
+                    <ShoppingBag className="w-4 h-4" />
+                    Comisiones
+                </Link>
+                <Link to="/whatsapp" className={getNavLinkClass('/whatsapp')}>
+                    <MessageSquare className="w-4 h-4" />
+                    WhatsApp
+                </Link>
+                {currentUser?.name?.includes('Darwin') || currentUser.email?.toLowerCase() === 'daruingmejia@gmail.com' ? (
+                  <button 
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      setIsAITestOpen(true);
+                      if(window.innerWidth < 768) setIsMobileMenuOpen(false);
+                    }}
+                    className="w-full flex items-center gap-3 px-4 py-2 mt-1 rounded-xl transition-all duration-200 font-bold text-sm bg-gradient-to-r from-purple-600/10 to-indigo-600/10 text-purple-700 dark:text-purple-400 hover:from-purple-600/20 hover:to-indigo-600/20 dark:hover:from-purple-500/20 dark:hover:to-indigo-500/20 shadow-sm border border-purple-200 dark:border-purple-500/20"
+                  >
+                    <Activity className="w-4 h-4 text-purple-600" />
+                    Diagnóstico IA (Tú)
+                  </button>
+                ) : null}
                 <Link to="/activity" className={getNavLinkClass('/activity')}>
                     <Activity className="w-4 h-4" />
                     Auditoría Logs
@@ -276,7 +389,8 @@ const LayoutComponent: React.FC<LayoutProps> = ({ children }) => {
         />
       )}
 
-      <main className="flex-1 md:ml-64 p-2 md:p-0 dark:text-slate-200">
+      <main className="flex-1 md:ml-64 p-2 md:p-0 dark:text-slate-200 flex flex-col">
+        <WhatsAppAlert />
         <div className="md:hidden bg-white dark:bg-slate-900 p-4 mb-4 shadow-sm flex items-center justify-between sticky top-0 z-10 border-b dark:border-slate-800">
            <div className="flex items-center gap-3">
                <button onClick={() => setIsMobileMenuOpen(true)} className="text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 p-1.5 rounded-lg transition-colors">
@@ -290,13 +404,17 @@ const LayoutComponent: React.FC<LayoutProps> = ({ children }) => {
              <button onClick={logout} className="text-red-500"><LogOut className="w-5 h-5" /></button>
            </div>
         </div>
-        <div className="max-w-7xl mx-auto">
+        <div className="w-full">
            {children}
         </div>
       </main>
       
       <PriorityAlert />
+      <CreditAlerts />
       <FloatingBackButton />
+      <LabelPrinterModal isOpen={isLabelPrinterOpen} onClose={() => setIsLabelPrinterOpen(false)} />
+      <PrinterSettingsModal isOpen={isPrinterSettingsOpen} onClose={() => setIsPrinterSettingsOpen(false)} />
+      {isAITestOpen && <AITestModal onClose={() => setIsAITestOpen(false)} />}
     </div>
   );
 };

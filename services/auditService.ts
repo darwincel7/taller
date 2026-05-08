@@ -2,7 +2,15 @@
 import { supabase } from './supabase';
 
 export const auditService = {
-  async recordLog(user: { id: string, name: string }, action: string, details: string, orderId?: string) {
+  async recordLog(
+    user: { id: string, name: string }, 
+    action: string, 
+    details: string, 
+    orderId?: string,
+    entityType?: 'ORDER' | 'USER' | 'TRANSACTION' | 'INVENTORY' | 'SYSTEM' | 'CASH_CLOSING' | 'OBLIGATION' | 'AUDIT',
+    entityId?: string,
+    metadata?: any
+  ) {
     if (!supabase) return;
     
     try {
@@ -14,12 +22,15 @@ export const auditService = {
           action,
           details,
           order_id: orderId,
+          entity_type: entityType,
+          entity_id: entityId || orderId,
+          metadata: metadata || null,
           created_at: Date.now()
         }]);
         
-      if (error) console.error("Error recording audit log:", error);
+      if (error) console.warn("Error recording audit log:", error);
     } catch (error) {
-      console.error("Audit log exception:", error);
+      console.warn("Audit log exception:", error);
     }
   }
 };

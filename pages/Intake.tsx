@@ -13,12 +13,13 @@ import {
   Camera, Loader2, Play, Trash2, 
   BrainCircuit, FileVideo, Radio,
   XCircle, ChevronRight, ShieldCheck,
-  AlertTriangle, HardDrive, Palette, Lock, Headphones, Eye, Search
+  AlertTriangle, HardDrive, Palette, Lock, Headphones, Eye, Search,
+  UserCheck
 } from 'lucide-react';
 import { supabase } from '../services/supabase';
 import { analyzeVideoForIntake } from '../services/geminiService';
 import { CameraCapture } from '../components/CameraCapture';
-import { printInvoice } from '../services/invoiceService';
+import { printInvoice, printSticker } from '../services/invoiceService';
 import { CustomerSelectModal } from '../components/modals/CustomerSelectModal';
 import { Customer } from '../types';
 
@@ -113,7 +114,13 @@ export const Intake = () => {
   const [showVideoRecorder, setShowVideoRecorder] = useState(false);
   const [showCamera, setShowCamera] = useState(false);
   const [showCustomerSelect, setShowCustomerSelect] = useState(false);
+  const [showTechCopilot, setShowTechCopilot] = useState(false);
+  const [techAdvice, setTechAdvice] = useState<string>('');
+  const [isGettingAdvice, setIsGettingAdvice] = useState(false);
+  const [phoneSuggestions, setPhoneSuggestions] = useState<Customer[]>([]);
+  const [showPhoneSuggestions, setShowPhoneSuggestions] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const phoneInputRef = useRef<HTMLInputElement>(null);
 
   // Form States
   const [deviceCategory, setDeviceCategory] = useState("Celular");
@@ -160,7 +167,7 @@ export const Intake = () => {
       
       const totalSpent = historyData.reduce((sum, o) => {
           if (o.status === OrderStatus.RETURNED) {
-              return sum + (o.finalPrice || o.estimatedCost || 0);
+              return sum + (o.totalAmount ?? (o.finalPrice || o.estimatedCost || 0));
           }
           return sum;
       }, 0);
@@ -225,6 +232,43 @@ export const Intake = () => {
       }
   }, [customerHistory?.suggestedName, formData.customer?.name]);
 
+  // Intelligent Phone Suggestions Logic
+  const normalizePhone = (phone: string) => phone.replace(/[^0-9]/g, '');
+
+  useEffect(() => {
+    const searchPhone = async () => {
+        const phone = formData.customer?.phone || '';
+        const cleanPhone = normalizePhone(phone);
+        
+        if (cleanPhone.length >= 4) {
+            try {
+                const { data, error } = await supabase
+                    .from('customers')
+                    .select('*')
+                    .limit(5);
+                
+                if (!error && data) {
+                    // Filter in JS to handle different formats (spaces, dots, hyphens)
+                    const matches = data.filter(c => {
+                        const cleanC = normalizePhone(c.phone);
+                        return cleanC.includes(cleanPhone);
+                    });
+                    setPhoneSuggestions(matches);
+                    setShowPhoneSuggestions(matches.length > 0);
+                }
+            } catch (err) {
+                console.warn("Error searching phone suggestions:", err);
+            }
+        } else {
+            setPhoneSuggestions([]);
+            setShowPhoneSuggestions(false);
+        }
+    };
+
+    const timer = setTimeout(searchPhone, 300);
+    return () => clearTimeout(timer);
+  }, [formData.customer?.phone]);
+
   // ... (processVideoInternal and extractFramesFromVideo functions omitted for brevity, assume they are here) ...
   const extractFramesFromVideo = async (file: File): Promise<string[]> => {
       return new Promise((resolve, reject) => {
@@ -286,8 +330,27 @@ export const Intake = () => {
       } finally { setIsAnalyzing(false); setAnalysisStep(''); }
   };
 
+  const handleGetTechAdvice = async () => {
+      if (!formData.deviceModel || !formData.deviceIssue) {
+          alert("Por favor, ingrese el Modelo y la Falla para obtener consejos.");
+          return;
+      }
+      setIsGettingAdvice(true);
+      setShowTechCopilot(true);
+      try {
+          const { getTechnicalAdvice } = await import('../services/geminiService');
+          const advice = await getTechnicalAdvice(formData.deviceModel, formData.deviceIssue);
+          setTechAdvice(advice);
+      } catch (err) {
+          setTechAdvice("Error obteniendo consejos técnicos.");
+      } finally {
+          setIsGettingAdvice(false);
+      }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
       e.preventDefault();
+      if (loading) return; // Prevent double submission
       if (!formData.deviceModel || !formData.deviceIssue) { alert("Modelo y Falla son obligatorios."); return; }
       
       // PRE-OPEN WINDOW TO PREVENT BLOCKING
@@ -304,20 +367,34 @@ export const Intake = () => {
           `);
       }
 
+      const stickerWindow = window.open('about:blank', '_blank');
+      if (stickerWindow) {
+          stickerWindow.document.write(`
+            <html>
+                <head><title>Generando Etiqueta...</title></head>
+                <body style="font-family: sans-serif; text-align: center; padding-top: 50px;">
+                    <h1>Generando Etiqueta...</h1>
+                    <p>Por favor espere mientras se guarda la orden en el sistema.</p>
+                </body>
+            </html>
+          `);
+      }
+
       setLoading(true);
       try {
           // 1. Check if customer exists by phone, or create a new one
           let customerId = undefined;
           if (orderType === OrderType.REPAIR || orderType === OrderType.WARRANTY) {
               try {
-                  const { data: existingCustomers } = await supabase
+                  const cleanPhone = normalizePhone(formData.customer!.phone);
+                  const { data: allCustomers } = await supabase
                       .from('customers')
-                      .select('id')
-                      .eq('phone', formData.customer!.phone)
-                      .limit(1);
+                      .select('id, phone');
                   
-                  if (existingCustomers && existingCustomers.length > 0) {
-                      customerId = existingCustomers[0].id;
+                  const existingCustomer = allCustomers?.find(c => normalizePhone(c.phone) === cleanPhone);
+                  
+                  if (existingCustomer) {
+                      customerId = existingCustomer.id;
                   } else {
                       const newCustId = `CUST-${Math.floor(10000 + Math.random() * 90000)}`;
                       await supabase.from('customers').insert([{
@@ -329,7 +406,7 @@ export const Intake = () => {
                       customerId = newCustId;
                   }
               } catch (err) {
-                  console.error("Error managing customer directory:", err);
+                  console.warn("Error managing customer directory:", err);
                   // Non-blocking error, continue with order creation
               }
           }
@@ -378,8 +455,22 @@ export const Intake = () => {
           
           const orderToPrint = createdOrder || newOrder;
           
+          if (orderType === OrderType.REPAIR || orderType === OrderType.WARRANTY) {
+              const { sendWhatsAppNotification } = await import('../services/notificationService');
+              sendWhatsAppNotification(orderToPrint, OrderStatus.PENDING);
+          }
+
           // PASS PRE-OPENED WINDOW
-          printInvoice(orderToPrint, printWindow);
+          printInvoice(orderToPrint, printWindow, 'INTAKE').catch(e => {
+            console.warn("Error printing invoice:", e);
+            if (printWindow) printWindow.close();
+          });
+          
+          // Print sticker automatically
+          printSticker(orderToPrint, stickerWindow).catch(e => {
+            console.warn("Error printing sticker:", e);
+            if (stickerWindow) stickerWindow.close();
+          });
           
           setTimeout(() => {
               navigate('/orders');
@@ -388,6 +479,7 @@ export const Intake = () => {
       } catch (e: any) { 
           alert(e.message); 
           if(printWindow) printWindow.close(); // Close on error
+          if(stickerWindow) stickerWindow.close();
       } finally { setLoading(false); }
   };
 
@@ -517,9 +609,42 @@ export const Intake = () => {
                           <label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">NOMBRE COMPLETO</label>
                           <input required className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl" value={formData.customer?.name} onChange={e => setFormData({...formData, customer: { ...formData.customer!, name: e.target.value }})} placeholder="Ej. Juan Pérez"/>
                       </div>
-                      <div>
+                      <div className="relative">
                           <label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">TELÉFONO / WHATSAPP</label>
-                          <input required className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl" value={formData.customer?.phone} onChange={e => setFormData({...formData, customer: { ...formData.customer!, phone: e.target.value }})} placeholder="Ej. 809-555-5555"/>
+                          <input 
+                            required 
+                            ref={phoneInputRef}
+                            className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl" 
+                            value={formData.customer?.phone} 
+                            onChange={e => setFormData({...formData, customer: { ...formData.customer!, phone: e.target.value }})} 
+                            onFocus={() => phoneSuggestions.length > 0 && setShowPhoneSuggestions(true)}
+                            placeholder="Ej. 809-555-5555"
+                          />
+                          
+                          {showPhoneSuggestions && (
+                              <div className="absolute z-50 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-xl overflow-hidden animate-in fade-in slide-in-from-top-1">
+                                  {phoneSuggestions.map(suggestion => (
+                                      <button
+                                          key={suggestion.id}
+                                          type="button"
+                                          className="w-full p-3 text-left hover:bg-slate-50 flex items-center justify-between border-b border-slate-100 last:border-0"
+                                          onClick={() => {
+                                              setFormData({
+                                                  ...formData,
+                                                  customer: { name: suggestion.name, phone: suggestion.phone }
+                                              });
+                                              setShowPhoneSuggestions(false);
+                                          }}
+                                      >
+                                          <div>
+                                              <p className="text-sm font-bold text-slate-800">{suggestion.name}</p>
+                                              <p className="text-xs text-slate-500">{suggestion.phone}</p>
+                                          </div>
+                                          <UserCheck className="w-4 h-4 text-blue-500" />
+                                      </button>
+                                  ))}
+                              </div>
+                          )}
                       </div>
                   </div>
               )}
@@ -662,7 +787,16 @@ export const Intake = () => {
               </div>
 
               <div>
-                  <label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block flex items-center gap-1"><AlertTriangle className="w-3 h-3"/> {orderType === OrderType.STORE ? 'DETALLE / RAZÓN INGRESO' : 'FALLA REPORTADA POR CLIENTE'}</label>
+                  <div className="flex justify-between items-center mb-1">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase flex items-center gap-1"><AlertTriangle className="w-3 h-3"/> {orderType === OrderType.STORE ? 'DETALLE / RAZÓN INGRESO' : 'FALLA REPORTADA POR CLIENTE'}</label>
+                      <button 
+                        type="button"
+                        onClick={handleGetTechAdvice}
+                        className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-2 py-1 rounded-lg flex items-center gap-1 hover:bg-indigo-100 transition"
+                      >
+                          <BrainCircuit className="w-3 h-3"/> Copiloto Técnico
+                      </button>
+                  </div>
                   <textarea 
                       required
                       className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-700 min-h-[80px] focus:ring-2 focus:ring-blue-100 outline-none"
@@ -714,27 +848,6 @@ export const Intake = () => {
                               <p className={`text-[10px] mt-1 ${orderType === OrderType.STORE ? 'text-red-500' : 'text-green-600'}`}>
                                   {orderType === OrderType.STORE ? 'Cuánto pagó el taller por este equipo. No afecta caja diaria.' : 'Deje en 0 si es a revisar.'}
                               </p>
-                              
-                              {orderType === OrderType.REPAIR && (
-                                  <div className="mt-4 pt-4 border-t border-green-100">
-                                      <label className="text-[10px] font-bold uppercase mb-1 block text-green-700">
-                                          TOTAL FINAL ESTIMADO (CON REPUESTOS)
-                                      </label>
-                                      <div className="relative">
-                                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold">$</span>
-                                          <input 
-                                              type="number" 
-                                              className="w-full pl-6 p-2 bg-white border border-green-200 rounded-lg text-lg font-bold text-slate-700 outline-none focus:ring-2 focus:ring-green-100"
-                                              value={formData.totalAmount || formData.estimatedCost}
-                                              onChange={e => setFormData(prev => ({
-                                                  ...prev, 
-                                                  totalAmount: parseFloat(e.target.value) || 0
-                                              }))}
-                                              placeholder="0.00"
-                                          />
-                                      </div>
-                                  </div>
-                              )}
                           </>
                       )}
                   </div>
@@ -769,7 +882,13 @@ export const Intake = () => {
 
           <div className="flex justify-end gap-4 pt-4 border-t border-slate-200 sticky bottom-0 bg-slate-50/90 backdrop-blur p-4 -mx-4 -mb-6 md:static md:bg-transparent md:p-0 md:m-0">
               <button type="button" onClick={() => navigate('/orders')} className="px-6 py-3 font-bold text-slate-500 hover:bg-slate-200 rounded-xl transition">Cancelar</button>
-              <button type="submit" disabled={loading} className="px-8 py-3 bg-blue-600 text-white rounded-xl font-bold shadow-lg hover:bg-blue-700 flex items-center gap-2 transition active:scale-95 disabled:opacity-70">
+              <button 
+                type="submit" 
+                disabled={loading} 
+                data-track-action="CREATE_ORDER"
+                data-track-type="ORDER"
+                className="px-8 py-3 bg-blue-600 text-white rounded-xl font-bold shadow-lg hover:bg-blue-700 flex items-center gap-2 transition active:scale-95 disabled:opacity-70"
+              >
                   {loading ? <Loader2 className="animate-spin"/> : <Save className="w-5 h-5"/>} 
                   GUARDAR ORDEN
               </button>
@@ -778,6 +897,50 @@ export const Intake = () => {
       
       {/* Hidden File Input for Video Upload */}
       <input ref={fileInputRef} type="file" accept="video/*" className="hidden" onChange={(e) => {const f = e.target.files?.[0]; if(f) processVideoInternal(f);}} />
+
+      {/* Tech Copilot Modal */}
+      {showTechCopilot && (
+          <div className="fixed inset-0 z-[200] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+              <div className="bg-white rounded-3xl p-6 w-full max-w-lg shadow-2xl animate-in zoom-in max-h-[80vh] flex flex-col">
+                  <div className="flex justify-between items-center mb-4">
+                      <h3 className="text-xl font-black text-slate-800 flex items-center gap-2">
+                          <BrainCircuit className="w-6 h-6 text-indigo-600"/> Copiloto Técnico IA
+                      </h3>
+                      <button onClick={() => setShowTechCopilot(false)} className="p-2 hover:bg-slate-100 rounded-full transition">
+                          <X className="w-5 h-5 text-slate-400"/>
+                      </button>
+                  </div>
+                  
+                  <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar">
+                      {isGettingAdvice ? (
+                          <div className="flex flex-col items-center justify-center py-12 text-center">
+                              <Loader2 className="w-10 h-10 text-indigo-600 animate-spin mb-4"/>
+                              <p className="text-slate-500 font-medium">Analizando falla y modelo...</p>
+                          </div>
+                      ) : (
+                          <div className="prose prose-slate max-w-none">
+                              <div className="bg-indigo-50 p-4 rounded-2xl border border-indigo-100 mb-4">
+                                  <p className="text-xs font-bold text-indigo-800 uppercase mb-1">Contexto</p>
+                                  <p className="text-sm text-indigo-900"><b>{formData.deviceModel}</b> - {formData.deviceIssue}</p>
+                              </div>
+                              <div className="text-slate-700 text-sm whitespace-pre-wrap leading-relaxed">
+                                  {techAdvice}
+                              </div>
+                          </div>
+                      )}
+                  </div>
+                  
+                  <div className="mt-6 pt-4 border-t border-slate-100">
+                      <button 
+                        onClick={() => setShowTechCopilot(false)}
+                        className="w-full bg-slate-900 text-white p-3 rounded-xl font-bold hover:bg-slate-800 transition"
+                      >
+                          Entendido
+                      </button>
+                  </div>
+              </div>
+          </div>
+      )}
     </div>
   );
 };

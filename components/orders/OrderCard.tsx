@@ -57,7 +57,7 @@ export const OrderCard: React.FC<OrderCardProps> = ({ order, onClaim }) => {
                         <span className={`px-2 sm:px-3 py-1 rounded-xl text-[9px] sm:text-[10px] font-black uppercase tracking-wider ${getStatusBadgeStyle(order.status, isReturn)}`}>{isReturn ? 'DEVOLUCIÓN' : order.status}</span>
                         <div className="text-right shrink-0 ml-2">
                             <p className="text-[9px] sm:text-[10px] font-bold text-slate-400 uppercase">A Cobrar</p>
-                            <p className="text-base sm:text-lg font-black text-slate-800 leading-none">${(order.finalPrice || order.estimatedCost || 0).toLocaleString()}</p>
+                            <p className="text-base sm:text-lg font-black text-slate-800 leading-none">${(order.totalAmount ?? (order.finalPrice || order.estimatedCost || 0)).toLocaleString()}</p>
                         </div>
                     </div>
                     <div className={`p-2 sm:p-3 rounded-2xl flex items-center justify-between border ${timeLeft.urgent ? 'border-orange-200' : 'border-slate-100'} ${timeLeft.bg}`}>

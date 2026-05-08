@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Upload, Loader2, Check, AlertCircle, FileText, Camera } from 'lucide-react';
 import { useDropzone } from 'react-dropzone';
@@ -22,82 +22,97 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({ isOpen, onClos
   const [scanError, setScanError] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [apiKeyMissing, setApiKeyMissing] = useState(false);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
   const [categories, setCategories] = useState<AccountingCategory[]>([]);
-  
-  useEffect(() => {
-    if (isOpen) {
-      accountingService.getCategories().then(setCategories);
-    }
-  }, [isOpen]);
-
+  const [file, setFile] = useState<File | null>(null);
+  const [ocrText, setOcrText] = useState<string>('');
   const [formData, setFormData] = useState({
     amount: '',
     date: format(new Date(), 'yyyy-MM-dd'),
     vendor: '',
     description: '',
     invoice_number: '',
-    category: '', // Will be set to first category ID or empty
+    category: '',
     source: 'STORE' as 'MANUAL' | 'STORE'
   });
 
-  // Set default category when loaded
+  // Reset all states when modal opens
   useEffect(() => {
-    if (categories.length > 0 && !formData.category) {
-      const repuestosCat = categories.find(c => c.name.toLowerCase().includes('repuesto'));
-      setFormData(prev => ({ ...prev, category: repuestosCat ? repuestosCat.id : categories[0].id }));
+    if (isOpen) {
+      setIsScanning(false);
+      setIsSubmitting(false);
+      setScanError(null);
+      setSubmitError(null);
+      setApiKeyMissing(false);
+      setFile(null);
+      setOcrText('');
+      setFormData({
+        amount: '',
+        date: format(new Date(), 'yyyy-MM-dd'),
+        vendor: '',
+        description: '',
+        invoice_number: '',
+        category: '',
+        source: 'STORE'
+      });
+      
+      accountingService.getCategories().then(cats => {
+        setCategories(cats);
+        if (cats.length > 0) {
+          const repuestosCat = cats.find(c => c.name.toLowerCase().includes('repuesto'));
+          setFormData(prev => ({ 
+            ...prev, 
+            category: repuestosCat ? repuestosCat.id : cats[0].id 
+          }));
+        }
+      });
     }
-  }, [categories]);
-
-  const [file, setFile] = useState<File | null>(null);
-  const [ocrText, setOcrText] = useState<string>('');
+  }, [isOpen]);
 
   const onDrop = useCallback(async (acceptedFiles: File[]) => {
     const droppedFile = acceptedFiles[0];
-    if (!droppedFile) return;
+    if (!droppedFile || isScanning || isSubmitting) return;
 
+    setIsScanning(true);
     setFile(droppedFile);
     setScanError(null);
     setApiKeyMissing(false);
 
     // Check API Key
-    const hasKey = await aiAccountingService.checkApiKey();
-    if (!hasKey) {
-        setApiKeyMissing(true);
-        return;
-    }
-
-    setIsScanning(true);
-
     try {
+      const hasKey = await aiAccountingService.checkApiKey();
+      if (!hasKey) {
+          setApiKeyMissing(true);
+          setIsScanning(false);
+          return;
+      }
+
       const scannedData = await aiAccountingService.scanReceipt(droppedFile);
       
       if (scannedData.error) {
-        setScanError("No se detectó un recibo válido.");
+        setScanError(scannedData.error || "No se detectó un recibo válido.");
       } else {
         const matchedCat = categories.find(c => c.name.toLowerCase() === scannedData.category?.toLowerCase());
         setFormData(prev => ({
           ...prev,
-          amount: scannedData.amount?.toString() || '',
-          date: scannedData.date || format(new Date(), 'yyyy-MM-dd'),
-          vendor: scannedData.vendor || '',
-          description: scannedData.description || '',
-          invoice_number: scannedData.invoice_number || '',
-          category: matchedCat ? matchedCat.id : (categories[0]?.id || '')
+          amount: scannedData.amount?.toString() || prev.amount,
+          date: scannedData.date || prev.date,
+          vendor: scannedData.vendor || prev.vendor,
+          description: scannedData.description || prev.description,
+          invoice_number: scannedData.invoice_number || prev.invoice_number,
+          category: matchedCat ? matchedCat.id : prev.category
         }));
         
-        // Store raw OCR text for search indexing
-        // We might want to ask the AI to return the raw text too, or just use the structured data as proxy
-        // For now, let's construct a rich search string from the structured data + any extra fields
         const richText = `OCR_DATA: ${JSON.stringify(scannedData)}`;
         setOcrText(richText);
       }
     } catch (error) {
-      console.error("Scan failed", error);
+      console.warn("Scan failed", error);
       setScanError("Error al escanear el recibo. Intenta manual.");
     } finally {
       setIsScanning(false);
     }
-  }, [categories]);
+  }, [categories, isScanning, isSubmitting]);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
@@ -109,12 +124,21 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({ isOpen, onClos
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting || isScanning) return;
+    
     setIsSubmitting(true);
     setSubmitError(null);
 
     try {
+      const amount = parseFloat(formData.amount);
+      if (isNaN(amount)) {
+        setSubmitError("Monto inválido.");
+        setIsSubmitting(false);
+        return;
+      }
+
       const newTransaction = await accountingService.addTransaction({
-        amount: -Math.abs(parseFloat(formData.amount)), // Expenses are negative
+        amount: -Math.abs(amount), // Expenses are negative
         transaction_date: formData.date,
         vendor: formData.vendor,
         description: formData.description,
@@ -122,34 +146,25 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({ isOpen, onClos
         category_id: formData.category,
         source: formData.source,
         status: TransactionStatus.COMPLETED,
-        search_text: ocrText // Pass the OCR text for indexing
-      }, file || undefined); // Pass the file for uploading
+        search_text: ocrText,
+        created_by: currentUser?.id
+      }, file || undefined);
 
-      // Record audit log
       if (currentUser) {
         await auditService.recordLog(
           currentUser,
           ActionType.TRANSACTION_ADDED,
-          `Gasto registrado: ${formData.vendor} - $${formData.amount} (${formData.description}) ${newTransaction?.readable_id ? `[Ref: #${newTransaction.readable_id}]` : ''}`
+          `Gasto registrado: ${formData.vendor} - $${formData.amount} (${formData.description}) ${newTransaction?.readable_id ? `[Ref: #${newTransaction.readable_id}]` : ''}`,
+          undefined,
+          'TRANSACTION',
+          newTransaction?.id?.toString() || newTransaction?.readable_id?.toString()
         );
       }
       
       onSuccess();
       onClose();
-      // Reset form
-      setFormData({
-        amount: '',
-        date: format(new Date(), 'yyyy-MM-dd'),
-        vendor: '',
-        description: '',
-        invoice_number: '',
-        category: categories[0]?.id || '',
-        source: 'MANUAL'
-      });
-      setFile(null);
-      setOcrText('');
     } catch (error: any) {
-      console.error("Submit failed", error);
+      console.warn("Submit failed", error);
       if (error.message === 'DUPLICATE_INVOICE') {
         setSubmitError(`Error: La factura #${formData.invoice_number} ya fue registrada anteriormente para el proveedor ${formData.vendor}.`);
       } else {
@@ -183,7 +198,10 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({ isOpen, onClos
                 <FileText className="w-5 h-5 text-indigo-600" />
                 Registrar Nuevo Gasto
               </h2>
-              <button onClick={onClose} className="p-1 hover:bg-slate-200 rounded-full transition">
+              <button 
+                onClick={onClose} 
+                className="p-1 hover:bg-slate-200 rounded-full transition"
+              >
                 <X className="w-5 h-5 text-slate-500" />
               </button>
             </div>
@@ -216,6 +234,22 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({ isOpen, onClos
 
               {/* AI Scanner Dropzone */}
               <div className="flex flex-col gap-3">
+                <input 
+                  type="file" 
+                  accept="image/*" 
+                  capture="environment" 
+                  ref={cameraInputRef} 
+                  className="hidden" 
+                  onChange={(e) => {
+                    if (e.target.files && e.target.files.length > 0) {
+                      onDrop(Array.from(e.target.files));
+                    }
+                    // Reset input value to allow taking another photo immediately
+                    if (cameraInputRef.current) {
+                      cameraInputRef.current.value = '';
+                    }
+                  }} 
+                />
                 <div 
                   {...getRootProps()} 
                   className={`border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-colors ${
@@ -236,16 +270,7 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({ isOpen, onClos
                           className="flex-1 flex flex-col items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white p-4 rounded-xl shadow-lg shadow-indigo-600/20 transition active:scale-95"
                           onClick={(e) => {
                             e.stopPropagation();
-                            const input = document.createElement('input');
-                            input.type = 'file';
-                            input.accept = 'image/*';
-                            input.capture = 'environment';
-                            input.onchange = (e: any) => {
-                              if (e.target.files && e.target.files.length > 0) {
-                                onDrop(Array.from(e.target.files));
-                              }
-                            };
-                            input.click();
+                            cameraInputRef.current?.click();
                           }}
                         >
                           <Camera className="w-8 h-8" />
@@ -379,14 +404,37 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({ isOpen, onClos
                 <div className="pt-4 flex gap-3">
                   <button 
                     type="button" 
+                    onClick={() => {
+                      setFormData({
+                        amount: '',
+                        date: format(new Date(), 'yyyy-MM-dd'),
+                        vendor: '',
+                        description: '',
+                        invoice_number: '',
+                        category: categories[0]?.id || '',
+                        source: 'STORE'
+                      });
+                      setFile(null);
+                      setOcrText('');
+                      setScanError(null);
+                      setSubmitError(null);
+                    }}
+                    className="px-4 py-2 bg-slate-100 text-slate-600 rounded-xl font-semibold hover:bg-slate-200 transition"
+                    title="Limpiar Formulario"
+                  >
+                    Limpiar
+                  </button>
+                  <button 
+                    type="button" 
                     onClick={onClose}
-                    className="flex-1 px-4 py-2 border border-slate-200 text-slate-600 rounded-xl font-semibold hover:bg-slate-50 transition"
+                    disabled={isSubmitting || isScanning}
+                    className="flex-1 px-4 py-2 border border-slate-200 text-slate-600 rounded-xl font-semibold hover:bg-slate-50 transition disabled:opacity-50"
                   >
                     Cancelar
                   </button>
                   <button 
                     type="submit" 
-                    disabled={isSubmitting}
+                    disabled={isSubmitting || isScanning}
                     className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-xl font-semibold hover:bg-indigo-700 transition flex items-center justify-center gap-2 disabled:opacity-70"
                   >
                     {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}

@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { X, Receipt, Building2, Smartphone, Loader2, Upload, QrCode, CheckCircle2, Sparkles, Plus, Trash2 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
-import { supabase } from '../../services/supabase';
+import { supabase, finalUrl, finalKey } from '../../services/supabase';
 import { useAuth } from '../../contexts/AuthContext';
 import { accountingService } from '../../services/accountingService';
+import { auditService } from '../../services/auditService';
 import { TransactionStatus, ApprovalStatus, ExpenseDestination } from '../../types';
 import { analyzeInvoiceImage, urlToBase64 } from '../../services/geminiService';
 
@@ -15,11 +16,12 @@ interface ExpenseModalProps {
 export const ExpenseModal: React.FC<ExpenseModalProps> = ({ onClose, onSuccess }) => {
   const { currentUser } = useAuth();
   
-  const [type, setType] = useState<'ORDER' | 'LOCAL'>('ORDER');
+  const [type, setType] = useState<'ORDER' | 'LOCAL' | null>(null);
   const [items, setItems] = useState<{ id: string, desc: string, amount: string }[]>([
     { id: crypto.randomUUID(), desc: '', amount: '' }
   ]);
   const [invoiceNumber, setInvoiceNumber] = useState('');
+  const [vendor, setVendor] = useState('');
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
   const [receiptUrl, setReceiptUrl] = useState<string | null>(null);
   const [showQR, setShowQR] = useState(false);
@@ -30,14 +32,15 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({ onClose, onSuccess }
   
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [aiAnalysisError, setAiAnalysisError] = useState<string | null>(null);
   const [isDuplicate, setIsDuplicate] = useState(false);
   const [checkingDuplicate, setCheckingDuplicate] = useState(false);
 
   useEffect(() => {
     const check = async () => {
-      if (invoiceNumber.trim()) {
+      if (invoiceNumber.trim() || vendor.trim()) {
         setCheckingDuplicate(true);
-        const exists = await accountingService.checkDuplicateInvoice(invoiceNumber);
+        const exists = await accountingService.checkDuplicateInvoice(invoiceNumber, vendor);
         setIsDuplicate(exists);
         setCheckingDuplicate(false);
       } else {
@@ -46,7 +49,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({ onClose, onSuccess }
     };
     const timer = setTimeout(check, 500);
     return () => clearTimeout(timer);
-  }, [invoiceNumber]);
+  }, [invoiceNumber, vendor]);
 
   const processInvoiceFile = async (file: File) => {
     setIsAnalyzing(true);
@@ -55,55 +58,100 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({ onClose, onSuccess }
       reader.readAsDataURL(file);
       reader.onload = async () => {
         try {
-          const base64 = (reader.result as string).split(',')[1];
-          const result = await analyzeInvoiceImage(base64);
+          const resultStr = reader.result as string;
+          const mimeType = resultStr.split(';')[0].split(':')[1] || 'image/jpeg';
+          const base64 = resultStr.split(',')[1];
+          const result = await analyzeInvoiceImage(base64, mimeType);
           if (result) {
             if (result.invoiceNumber) setInvoiceNumber(result.invoiceNumber);
+            if (result.vendor) setVendor(result.vendor);
             
             if (result.articles && result.articles.length > 0) {
-              setItems(result.articles.map(art => ({
-                id: crypto.randomUUID(),
-                desc: art.description,
-                amount: art.amount.toString()
-              })));
+              setItems(result.articles.map(art => {
+                let parsedAmount = 0;
+                if (typeof art.amount === 'number') {
+                  parsedAmount = art.amount;
+                } else if (typeof art.amount === 'string') {
+                  const cleanStr = (art.amount as string).replace(/[^0-9.-]+/g,"");
+                  parsedAmount = parseFloat(cleanStr);
+                }
+                
+                return {
+                  id: crypto.randomUUID(),
+                  desc: art.description || 'Artículo sin nombre',
+                  amount: isNaN(parsedAmount) ? '' : parsedAmount.toString()
+                };
+              }));
+            } else {
+              setAiAnalysisError("La inteligencia artificial procesó la imagen pero no pudo detectar textos o artículos claros. Por favor, rellena los campos manualmente.");
             }
+          } else {
+             setAiAnalysisError("No se pudo extraer la información desde la imagen.");
           }
-        } catch (err) {
-          console.error("Error analyzing invoice file:", err);
+        } catch (err: any) {
+          console.warn("Issue analyzing invoice file:", err);
+          setAiAnalysisError(err.message || "Error al procesar la imagen de la factura.");
         } finally {
           setIsAnalyzing(false);
         }
       };
       reader.onerror = () => {
         setIsAnalyzing(false);
+        setAiAnalysisError("Error al leer el archivo en el navegador.");
       };
-    } catch (e) {
-      console.error("Error processing invoice file:", e);
+    } catch (e: any) {
+      console.warn("Issue processing invoice file:", e);
+      setAiAnalysisError(e.message || "Error al procesar la imagen de la factura.");
       setIsAnalyzing(false);
     }
   };
 
+  const isProcessingRef = React.useRef(false);
+
   const processInvoiceImage = async (url: string) => {
+    if (isProcessingRef.current) return;
+    isProcessingRef.current = true;
     setIsAnalyzing(true);
+    setAiAnalysisError(null);
     try {
-      const base64 = await urlToBase64(url);
-      const result = await analyzeInvoiceImage(base64);
+      const { base64, mimeType } = await urlToBase64(url);
+      const result = await analyzeInvoiceImage(base64, mimeType);
       if (result) {
-        if (result.invoiceNumber) setInvoiceNumber(result.invoiceNumber);
+        if (result.invoiceNumber && result.invoiceNumber !== "null") setInvoiceNumber(result.invoiceNumber);
+        if (result.vendor && result.vendor !== "null") setVendor(result.vendor);
         
         if (result.articles && result.articles.length > 0) {
-          setItems(result.articles.map(art => ({
-            id: crypto.randomUUID(),
-            desc: art.description,
-            amount: art.amount.toString()
-          })));
+          setItems(result.articles.map(art => {
+            // Ensure amount is a valid number string
+            let parsedAmount = 0;
+            if (typeof art.amount === 'number') {
+              parsedAmount = art.amount;
+            } else if (typeof art.amount === 'string') {
+              // Remove currency symbols and commas
+              const cleanStr = (art.amount as string).replace(/[^0-9.-]+/g,"");
+              parsedAmount = parseFloat(cleanStr);
+            }
+            
+            return {
+              id: crypto.randomUUID(),
+              desc: art.description || 'Artículo sin nombre',
+              amount: isNaN(parsedAmount) ? '' : parsedAmount.toString()
+            };
+          }));
+        } else {
+            setAiAnalysisError("La inteligencia artificial procesó la imagen pero no pudo detectar textos o artículos claros.");
+            setItems([{ id: crypto.randomUUID(), desc: 'Consumo / Gasto', amount: '0' }]);
         }
+      } else {
+        setAiAnalysisError("No se pudo formatear la información desde la imagen. Intenta ajustarlo manualmente.");
       }
-    } catch (e) {
-      console.error("Error processing invoice image:", e);
+    } catch (e: any) {
+      console.warn("Issue processing invoice image:", e);
+      setAiAnalysisError(e.message || e || "Error al procesar la imagen de la factura.");
     } finally {
       setIsAnalyzing(false);
       setShowQR(false);
+      isProcessingRef.current = false;
     }
   };
 
@@ -144,7 +192,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({ onClose, onSuccess }
           clearInterval(pollInterval);
         }
       } catch (err) {
-        console.error("Error polling for receipt:", err);
+        console.warn("Error polling for receipt:", err);
       }
     }, 3000);
 
@@ -162,7 +210,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({ onClose, onSuccess }
         if (data.length > 0) setSelectedCategory(data[0].id);
       }
     } catch (e) {
-      console.error(e);
+      console.warn(e);
     }
   };
 
@@ -175,7 +223,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({ onClose, onSuccess }
         .eq('shared_receipt_id', sessionId)
         .eq('description', 'RECEIPT_UPLOAD_TRIGGER');
     } catch (e) {
-      console.error("Cleanup error:", e);
+      console.warn("Cleanup error:", e);
     }
     onClose();
   };
@@ -208,6 +256,11 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({ onClose, onSuccess }
       }
     });
 
+    if (!type) {
+      alert("Por favor seleccione el Tipo de Gasto (Para Taller o Gasto Local).");
+      return;
+    }
+
     if (hasError || validItems.length === 0) {
       alert("Por favor revise que todos los items tengan descripción y monto válido.");
       return;
@@ -220,43 +273,82 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({ onClose, onSuccess }
         finalReceiptUrl = await accountingService.uploadReceipt(receiptFile);
       }
 
+      let savedCount = 0;
+      let errors: string[] = [];
+
       if (type === 'ORDER') {
-        // 1. Send to Floating Expenses (Limbo)
-        const inserts = validItems.map(item => ({
-          description: item.desc,
-          amount: item.amount,
-          receipt_url: finalReceiptUrl,
-          created_by: currentUser.id,
-          branch_id: currentUser.branch || 'T4',
-          approval_status: 'PENDING',
-          invoice_number: invoiceNumber || null,
-          shared_receipt_id: validItems.length > 1 ? sessionId : null,
-          is_duplicate: isDuplicate
-        }));
-        
-        const { error } = await supabase.from('floating_expenses').insert(inserts);
-        if (error) throw error;
-        
+        // 1. Send to Floating Expenses (Limbo) one by one
+        for (let i = 0; i < validItems.length; i++) {
+          const item = validItems[i];
+          try {
+            const insertData = {
+              description: item.desc,
+              amount: item.amount,
+              receipt_url: finalReceiptUrl,
+              created_by: currentUser.id,
+              branch_id: currentUser.branch || 'T4',
+              approval_status: 'PENDING',
+              invoice_number: invoiceNumber || null,
+              vendor: vendor || null,
+              shared_receipt_id: validItems.length > 1 ? sessionId : null,
+              is_duplicate: isDuplicate || i > 0
+            };
+            
+            const { error } = await supabase.from('floating_expenses').insert([insertData]);
+            if (error) throw error;
+            
+            await auditService.recordLog(
+              currentUser,
+              'CREATE_EXPENSE',
+              `Registró gasto de pedido: ${item.desc} (${item.amount})`,
+              undefined,
+              'TRANSACTION',
+              sessionId
+            );
+            savedCount++;
+          } catch (err: any) {
+            console.warn("Error saving floating expense:", err);
+            errors.push(`${item.desc}: ${err.message || 'Error desconocido'}`);
+          }
+        }
       } else {
-        // 2. Send to General Accounting (Local)
+        // 2. Send to General Accounting (Local) one by one
         if (!selectedCategory) throw new Error("Seleccione una categoría");
         
-        for (const item of validItems) {
-          await accountingService.addTransaction({
-            amount: -item.amount,
-            description: item.desc,
-            category_id: selectedCategory,
-            transaction_date: new Date().toISOString().split('T')[0],
-            receipt_url: finalReceiptUrl || undefined,
-            status: TransactionStatus.PENDING, // Needs approval from auditor
-            approval_status: ApprovalStatus.PENDING,
-            expense_destination: ExpenseDestination.STORE,
-            source: 'STORE',
-            created_by: currentUser.id,
-            invoice_number: invoiceNumber || undefined,
-            shared_receipt_id: validItems.length > 1 ? sessionId : undefined,
-            is_duplicate: isDuplicate
-          });
+        for (let i = 0; i < validItems.length; i++) {
+          const item = validItems[i];
+          try {
+            await accountingService.addTransaction({
+              amount: -item.amount,
+              description: item.desc,
+              category_id: selectedCategory,
+              transaction_date: new Date().toISOString().split('T')[0],
+              receipt_url: finalReceiptUrl || undefined,
+              status: TransactionStatus.COMPLETED, // Money left the register, so it's completed for cash register purposes
+              approval_status: ApprovalStatus.PENDING, // Needs approval from auditor
+              expense_destination: ExpenseDestination.STORE,
+              source: 'STORE',
+              branch: currentUser.branch || 'T4',
+              created_by: currentUser.id,
+              invoice_number: invoiceNumber || undefined,
+              vendor: vendor || undefined,
+              shared_receipt_id: validItems.length > 1 ? sessionId : undefined,
+              is_duplicate: isDuplicate || i > 0
+            });
+            
+            await auditService.recordLog(
+              currentUser,
+              'CREATE_EXPENSE',
+              `Registró gasto local: ${item.desc} (${item.amount})`,
+              undefined,
+              'TRANSACTION',
+              sessionId
+            );
+            savedCount++;
+          } catch (err: any) {
+            console.warn("Error saving local expense:", err);
+            errors.push(`${item.desc}: ${err.message || 'Error desconocido'}`);
+          }
         }
       }
       
@@ -268,13 +360,19 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({ onClose, onSuccess }
           .eq('shared_receipt_id', sessionId)
           .eq('description', 'RECEIPT_UPLOAD_TRIGGER');
       } catch (e) {
-        console.error("Cleanup error:", e);
+        console.warn("Cleanup error:", e);
       }
       
+      if (errors.length > 0) {
+        alert(`Se guardaron ${savedCount} de ${validItems.length} gastos.\nErrores:\n${errors.join('\n')}`);
+      } else {
+        alert(`Se guardaron correctamente los ${savedCount} gastos.`);
+      }
+
       onSuccess();
     } catch (error: any) {
-      console.error(error);
-      alert("Error al registrar el gasto: " + error.message);
+      console.warn(error);
+      alert("Error general al registrar el gasto: " + error.message);
     } finally {
       setIsSubmitting(false);
     }
@@ -286,7 +384,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({ onClose, onSuccess }
         <div className="p-6 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center bg-red-50 dark:bg-red-900/20">
           <h2 className="text-xl font-black text-red-600 dark:text-red-400 flex items-center gap-2">
             <Receipt className="w-6 h-6" />
-            Salida de Caja
+            Gasto de Caja
           </h2>
           <button onClick={handleClose} className="p-2 bg-white/50 hover:bg-white rounded-full transition-colors text-slate-500">
             <X className="w-5 h-5" />
@@ -311,7 +409,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({ onClose, onSuccess }
 
                 {isAnalyzing && (
                   <div className="relative w-48 h-64 bg-slate-100 dark:bg-slate-800 rounded-xl overflow-hidden shadow-lg border-4 border-white dark:border-slate-700">
-                    <img src={receiptUrl} alt="Preview" className="w-full h-full object-cover opacity-60" />
+                    <img src={receiptUrl || undefined} alt="Preview" className="w-full h-full object-cover opacity-60" />
                     <div className="absolute inset-0 flex flex-col items-center justify-center bg-blue-600/20 backdrop-blur-[1px]">
                       <div className="w-full h-1 bg-blue-500 absolute top-0 animate-[scan_2s_linear_infinite]" />
                       <Sparkles className="w-10 h-10 text-white animate-pulse drop-shadow-lg" />
@@ -333,7 +431,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({ onClose, onSuccess }
             ) : (
               <>
                 <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
-                  <QRCodeSVG value={`${window.location.origin}/#/mobile-upload/${sessionId}`} size={200} level="H" includeMargin={true} className="rounded-xl" />
+                  <QRCodeSVG value={`${window.location.origin}/#/mobile-upload/${sessionId}?sbUrl=${encodeURIComponent(finalUrl || '')}&sbKey=${encodeURIComponent(finalKey || '')}`} size={200} level="H" includeMargin={true} className="rounded-xl" />
                 </div>
                 <div>
                   <h3 className="text-xl font-bold text-slate-800 dark:text-white mb-2">Escanee para subir factura</h3>
@@ -455,32 +553,26 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({ onClose, onSuccess }
             )}
 
             <div>
-              <label className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1 block">Número de Factura / Recibo (Opcional)</label>
-              <div className="relative">
-                <input 
-                  type="text"
-                  value={invoiceNumber}
-                  onChange={e => setInvoiceNumber(e.target.value)}
-                  className={`w-full px-4 py-3 bg-slate-50 dark:bg-slate-800 border rounded-xl text-sm font-medium outline-none transition dark:text-white ${isDuplicate ? 'border-amber-500 bg-amber-50 dark:bg-amber-900/20' : 'border-slate-200 dark:border-slate-700 focus:border-red-500'}`}
-                  placeholder="Ej. FAC-00123"
-                />
-                {checkingDuplicate && (
-                  <div className="absolute right-3 top-1/2 -translate-y-1/2">
-                    <Loader2 className="w-4 h-4 animate-spin text-slate-400" />
-                  </div>
-                )}
-              </div>
-              {isDuplicate && (
-                <div className="mt-2 flex items-center gap-2 text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 p-2 rounded-lg border border-amber-200 dark:border-amber-800">
-                  <Sparkles className="w-4 h-4" />
-                  <span className="text-[10px] font-bold uppercase tracking-tight">⚠️ Factura Duplicada Detectada</span>
-                </div>
-              )}
+              <label className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1 block">Proveedor (Opcional)</label>
+              <input 
+                type="text"
+                value={vendor}
+                onChange={e => setVendor(e.target.value)}
+                className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-sm font-medium outline-none focus:border-red-500 transition dark:text-white"
+                placeholder="Ej. Supermercado, Ferretería, etc."
+              />
             </div>
 
             <div>
               <label className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1 block">Comprobante (Opcional)</label>
               
+              {aiAnalysisError && (
+                <div className="mb-3 flex items-start gap-2 bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 p-3 rounded-lg border border-amber-200 dark:border-amber-800 text-sm">
+                  <span className="mt-0.5">⚠️</span>
+                  <p className="flex-1">{aiAnalysisError}</p>
+                </div>
+              )}
+
               {receiptUrl ? (
                 <div className="flex items-center justify-between p-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800/50 rounded-xl">
                   <div className="flex items-center gap-3">
@@ -496,32 +588,14 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({ onClose, onSuccess }
                   </button>
                 </div>
               ) : (
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setShowQR(true)}
-                    className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-800/50 rounded-xl text-sm font-medium hover:bg-blue-100 dark:hover:bg-blue-900/40 transition"
-                  >
-                    <QrCode className="w-4 h-4" />
-                    Escanear QR
-                  </button>
-                  
-                  <label className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-slate-50 dark:bg-slate-800 border border-dashed border-slate-300 dark:border-slate-600 rounded-xl text-sm font-medium cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700 transition text-slate-500">
-                    <Upload className="w-4 h-4" />
-                    {receiptFile ? receiptFile.name : 'Subir archivo'}
-                    <input 
-                      type="file" 
-                      accept="image/*" 
-                      className="hidden" 
-                      onChange={e => {
-                        if (e.target.files && e.target.files[0]) {
-                          setReceiptFile(e.target.files[0]);
-                          processInvoiceFile(e.target.files[0]);
-                        }
-                      }}
-                    />
-                  </label>
-                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowQR(true)}
+                  className="w-full flex items-center justify-center gap-3 px-6 py-4 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 border-2 border-dashed border-blue-300 dark:border-blue-800/50 rounded-xl text-lg font-bold hover:bg-blue-100 dark:hover:bg-blue-900/40 transition"
+                >
+                  <QrCode className="w-6 h-6" />
+                  ESCANEAR QR PARA SUBIR FOTO
+                </button>
               )}
             </div>
 
@@ -537,7 +611,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({ onClose, onSuccess }
             disabled={isSubmitting || items.some(i => !i.desc || !i.amount)}
             className="w-full py-4 bg-red-600 hover:bg-red-700 text-white rounded-xl font-black text-lg shadow-lg shadow-red-600/20 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
           >
-            {isSubmitting ? <Loader2 className="w-6 h-6 animate-spin" /> : 'Registrar Salida de Caja'}
+            {isSubmitting ? <Loader2 className="w-6 h-6 animate-spin" /> : 'Registrar Gasto de Caja'}
           </button>
         </form>
         )}

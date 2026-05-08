@@ -140,7 +140,7 @@ export const fetchActionRequiredOrders = async (
         });
 
     } catch (e) {
-        console.error("Error fetching alerts:", e);
+        console.warn("Error fetching alerts:", e);
         return [];
     }
 };
@@ -159,6 +159,7 @@ export const fetchOverdueOrders = async (branch: string): Promise<RepairOrder[]>
             .from('orders')
             .select('*')
             .lt('deadline', now) // Vencido
+            .gt('deadline', 0) // Excluir "Sin fecha"
             .not('status', 'in', `("${OrderStatus.RETURNED}","Cancelado","Reparado")`) // No finalizado
             .eq('currentBranch', branch) // Solo mi sucursal
             .order('deadline', { ascending: true }) // Los más vencidos primero
@@ -168,7 +169,30 @@ export const fetchOverdueOrders = async (branch: string): Promise<RepairOrder[]>
         return data as RepairOrder[];
 
     } catch (e) {
-        console.error("Error fetching overdue:", e);
+        console.warn("Error fetching overdue:", e);
+        return [];
+    }
+};
+
+export const fetchOverdueCredits = async (userId: string): Promise<any[]> => {
+    if (!supabase) return [];
+
+    try {
+        const now = new Date().toISOString();
+        
+        const { data, error } = await supabase
+            .from('client_credits')
+            .select('*')
+            .eq('cashier_id', userId)
+            .eq('status', 'PENDING')
+            .lt('due_date', now)
+            .order('due_date', { ascending: true });
+
+        if (error) throw error;
+        return data;
+
+    } catch (e) {
+        console.warn("Error fetching overdue credits:", e);
         return [];
     }
 };

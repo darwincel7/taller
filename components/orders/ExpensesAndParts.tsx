@@ -11,8 +11,9 @@ interface ExpensesAndPartsProps {
   setFinalPriceInput: (val: string) => void;
   canViewAccounting: boolean;
   canEdit: boolean;
-  onAddExpense: (desc: string, amount: number) => Promise<void>;
-  onAddExpenses?: (expensesToAdd: {desc: string, amount: number, receiptUrl?: string, sharedReceiptId?: string}[]) => Promise<void>;
+  canEditPrice?: boolean;
+  onAddExpense: (desc: string, amount: number, receiptUrl?: string, sharedReceiptId?: string, readableId?: number, isExternal?: boolean, closingId?: string, createdAt?: string, invoiceNumber?: string, vendor?: string, isDuplicate?: boolean, createdBy?: string, isInventory?: boolean) => Promise<void>;
+  onAddExpenses?: (expensesToAdd: {desc: string, amount: number, receiptUrl?: string, sharedReceiptId?: string, readableId?: number, isExternal?: boolean, closingId?: string, createdAt?: string, invoiceNumber?: string, vendor?: string, isDuplicate?: boolean, createdBy?: string, isInventory?: boolean}[]) => Promise<void>;
   onRemoveExpense: (id: string) => Promise<void>;
   onEditExpense: (id: string, desc: string, amount: number) => Promise<void>;
   handleUpdatePrice: (reason?: string) => void;
@@ -26,6 +27,7 @@ export const ExpensesAndParts: React.FC<ExpensesAndPartsProps> = ({
   setFinalPriceInput,
   canViewAccounting,
   canEdit,
+  canEditPrice,
   onAddExpense,
   onAddExpenses,
   onRemoveExpense,
@@ -48,6 +50,7 @@ export const ExpensesAndParts: React.FC<ExpensesAndPartsProps> = ({
         onRemoveExpense={onRemoveExpense}
         onEditExpense={onEditExpense}
         canEdit={canEdit}
+        canEditPrice={canEditPrice}
       />
     </div>
   );

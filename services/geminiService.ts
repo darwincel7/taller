@@ -1,12 +1,48 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
 import { RepairOrder, ChatMessage } from "../types";
+import { supabase } from "./supabase";
 
-// Lazy initialization wrapper
 const getAiClient = () => {
-    const key = process.env.GEMINI_API_KEY;
-    if (!key) throw new Error("API Key not found.");
-    return new GoogleGenAI({ apiKey: key });
+    // Return a mock of GoogleGenAI that intercepts generateContent and routes it through our backend
+    return {
+        models: {
+            generateContent: async (params: any) => {
+                const res = await fetch('/api/gemini/generateContent', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(params)
+                });
+                const data = await res.json();
+                if (!res.ok) {
+                    const errMsg = data.fault || data.error || data.details?.message || "Failed to generate content";
+                    // Throw as simple string instead of object to prevent stack traces showing in AI Studio
+                    throw errMsg;
+                }
+                // data.text will contain the generated text from the server
+                return { text: data.text };
+            }
+        }
+    };
+};
+
+export const handleGeminiError = (e: any): string => {
+    let errorMsg = e?.message || e?.toString() || "";
+    
+    // Handle nested error object from Gemini API
+    if (e?.error) {
+        errorMsg = e.error.message || errorMsg;
+        if (e.error.status) errorMsg += ` [${e.error.status}]`;
+        if (e.error.code) errorMsg += ` (${e.error.code})`;
+    }
+
+    // Only log non-quota errors to avoid console spam when quota is exceeded
+    if (e?.status === 429 || e?.error?.code === 429 || errorMsg.includes("429") || errorMsg.includes("RESOURCE_EXHAUSTED") || errorMsg.includes("quota")) {
+        return "Has excedido tu cuota de uso de la API de Gemini. Por favor, verifica tu plan y detalles de facturación en https://ai.google.dev/gemini-api/docs/rate-limits.";
+    }
+    // Changed to console.warn so it doesn't trigger AI Studio strict error catchers
+    console.warn("Gemini API Error Details:", e);
+    return `Error comunicándose con la IA: ${errorMsg}`;
 };
 
 const SYSTEM_INSTRUCTION = `
@@ -33,13 +69,12 @@ export const getTechnicalAdvice = async (model: string, issue: string): Promise<
     Mantén el tono técnico pero directo.`;
 
         const response = await ai.models.generateContent({
-            model: 'gemini-3-flash-preview',
+            model: 'gemini-2.5-flash',
             contents: { parts: [{ text: prompt }] }
         });
         return response.text || "No se pudo generar consejo.";
     } catch (e) {
-        console.error(e);
-        return "Error consultando al copiloto (Verifique API Key).";
+        return handleGeminiError(e);
     }
 };
 
@@ -48,7 +83,7 @@ export const transcribeAudio = async (base64Audio: string): Promise<string> => {
     try {
         const ai = getAiClient();
         const response = await ai.models.generateContent({
-            model: 'gemini-3-flash-preview',
+            model: 'gemini-2.5-flash',
             contents: {
                 parts: [
                     { inlineData: { mimeType: 'audio/mp3', data: base64Audio } }, // Gemini supports standard audio containers
@@ -58,8 +93,7 @@ export const transcribeAudio = async (base64Audio: string): Promise<string> => {
         });
         return response.text?.trim() || "";
     } catch (e) {
-        console.error(e);
-        return "Error en transcripción";
+        return handleGeminiError(e);
     }
 };
 
@@ -70,46 +104,74 @@ export interface ExtractedArticle {
 
 export interface ExtractedInvoice {
   invoiceNumber: string | null;
+  vendor: string | null;
   articles: ExtractedArticle[];
 }
 
-export const urlToBase64 = async (url: string): Promise<string> => {
-  const response = await fetch(url);
-  const blob = await response.blob();
+export const urlToBase64 = async (url: string): Promise<{ base64: string, mimeType: string }> => {
+  let blob: Blob;
+
+  if (url.includes('supabase.co/storage/v1/object/public/')) {
+    const parts = url.split('/');
+    const fileName = parts.pop();
+    const bucket = parts.pop();
+    
+    if (bucket && fileName) {
+      const { data, error } = await supabase.storage.from(bucket).download(fileName);
+      if (error) {
+        throw new Error(`Error al descargar la imagen de Supabase: ${error.message}`);
+      }
+      blob = data;
+    } else {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`Error al descargar la imagen: ${response.statusText}`);
+      blob = await response.blob();
+    }
+  } else {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Error al descargar imagen: ${response.statusText}`);
+    blob = await response.blob();
+  }
+
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onloadend = () => {
-      const base64String = reader.result as string;
-      resolve(base64String.split(',')[1]);
+      const resultStr = reader.result as string;
+      const mimeType = resultStr.split(';')[0].split(':')[1] || 'image/jpeg';
+      const base64 = resultStr.split(',')[1];
+      resolve({ base64, mimeType });
     };
     reader.onerror = reject;
     reader.readAsDataURL(blob);
   });
 };
 
-export const analyzeInvoiceImage = async (base64Image: string): Promise<ExtractedInvoice | null> => {
+export const analyzeInvoiceImage = async (base64Image: string, mimeType: string = 'image/jpeg'): Promise<ExtractedInvoice | null> => {
     try {
         const ai = getAiClient();
         const prompt = `
-        Analiza esta imagen de una factura o recibo de forma detallada.
+        Analiza esta imagen de una factura o recibo de punto de venta (POS) de forma detallada.
         Extrae la siguiente información:
-        1. Número de factura (invoiceNumber): Busca un número de factura, recibo o código de facturación. Si no hay, retorna null.
-        2. Artículos (articles): Una lista completa de TODOS los artículos o servicios comprados que aparecen en la factura.
-           - Para cada artículo, extrae la descripción exacta (description) y el monto/precio total de ese artículo (amount).
-           - ¡IMPORTANTE! Debes desglosar la factura. Si hay 5 artículos, debes devolver 5 objetos en la lista de artículos.
-           - ¡IMPORTANTE! Pon especial énfasis en identificar costos de "combustible", "delivery", "envío", "mensajería" o "transporte".
-           - Si encuentras un costo de combustible/delivery/envío, DEBES SUMAR ese monto al precio del PRIMER artículo de la lista, y NO crear un artículo separado para el envío.
-           - Si solo hay un artículo de envío y nada más, entonces sí déjalo como un artículo.
-           - Si hay múltiples artículos, suma el costo de envío al primer artículo.
+        1. Número de factura (invoiceNumber): Busca el número de factura, recibo, ticket o código de transacción. Si no hay, retorna null.
+        2. Proveedor (vendor): El nombre del comercio, tienda, empresa o proveedor que emite la factura. Si no se encuentra, retorna null.
+        3. Artículos (articles): EXTRACCIÓN Y DESGLOSE OBLIGATORIO DE CADA ARTÍCULO FÍSICO COMPRADO.
+           - Tienes que crear un elemento en el array por CADA UNA de las líneas o artículos visibles (repuestos, piezas, herramientas, comida, etc).
+           - Para cada uno, extrae su descripción textual exacta (description) y el precio total cobrado por dicho artículo (amount).
+           - ⚡ REGLA DURA SOBRE GASTOS EXTRAS: NO registres conceptos de "Delivery", "Envío", "Propina", "Transporte", "Service Fee" o similares como artículos separados.
+           - En caso de que exista un cobro por envío/delivery, toma su valor numérico y SÚMALO directamente al 'amount' del **PRIMER ARTÍCULO** de tu lista extraída.
+           - Ejemplo de regla: Si ves [Pantalla a $100], [Batería a $50] y [Envío a $20]. El JSON resultante debe tener SOLO dos artículos: [Pantalla a $120] y [Batería a $50].
+           - Matemáticamente, la suma estricta de todos los 'amount' extraídos en el array (ya fusionado el envío) DEBE SER IGUAL al "Monto Total Pagado" o "Total de la Factura".
+           - Ignora por completo pagos de clientes como "Su Efectivo", "Su Vuelto", "Su Cambio", etc. Céntrate en mercancía consumada.
+           - OBLIGATORIO: Si no encuentras artículos o la foto es borrosa, crea al menos 1 artículo genérico llamado "Gasto/Consumo" con el valor de 0 o el valor total que deduzcas. NUNCA DEVES RETORNAR UN ARRAY VACÍO [].
         
-        Retorna un JSON exacto que refleje fielmente cada ítem de la factura para que el cajero solo tenga que revisar y aceptar.
+        Actúa como un OCR contable preciso. Debes obligatoriamente devolver un JSON con esta estructura exacta.
         `;
 
         const response = await ai.models.generateContent({
-            model: 'gemini-3-flash-preview',
+            model: 'gemini-2.5-flash',
             contents: {
                 parts: [
-                    { inlineData: { mimeType: 'image/jpeg', data: base64Image } },
+                    { inlineData: { mimeType, data: base64Image } },
                     { text: prompt }
                 ]
             },
@@ -118,7 +180,8 @@ export const analyzeInvoiceImage = async (base64Image: string): Promise<Extracte
                 responseSchema: {
                     type: Type.OBJECT,
                     properties: {
-                        invoiceNumber: { type: Type.STRING, description: "Número de factura o recibo. Null si no se encuentra." },
+                        invoiceNumber: { type: Type.STRING, description: "Número de factura o recibo. Null si no se encuentra.", nullable: true },
+                        vendor: { type: Type.STRING, description: "Nombre del proveedor o comercio. Null si no se encuentra.", nullable: true },
                         articles: {
                             type: Type.ARRAY,
                             items: {
@@ -136,13 +199,22 @@ export const analyzeInvoiceImage = async (base64Image: string): Promise<Extracte
             }
         });
 
-        const jsonStr = response.text?.trim();
+        let jsonStr = response.text?.trim();
         if (!jsonStr) return null;
+        
+        // Find JSON block if it exists (robust extraction)
+        const match = jsonStr.match(/\{[\s\S]*\}/);
+        if (match) {
+            jsonStr = match[0];
+        } else {
+            jsonStr = jsonStr.replace(/```json\n?|\n?```/g, '');
+            jsonStr = jsonStr.replace(/```\n?|\n?```/g, '');
+        }
         
         return JSON.parse(jsonStr);
     } catch (e) {
-        console.error("Error analyzing invoice:", e);
-        return null;
+        const msg = handleGeminiError(e);
+        throw new Error(msg);
     }
 };
 
@@ -150,7 +222,7 @@ export const analyzeImageForOrder = async (base64Image: string): Promise<string 
   try {
     const ai = getAiClient();
     const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview', 
+      model: 'gemini-2.5-flash', 
       contents: {
         parts: [
           { inlineData: { mimeType: 'image/jpeg', data: base64Image } },
@@ -160,9 +232,9 @@ export const analyzeImageForOrder = async (base64Image: string): Promise<string 
     });
     const text = response.text?.trim();
     return text === 'NOT_FOUND' ? null : text || null;
-  } catch (error) {
-    console.error("Error analyzing image:", error);
-    return null;
+  } catch (error: any) {
+    const msg = handleGeminiError(error);
+    throw new Error(msg);
   }
 };
 
@@ -174,7 +246,7 @@ export const analyzeVideoForIntake = async (frameImages: string[]): Promise<any>
     try {
         const ai = getAiClient();
         // Usamos el modelo Flash Preview que soporta múltiples imágenes rápidamente y es muy preciso con texto (IMEI)
-        const model = 'gemini-3-flash-preview'; 
+        const model = 'gemini-2.5-flash'; 
 
         const prompt = `
         Analiza estas imágenes capturadas de un video de un dispositivo en recepción.
@@ -231,33 +303,36 @@ export const analyzeVideoForIntake = async (frameImages: string[]): Promise<any>
         return JSON.parse(jsonStr);
 
     } catch (e: any) {
-        console.error("Error en Gemini Video Analysis:", e);
-        throw new Error("Error analizando las imágenes. Intenta enfocar mejor el equipo.");
+        const msg = handleGeminiError(e);
+        throw new Error(msg);
     }
 };
 
 export const analyzeProfitability = async (profitabilityData: any[]): Promise<string> => {
     try {
         const ai = getAiClient();
-        const prompt = `Actúa como un consultor de negocios experto para un taller de reparación de celulares.
-    Analiza los siguientes datos de rentabilidad por modelo de este mes:
+        const prompt = `Actúa como un consultor financiero y estratega de negocios experto para un taller de reparación de celulares ("Darwin's Taller").
+    
+    A continuación, te presento los datos de rentabilidad por modelo de este mes. 
+    IMPORTANTE: Estos datos YA EXCLUYEN los equipos "Recibidos" (de otras tiendas) y las "Garantías", por lo que reflejan ÚNICAMENTE las reparaciones reales y ventas directas del taller que generan ingresos.
+    
+    Datos de rentabilidad:
     ${JSON.stringify(profitabilityData)}
     
-    Provee un reporte breve (máximo 3 párrafos) en español que:
-    1. Identifique los modelos con menor margen de ganancia.
-    2. Sugiera ajustes de precios específicos (ej. "Sube un 10% en iPhone 13").
-    3. Mencione si algún costo está siendo inusualmente alto.
+    Por favor, redacta un análisis ejecutivo, directo y altamente accionable (máximo 3 párrafos) en español que incluya:
+    1. **Diagnóstico de Márgenes:** Identifica claramente qué modelos están generando pérdidas (márgenes negativos) o ganancias muy bajas, y cuáles son los más rentables.
+    2. **Estrategia de Precios:** Sugiere ajustes de precios específicos y realistas basados en los datos (ej. "Aumentar el precio de reparación de pantalla del iPhone 13 en un 15% para recuperar margen").
+    3. **Control de Costos:** Señala si detectas costos de repuestos o gastos operativos inusualmente altos en modelos específicos que estén mermando la ganancia, y sugiere cómo optimizarlos.
     
-    Usa un tono profesional y accionable.`;
+    Tu tono debe ser profesional, analítico y enfocado en maximizar la rentabilidad del negocio. Evita saludos genéricos, ve directo al análisis.`;
 
         const response = await ai.models.generateContent({
-            model: 'gemini-3-flash-preview',
+            model: 'gemini-3.1-pro-preview', // Upgrade to pro for better analysis
             contents: { parts: [{ text: prompt }] }
         });
         return response.text || "No se pudo generar el análisis.";
     } catch (e) {
-        console.error(e);
-        return "Error generando análisis de rentabilidad.";
+        return handleGeminiError(e);
     }
 };
 
@@ -280,7 +355,7 @@ export const chatWithDarwin = async (
       device: o.deviceModel,
       issue: o.deviceIssue,
       status: o.status,
-      cost: o.finalPrice || o.estimatedCost,
+      cost: o.totalAmount ?? (o.finalPrice || o.estimatedCost),
       notes: o.technicianNotes,
       condition: o.deviceCondition,
       deadline: o.deadline ? new Date(o.deadline).toLocaleString('es-ES') : 'Sin fecha',
@@ -311,14 +386,13 @@ export const chatWithDarwin = async (
     contents.push({ role: 'user', parts: currentParts });
 
     const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
+      model: 'gemini-2.5-flash',
       contents: contents,
       config: { systemInstruction: SYSTEM_INSTRUCTION, temperature: 0.7 }
     });
 
     return response.text;
   } catch (error) {
-    console.error("Error chatting with Darwin:", error);
-    return "Lo siento, tengo problemas conectando con el servidor.";
+    return handleGeminiError(error);
   }
 };

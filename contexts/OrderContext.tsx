@@ -1,6 +1,7 @@
 
 import React, { createContext, useContext, useState, useEffect, ReactNode, useCallback, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from '@tanstack/react-query';
+import { auditService } from '../services/auditService';
 import { supabase } from '../services/supabase';
 import { orderService } from '../services/orderService';
 import { useAuth } from './AuthContext';
@@ -94,7 +95,7 @@ const OrderContext = createContext<OrderContextType | undefined>(undefined);
 // Using 'neq' logic instead.
 
 export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const { currentUser } = useAuth();
+  const { currentUser, users } = useAuth();
   const queryClient = useQueryClient();
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
@@ -288,6 +289,17 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     // ... (rest of the log logic can be simplified or kept)
     
     // For now, let's keep it simple and just update
+    if (updates.status) {
+      const wasCompleted = currentOrder.status === OrderStatus.REPAIRED || currentOrder.status === OrderStatus.RETURNED;
+      const isCompleted = updates.status === OrderStatus.REPAIRED || updates.status === OrderStatus.RETURNED;
+      if (wasCompleted && !isCompleted) {
+          updates.pointsAwarded = 0;
+          updates.pointRequest = null as any;
+          updates.pointsEarnedBy = null as any;
+          updates.pointsSplit = null as any;
+          updates.originalPointsAwarded = null as any;
+      }
+    }
     await updateOrderMutation.mutateAsync({ id, updates });
   }, [orders, updateOrderMutation]);
 
@@ -299,6 +311,17 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     if (!order) return;
     
     const updates: Partial<RepairOrder> = { status };
+    
+    const wasCompleted = order.status === OrderStatus.REPAIRED || order.status === OrderStatus.RETURNED;
+    const isCompleted = status === OrderStatus.REPAIRED || status === OrderStatus.RETURNED;
+    if (wasCompleted && !isCompleted) {
+        updates.pointsAwarded = 0;
+        updates.pointRequest = null as any;
+        updates.pointsEarnedBy = null as any;
+        updates.pointsSplit = null as any;
+        updates.originalPointsAwarded = null as any;
+    }
+
     if (note) {
       updates.history = [...(order.history || []), { 
         date: new Date().toISOString(), 
@@ -323,7 +346,21 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     if (!order) return;
     const newHistory = [...(order.history || []), { date: new Date().toISOString(), status, note, technician: technician || 'Sistema', logType }];
     await updateOrderMutation.mutateAsync({ id, updates: { history: newHistory } });
-  }, [orders, updateOrderMutation]);
+    
+    // Global Audit Log
+    if (technician && technician !== 'Sistema') {
+        const user = users.find(u => u.name === technician);
+        auditService.recordLog(
+            user || { id: 'system', name: technician },
+            'ORDER_LOG',
+            note,
+            id,
+            'ORDER',
+            id,
+            { status, logType }
+        ).catch(console.error);
+    }
+  }, [orders, updateOrderMutation, users]);
 
   const recordOrderLog = useCallback(async (id: string, actionType: string, message: string, metadata?: any, logType: LogType = LogType.INFO, userName: string = 'Sistema') => {
     let order = orders.find(o => o.id === id);
@@ -337,7 +374,19 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     if (!order) return;
     const newHistory = [...(order.history || []), { date: new Date().toISOString(), status: order.status, note: message, technician: userName, logType, action_type: actionType, metadata }];
     await updateOrderMutation.mutateAsync({ id, updates: { history: newHistory } });
-  }, [orders, updateOrderMutation]);
+
+    // Global Audit Log
+    const user = users.find(u => u.name === userName);
+    auditService.recordLog(
+        user || { id: 'system', name: userName },
+        actionType,
+        message,
+        id,
+        'ORDER',
+        id,
+        metadata
+    ).catch(console.error);
+  }, [orders, updateOrderMutation, users]);
 
   // ... (Other functions like addPayments, etc. should also be refactored to use mutations)
   
@@ -409,7 +458,7 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         cashier_id: p.cashierId,
         cashier_name: p.cashierName,
         is_refund: p.isRefund || false,
-        created_at: p.date,
+        created_at: typeof p.date === 'string' ? new Date(p.date).getTime() : p.date,
         closing_id: p.closingId || null
       }))
     );
@@ -501,7 +550,11 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     }
     if (!order) return;
 
-    const updates: Partial<RepairOrder> = { transferStatus: TransferStatus.PENDING, transferTarget: targetBranch, assignedTo: null };
+    const updates: Partial<RepairOrder> = { transferStatus: TransferStatus.PENDING, transferTarget: targetBranch };
+    
+    // NUNCA quitamos la asignación al trasladar.
+    // El técnico que trabajó la orden debe conservar su etiqueta y sus puntos.
+
     updates.history = [...(order.history || []), {
       date: new Date().toISOString(),
       status: order.status,
@@ -541,6 +594,9 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
 
     const updates: Partial<RepairOrder> = { assignedTo: userId };
     if (currentStatus === OrderStatus.PENDING) updates.status = OrderStatus.DIAGNOSIS;
+    
+    // Si la orden ya está completada, no debemos borrar los puntos del técnico anterior
+    // al reasignarla, a menos que se cambie el estado.
     
     updates.history = [...(order.history || []), {
       date: new Date().toISOString(),
@@ -680,7 +736,10 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         expenses: [], 
         technicianNotes: `${techNotePrefix} Razón: ${reason}`, 
         pointsAwarded: 0, 
-        pointRequest: undefined, 
+        pointRequest: null, 
+        pointsEarnedBy: null,
+        pointsSplit: null,
+        originalPointsAwarded: null,
         assignedTo: null, 
         pending_assignment_to: null, 
         isValidated: false, 

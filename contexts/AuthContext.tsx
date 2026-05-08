@@ -1,13 +1,13 @@
 
 import React, { createContext, useContext, useState, ReactNode, useEffect } from 'react';
 import { User } from '../types';
-import { supabase, saveSupabaseConfig } from '../services/supabase';
+import { supabase, saveSupabaseConfig, finalUrl, cleanFormattedUrl } from '../services/supabase';
 import { Settings, Save, Database, Key, Wifi, WifiOff, RefreshCw } from 'lucide-react';
 
 interface AuthContextType {
   currentUser: User | null;
-  login: (userId: string) => Promise<void>;
-  logout: () => void;
+    login: (userId: string) => Promise<boolean>;
+    logout: () => void;
   users: User[];
   refreshUsers: () => Promise<void>;
   addUser: (user: User) => Promise<void>;
@@ -54,15 +54,44 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
            setIsTableMissing(true);
         } else {
            console.warn("Supabase connection failed:", msg);
-           // Diferenciar error de conexión real vs error de auth
-           setError("CONNECTION_FAILED");
+           
+           // Raw fetch test to debug browser network layer
+           try {
+               const testFetch = await fetch(`${cleanFormattedUrl}/rest/v1/`, { method: 'GET' });
+               console.log("Raw fetch test passed, status:", testFetch.status);
+               setError(`CONNECTION_FAILED: Error interno de Supabase. Código: ${error.code}. Detalle: ${msg}`);
+           } catch (rawErr: any) {
+               console.log("Raw fetch also failed:", rawErr.message);
+               // Diferenciar error de conexión real vs error de auth
+               if (msg.includes('522')) {
+                   setError(`CONNECTION_FAILED: Tu proyecto de Supabase parece estar pausado o inactivo (Error 522). Por favor, entra a tu panel de Supabase y reactívalo.`);
+               } else if (msg.includes('Failed to fetch') || msg.includes('Network Error')) {
+                   setError(`CONNECTION_FAILED: El navegador bloqueó la conexión a: ${cleanFormattedUrl}. Causa técnica devuelta por tu equipo: "${rawErr.message}". Esto SOLO ocurre por VPNs activas, Antivirus (Kaspersky), o configuración de red corporativa/móvil bloqueando Supabase.`);
+               } else {
+                   setError(`CONNECTION_FAILED: ${msg} (URL: ${cleanFormattedUrl})`);
+               }
+           }
         }
       } else {
         setUsers(data as User[] || []);
       }
     } catch (err: any) {
       console.warn("Exception fetching users:", err);
-      setError("CONNECTION_FAILED");
+      const msg = err.message || String(err);
+      
+      try {
+           const testFetch = await fetch(`${cleanFormattedUrl}/rest/v1/`, { method: 'GET' });
+           console.log("Raw fetch test passed, status:", testFetch.status);
+           setError(`CONNECTION_FAILED: Excepción de software: ${msg}`);
+      } catch (rawErr: any) {
+           if (msg.includes('522')) {
+               setError(`CONNECTION_FAILED: Tu proyecto de Supabase parece estar pausado o inactivo (Error 522). Por favor, entra a tu panel de Supabase y reactívalo.`);
+           } else if (msg.includes('Failed to fetch') || msg.includes('Network Error')) {
+               setError(`CONNECTION_FAILED: El navegador bloqueó la conexión a: ${cleanFormattedUrl}. Causa técnica devuelta por tu equipo: "${rawErr.message}". Esto SOLO ocurre por VPNs activas, Antivirus (Kaspersky), o configuración de red corporativa/móvil bloqueando Supabase.`);
+           } else {
+               setError(`CONNECTION_FAILED: ${msg} (URL: ${cleanFormattedUrl})`);
+           }
+      }
     } finally {
       if (!inBackground) setIsLoading(false);
     }
@@ -98,22 +127,26 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const handleSaveConfig = () => {
       if (configUrl && configKey) {
           saveSupabaseConfig(configUrl, configKey);
+          window.location.reload();
       }
   };
 
-  const login = async (userId: string) => {
-    if (!supabase) return;
+  const login = async (userId: string): Promise<boolean> => {
+    if (!supabase) return false;
     try {
         const { data, error } = await supabase.from('users').select('*').eq('id', userId).single();
         if (data && !error) {
-            if (!data.active) { alert("Usuario desactivado."); return; }
+            if (!data.active) { alert("Usuario desactivado."); return false; }
             setCurrentUser(data as User);
             localStorage.setItem('darwin_user_id', data.id);
+            return true;
         } else {
             alert("Usuario no encontrado.");
+            return false;
         }
     } catch (e) {
         alert("Error de conexión.");
+        return false;
     }
   };
 
@@ -152,7 +185,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   };
 
   // --- ERROR: CONNECTION FAILED (Show Retry Screen, NOT Config Form) ---
-  if (error === "CONNECTION_FAILED") {
+  if (error?.startsWith("CONNECTION_FAILED")) {
       return (
           <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 text-center animate-in fade-in">
               <div className="bg-red-100 p-6 rounded-full mb-6 animate-pulse">
@@ -162,13 +195,27 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
               <p className="text-slate-500 max-w-md mb-8">
                   No pudimos conectar con la base de datos. Verifica tu conexión a internet e intenta nuevamente.
                   <br/><span className="text-xs opacity-70 mt-2 block">(Tus credenciales están guardadas y seguras)</span>
+                  <br/><span className="text-xs text-red-500 mt-2 block font-mono">{error}</span>
+                  <br/><span className="text-xs text-blue-500 mt-2 block font-mono">Attempting: {cleanFormattedUrl}</span>
               </p>
               
               <button 
                 onClick={() => fetchUsers()} 
-                className="bg-slate-900 text-white px-8 py-3 rounded-xl font-bold flex items-center gap-3 shadow-lg hover:scale-105 transition-transform"
+                className="bg-slate-900 text-white px-8 py-3 rounded-xl font-bold flex items-center gap-3 shadow-lg hover:scale-105 transition-transform mb-4"
               >
                   <RefreshCw className="w-5 h-5" /> Reintentar Conexión
+              </button>
+
+              <button 
+                onClick={() => {
+                    localStorage.removeItem('darwin_sb_url');
+                    localStorage.removeItem('darwin_sb_key');
+                    // Setting custom error forces the CREDENTIALS_MISSING form
+                    setError('CREDENTIALS_MISSING');
+                }} 
+                className="text-slate-500 text-sm underline hover:text-slate-800 transition-colors"
+              >
+                  Resetear Credenciales / Cambiar Link
               </button>
           </div>
       );
