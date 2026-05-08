@@ -5,7 +5,7 @@ import dotenv from "dotenv";
 import crypto from "crypto";
 import fs from "fs";
 import { createProxyMiddleware } from "http-proxy-middleware";
-import { connectToWhatsApp, getWhatsAppStatus, logoutWhatsApp, sendWhatsAppMessage, reconnectWhatsApp, resetWhatsAppConnection, disconnectWhatsApp, listWhatsAppConversations, listWhatsAppMessages, markConversationAsRead, linkConversationToOrder } from "./server/whatsapp.ts";
+import { connectToWhatsApp, getWhatsAppStatus, logoutWhatsApp, sendWhatsAppMessage, reconnectWhatsApp, resetWhatsAppConnection, disconnectWhatsApp, listWhatsAppConversations, listWhatsAppMessages, markConversationAsRead, linkConversationToOrder, getDiagnostics } from "./server/whatsapp.ts";
 import { GoogleGenAI, Type } from "@google/genai";
 
 dotenv.config({ override: true });
@@ -166,6 +166,10 @@ WulWnM5/R4sQkOsivcABDQ==
   });
 
   // WhatsApp Management Routes
+  app.get("/api/whatsapp/diagnostics", (req, res) => {
+    res.json(getDiagnostics());
+  });
+
   app.get("/api/whatsapp/status", (req, res) => {
     res.json(getWhatsAppStatus());
   });

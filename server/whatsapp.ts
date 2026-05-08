@@ -9,36 +9,70 @@ dotenv.config();
 
 const _origConsoleError = console.error;
 let decryptionErrorCount = 0;
-let lastDecryptionErrorTime = Date.now();
+let lastDecryptionErrorTime = 0;
+export let sessionHealth = 'stable';
+let lastSessionWarningAt = 0;
 
 console.error = function(...args: any[]) {
-    const msg = args.join(' ');
-    if (msg.includes('MessageCounterError') || msg.includes('Key used already') || msg.includes('Bad MAC') || msg.includes('Failed to decrypt message')) {
-        // Suppress these known libsignal errors from the console
+    // Only capture specific known Baileys/libsignal errors to prevent hiding real app crashes
+    const isBaileysDecryptError = args.some(arg => {
+        if (typeof arg === 'string') {
+            return arg.includes('MessageCounterError') || arg.includes('Key used already') || arg.includes('Bad MAC') || arg.includes('Failed to decrypt message');
+        } else if (arg instanceof Error) {
+            return arg.message.includes('MessageCounterError') || arg.message.includes('Key used already') || arg.message.includes('Bad MAC') || arg.message.includes('Failed to decrypt message');
+        }
+        return false;
+    });
+
+    if (isBaileysDecryptError) {
         const now = Date.now();
-        if (now - lastDecryptionErrorTime > 60000) {
-            decryptionErrorCount = 0; // Reset counter after 1 minute of no errors
+        // Reset counter if it's been more than 5 minutes since the last error
+        if (now - lastDecryptionErrorTime > 300000) {
+            decryptionErrorCount = 0; 
         }
         decryptionErrorCount++;
         lastDecryptionErrorTime = now;
 
-        if (decryptionErrorCount > 10) {
-             console.log('[WA] Too many decryption errors detected. Session is likely corrupted. Forcing logout...');
-             decryptionErrorCount = 0;
-             // Delay the logout slightly to avoid any immediate loop
-             setTimeout(() => {
-                 if (isInitializing) return;
-                 clearSupabaseAuth().then(() => {
-                     if (sock) {
-                         try { sock.logout(); } catch (e) {}
-                         sock = null;
-                     }
-                     connectToWhatsApp();
-                 });
-             }, 1000);
+        if (decryptionErrorCount > 30) {
+            console.log('[WA] CRITICAL: >30 decryption errors within 5 minutes. Session is likely totally corrupted. Re-authenticating...');
+            decryptionErrorCount = 0;
+            sessionHealth = 'critical';
+            
+            setTimeout(() => {
+                if (isInitializing) return;
+                clearSupabaseAuth().then(() => {
+                    if (sock) {
+                        try { sock.logout(); } catch (e) {}
+                        sock = null;
+                    }
+                    connectToWhatsApp();
+                });
+            }, 1000);
+            return;
         }
-        return;
+
+        // If > 10 errors in 60 seconds (but not > 30 yet)
+        if (decryptionErrorCount > 10 && (now - lastSessionWarningAt > 60000)) {
+            console.log('[WA] WARNING: Multiple decryption errors detected. Session may be unstable. Attempting soft reconnect...');
+            sessionHealth = 'unstable';
+            lastSessionWarningAt = now;
+            
+            setTimeout(() => {
+                if (isInitializing) return;
+                console.log('[WA] Executing Soft Reconnect to clear Baileys session cache state...');
+                if (sock) {
+                    try { sock.ws?.close(); } catch (e) {}
+                    try { sock.ev.removeAllListeners(); } catch (e) {}
+                    sock = null;
+                }
+                connectionStatus = 'close';
+                connectToWhatsApp(false);
+            }, 500);
+        }
+        
+        return; // Suppress known libsignal errors from the console
     }
+    
     _origConsoleError.apply(console, args);
 };
 
@@ -711,6 +745,18 @@ export async function connectToWhatsApp(manual = false) {
 
 export function getWhatsAppStatus() {
     return { status: connectionStatus, qr: qrCodeDataUrl };
+}
+
+export function getDiagnostics() {
+    return {
+        connectionStatus,
+        decryptionErrorCount,
+        sessionHealth,
+        lastDecryptionErrorTime,
+        lastSessionWarningAt,
+        retryCount,
+        qrDisponible: !!qrCodeDataUrl
+    };
 }
 
 export async function logoutWhatsApp() {
