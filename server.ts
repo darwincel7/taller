@@ -47,6 +47,9 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
+  // Enable trust proxy for express-rate-limit to work correctly behind the platform's proxy
+  app.set('trust proxy', 1);
+
   // Antivirus/Cloudflare Proxy Bypass Tunnel
   // MUST BE BEFORE express.json() so the proxy can pipe the raw body streams.
   // If placed after, POST/PATCH requests will lose their body, fail at Supabase, and return Vite's HTML fallback.
@@ -84,17 +87,23 @@ async function startServer() {
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
   const apiLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 500, // Limit each IP to 500 requests per `window` (here, per 15 minutes)
+    windowMs: 15 * 60 * 1000, 
+    max: 1000, 
     standardHeaders: true, 
-    legacyHeaders: false, 
+    legacyHeaders: false,
+    keyGenerator: (req) => {
+      return (req.headers['x-forwarded-for'] as string || req.ip || 'anonymous').split(',')[0].trim();
+    }
   });
   
   const webhookLimiter = rateLimit({
-    windowMs: 1 * 60 * 1000, // 1 minute
-    max: 100, // Limit to 100 req per minute
+    windowMs: 1 * 60 * 1000, 
+    max: 200, 
     standardHeaders: true,
     legacyHeaders: false,
+    keyGenerator: (req) => {
+      return (req.headers['x-forwarded-for'] as string || req.ip || 'webhook').split(',')[0].trim();
+    }
   });
 
   app.use('/api', apiLimiter);

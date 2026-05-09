@@ -17,11 +17,13 @@ async function runTests() {
   console.log('1. Simulando mensaje entrante de Instagram...');
   const instaMsg = {
     channel: 'instagram' as const,
+    channelAccountId: 'mock-ig-page-id',
     externalMessageId: `msg_${Date.now()}`,
+    externalConversationId: `conv_${Date.now()}`,
     externalSenderId: testContactId,
     senderName: 'Usuario Prueba IG',
     text: `Hola, me interesa. Mi número es ${testPhone}`,
-    messageType: 'text',
+    messageType: 'text' as const,
     createdAt: new Date().toISOString(),
     raw: { mock: true }
   };

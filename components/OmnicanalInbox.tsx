@@ -42,10 +42,19 @@ export const OmnicanalInbox: React.FC = () => {
     try {
       setError(null);
       const res = await fetchWithAuth('/api/omnicanal/conversations');
+      
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`Server error (${res.status}): ${text.substring(0, 100)}`);
+      }
+
       const contentType = res.headers.get("content-type");
       if (!contentType || !contentType.includes("application/json")) {
-        throw new Error("Invalid response from server");
+        const text = await res.text();
+        console.error('Non-JSON response received:', text.substring(0, 200));
+        throw new Error(`Invalid response format (Expected JSON, got ${contentType}).`);
       }
+      
       const data = await res.json();
       if (data.error) throw new Error(data.error);
       setConversations(data);
