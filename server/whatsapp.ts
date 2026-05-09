@@ -1045,6 +1045,31 @@ export async function connectToWhatsApp(manual = false) {
                         raw: msg
                     });
 
+                    // ----- START OMNICANAL PIPELINE -----
+                    try {
+                        const { processIncomingMessage } = await import('./omnicanal/pipeline');
+                        const normalizedEvent = {
+                            channel: 'whatsapp' as const,
+                            channelAccountId: 'default',
+                            externalConversationId: identity.rawJid,
+                            externalMessageId: messageId,
+                            externalSenderId: identity.rawJid,
+                            senderName: identity.displayName,
+                            username: identity.pushName || identity.waName,
+                            text: finalText,
+                            messageType: (messageType === 'text' || messageType === 'image' || messageType === 'audio' || messageType === 'video' || messageType === 'document' || messageType === 'sticker') ? messageType : 'text',
+                            mediaUrl: mediaUrl || undefined,
+                            mediaMime: mediaType || undefined,
+                            raw: msg,
+                            createdAt: new Date().toISOString()
+                        };
+                        
+                        processIncomingMessage(normalizedEvent).catch(e => console.error('[WA Omni] error:', e));
+                    } catch(e) {
+                        console.error('[WA Omni] dispatch error:', e);
+                    }
+                    // ----- END OMNICANAL PIPELINE -----
+
                     await auditWhatsAppMessage({
                         ...auditPayload,
                         messageType,

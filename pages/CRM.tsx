@@ -19,7 +19,7 @@ interface ClientProfile {
 
 
 import { WhatsAppVisualizer } from '../components/WhatsAppVisualizer';
-import { WhatsAppInbox } from '../components/WhatsAppInbox';
+import { OmnicanalInbox } from '../components/OmnicanalInbox';
 import { SalesAnalytics } from '../components/SalesAnalytics';
 
 export const CRM: React.FC = () => {
@@ -494,7 +494,7 @@ export const CRM: React.FC = () => {
               onClick={() => setActiveTab('CHATS')}
               className={`text-sm font-bold transition-all flex items-center gap-1 ${activeTab === 'CHATS' ? 'text-blue-600 border-b-2 border-blue-600 pb-1' : 'text-slate-400 hover:text-slate-600'}`}
             >
-              Chats (WhatsApp)
+              Omnicanal (Chats)
             </button>
             <button 
               onClick={() => setActiveTab('CLIENTS')}
@@ -743,7 +743,7 @@ export const CRM: React.FC = () => {
         </div>
       ) : activeTab === 'CHATS' ? (
         <div className="h-[calc(100vh-180px)] mt-2">
-            <WhatsAppInbox />
+            <OmnicanalInbox />
         </div>
       ) : activeTab === 'ANALYTICS' ? (
         <div className="h-[calc(100vh-180px)] overflow-y-auto pr-2 pb-10">
