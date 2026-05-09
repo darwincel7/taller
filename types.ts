@@ -419,6 +419,51 @@ export interface InventoryPart {
   deleted_at?: string;
 }
 
+export interface POSSale {
+  id: string;
+  readable_id: number;
+  customer_id?: string;
+  seller_id: string;
+  branch_id?: string;
+  subtotal: number;
+  discount: number;
+  tax: number;
+  total: number;
+  payment_status: 'paid' | 'partial' | 'pending';
+  status: 'completed' | 'cancelled' | 'returned';
+  metadata?: any;
+  idempotency_key?: string;
+  created_at: string;
+}
+
+export interface POSSaleItem {
+  id: string;
+  sale_id: string;
+  inventory_item_id: string;
+  name: string;
+  quantity: number;
+  unit_price: number;
+  unit_cost: number;
+  total_price: number;
+  total_cost: number;
+  profit: number;
+}
+
+export interface CashMovement {
+  id: string;
+  movement_type: 'SALE_IN' | 'EXPENSE_OUT' | 'REFUND_OUT' | 'CAMBIAZO_OUT' | 'CREDIT_IN' | 'INITIAL_CASH';
+  amount: number;
+  method: 'cash' | 'transfer' | 'card' | 'credit';
+  branch?: string;
+  cashier_id?: string;
+  source_type?: 'POS' | 'ORDER' | 'EXPENSE';
+  source_id?: string;
+  closing_id?: string;
+  reason?: string;
+  metadata?: any;
+  created_at: string;
+}
+
 export interface InventoryMovement {
   id: string;
   item_id: string;

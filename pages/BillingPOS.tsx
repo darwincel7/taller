@@ -659,13 +659,12 @@ export const BillingPOS: React.FC = () => {
     }
     
     const isRefund = cartTotal < 0;
-    
     if (paymentTotal <= 0 && !isRefund && cartTotal !== 0) {
       showNotification('error', 'Ingrese un monto de pago válido.');
       return;
     }
 
-    // Check for credit
+    // Check for credit info
     const hasCredit = paymentMethods.some(pm => pm.method === 'CREDIT' && pm.amount > 0);
     const currentCreditInfo = overrideCreditInfo || creditClientInfo;
     if (hasCredit && !currentCreditInfo) {
@@ -680,13 +679,14 @@ export const BillingPOS: React.FC = () => {
           const newInfo = { name: values.name || 'Cliente POS', phone: values.phone || '' };
           setCreditClientInfo(newInfo);
           setPromptModal(null);
-          // Re-trigger checkout with the new info
           setTimeout(() => handleCheckout(newInfo), 100);
         }
       });
       return;
     }
 
+    setIsProcessing(true);
+    
     // Pre-open print windows to avoid popup blockers
     const printWindows = new Map<string, Window | null>();
     cart.forEach(item => {
@@ -695,736 +695,95 @@ export const BillingPOS: React.FC = () => {
       }
     });
 
-    const hasProducts = cart.some(i => i.type === 'PRODUCT' || i.type === 'INVENTORY' as any);
     let productPrintWindow: Window | null = null;
-    if (hasProducts) {
+    if (cart.some(i => i.type === 'PRODUCT')) {
       productPrintWindow = window.open('about:blank', '_blank') || null;
     }
 
-    // Capture initial payments for product print
-    const initialPaymentsForPrint = paymentMethods.filter(p => p.amount > 0).map(p => ({
-      amount: p.amount,
-      method: p.method,
-      date: new Date().toISOString()
-    }));
-
-    let consolidaProducts: { id?: string, title: string, amount: number, cost?: number, price?: number, originalCost?: number, returnOriginalOrderId?: string, returnExpenseId?: string, returnPartId?: string }[] = [];
-    let consolidaProductsTotalPaid = 0;
-    let consolidaProductsTotalCost = 0;
-    const productPayments: any[] = [];
-
-    setIsProcessing(true);
     try {
-      // Create payments array from paymentMethods
-      const paymentsToRecord: Payment[] = isRefund
-        ? [{
-            id: crypto.randomUUID(),
-            amount: cartTotal, // Negative amount for refund
-            method: paymentMethods[0]?.method || 'CASH',
-            date: Date.now(),
-            cashierId: currentUser?.id || 'unknown',
-            cashierName: currentUser?.name || 'Cajero',
-            isRefund: true
-          }]
-        : cartTotal === 0 ? [] : paymentMethods.map(pm => ({
-            id: crypto.randomUUID(),
-            amount: pm.amount,
-            method: pm.method,
-            date: Date.now(),
-            cashierId: currentUser?.id || 'unknown',
-            cashierName: currentUser?.name || 'Cajero',
-            isRefund: false
-          }));
-
-      // Find cambiazo payment if any
-      const cambiazoPayment = paymentsToRecord.find(pm => pm.method === 'CAMBIAZO');
-      if (cambiazoPayment && cambiazoPayment.amount > 0) {
-        // Record Expense for Cambiazo purchase
-        try {
-            await accountingService.addTransaction({
-                amount: -(cambiazoPayment.amount), // negative for expense
-                description: `Compra Equipo via Cambiazo (${cambiazoDetails.deviceModel})`,
-                transaction_date: new Date().toISOString().split('T')[0],
-                created_by: currentUser?.id || 'system',
-                status: TransactionStatus.COMPLETED,
-                source: 'STORE',
-                branch: currentUser?.branch || 'T4',
-                method: 'CAMBIAZO'
-            });
-        } catch (err) {
-            console.error("Error creating CAMBIAZO expense", err);
+      // 1. Prepare Transaction Payload
+      const idempotencyKey = `pos-${currentUser?.id}-${Date.now()}`;
+      
+      const payload = {
+        customer_id: (selectedCustomer as any)?.id || 'pos-public',
+        seller_id: currentUser?.id,
+        branch: currentUser?.branch || 'T4',
+        total: cartTotal,
+        discount: 0,
+        idempotency_key: idempotencyKey,
+        items: cart.map(item => ({
+          type: item.type,
+          id: item.id,
+          name: item.title,
+          quantity: 1, // POS currently supports q=1 per row
+          price: item.amount,
+          cost: item.partCost || 0,
+          total_price: item.amount,
+          returnOriginalOrderId: item.returnOriginalOrderId,
+          returnExpenseId: item.returnExpenseId,
+          returnPartId: item.returnPartId
+        })),
+        payments: paymentMethods.filter(pm => pm.amount !== 0).map(pm => ({
+          method: pm.method,
+          amount: pm.amount,
+          date: Date.now(),
+          cashierId: currentUser?.id,
+          cashierName: currentUser?.name
+        })),
+        credit_info: currentCreditInfo,
+        metadata: {
+          source: 'NEW_POS_TRANSACTIONAL_V1'
         }
+      };
 
-        // Create STORE order for Cambiazo
-        const newStoreOrder: any = {
-            id: `INV-${Math.floor(100000 + Math.random() * 900000)}`,
-            orderType: OrderType.STORE,
-            customerId: overrideCreditInfo?.name || (selectedCustomer as any)?.id || 'POS-CAMBIAZO',
-            customer: { 
-                name: overrideCreditInfo?.name || selectedCustomer?.name || 'Cliente de Caja', 
-                phone: overrideCreditInfo?.phone || selectedCustomer?.phone || '000' 
-            },
-            deviceModel: cambiazoDetails.deviceModel,
-            deviceIssue: cambiazoDetails.deviceIssue || 'Dispositivo recibido como parte de pago (Cambiazo)',
-            deviceCondition: `${cambiazoDetails.deviceCondition || 'Sin observaciones'} - Almac: ${cambiazoDetails.storage || 'N/A'}, Bat: ${cambiazoDetails.battery ? cambiazoDetails.battery+'%' : 'N/A'}`,
-            devicePassword: cambiazoDetails.devicePassword || 'Sin clave',
-            accessories: cambiazoDetails.accessories || 'Recibido en caja (Cambiazo)',
-            imei: cambiazoDetails.imei?.trim() || '',
-            devicePhoto: cambiazoDetails.devicePhoto || '',
-            status: OrderStatus.PENDING,
-            priority: PriorityLevel.NORMAL,
-            createdAt: Date.now(),
-            deadline: Date.now() + 48 * 60 * 60 * 1000,
-            estimatedCost: cambiazoPayment.amount, 
-            totalAmount: cambiazoPayment.amount,
-            purchaseCost: cambiazoPayment.amount, // Set purchase cost to the trade-in value
-            targetPrice: 0,
-            history: [{ date: new Date().toISOString(), status: OrderStatus.PENDING, note: "Ingresado vía CAMBIAZO en POS", technician: currentUser?.name || 'Sistema' }],
-            currentBranch: currentUser?.branch || 'T4',
-        };
-        try {
-            await addOrder(newStoreOrder);
-        } catch (err) {
-            console.error("Error creating CAMBIAZO store order", err);
-        }
-      }
+      // 2. Call Transactional RPC
+      const { data: rpcResult, error: rpcError } = await supabase.rpc('pos_checkout_transaction', {
+        p_payload: payload
+      });
 
-      // Process each item in the cart
+      if (rpcError) throw rpcError;
+      if (!rpcResult?.success) throw new Error(rpcResult?.message || 'Error en la transacción');
+
+      // 3. Post-Transaction Tasks (Client Side only)
+      // Print Receipts & UI Feedback
       for (const item of cart) {
         if (item.type === 'ORDER' && item.originalOrder) {
-          // Calculate how much of the total payment goes to this order
-          let remainingAmountForOrder = item.amount;
-          const orderPayments: Payment[] = [];
-          let actualPaidForThisItem = 0;
-          let creditAmountForThisOrder = 0;
-          
-          if (isRefund) {
-            const refundAmount = remainingAmountForOrder;
-            orderPayments.push({
-              ...paymentsToRecord[0],
-              id: crypto.randomUUID(),
-              amount: refundAmount
-            });
-            actualPaidForThisItem = refundAmount;
-          } else {
-            for (const pm of paymentsToRecord) {
-              if (remainingAmountForOrder <= 0) break;
-              if (pm.amount > 0) {
-                const amountToTake = Math.min(pm.amount, remainingAmountForOrder);
-                orderPayments.push({
-                  ...pm,
-                  id: crypto.randomUUID(),
-                  amount: amountToTake
-                });
-                
-                if (pm.method === 'CREDIT') {
-                  creditAmountForThisOrder += amountToTake;
-                }
-
-                pm.amount -= amountToTake;
-                remainingAmountForOrder -= amountToTake;
-                actualPaidForThisItem += amountToTake;
-              }
-            }
-          }
-
-          if (item.amount > 0 && actualPaidForThisItem === 0) continue; // Skip if nothing was paid for this item and it had a balance
-
-          // Record credit if any
-          if (creditAmountForThisOrder > 0) {
-            const { error: creditError } = await supabase.from('client_credits').insert({
-              order_id: item.originalOrder.id,
-              customer_id: item.originalOrder.customerId,
-              client_name: item.originalOrder.customer.name,
-              client_phone: item.originalOrder.customer.phone,
-              amount: creditAmountForThisOrder,
-              due_date: new Date(creditDueDate).toISOString(),
-              cashier_id: currentUser?.id,
-              cashier_name: currentUser?.name,
-              status: 'PENDING'
-            });
-
-            if (creditError) throw creditError;
-
-            // Send WhatsApp notification for credit
-            try {
-              const { sendWhatsAppNotification } = await import('../services/notificationService');
-              await sendWhatsAppNotification(
-                item.originalOrder,
-                OrderStatus.PENDING,
-                `Hola ${item.originalOrder.customer.name}, se ha registrado un crédito pendiente por $${creditAmountForThisOrder.toLocaleString()} para tu orden #${item.originalOrder.readable_id || item.originalOrder.id.slice(-4)}. Fecha límite de pago: ${new Date(creditDueDate).toLocaleDateString()}. Gracias por tu confianza.`
-              );
-            } catch (waErr) {
-              console.warn("Error sending WhatsApp credit notification:", waErr);
-            }
-          }
-
-          // Record accounting for order payments (if not a refund, which is handled below)
-          if (!isRefund && actualPaidForThisItem > 0) {
-            for (const op of orderPayments) {
-              // Only record income for non-credit payments
-              if (op.method !== 'CREDIT') {
-                await accountingService.addTransaction({
-                  amount: op.amount,
-                  description: `Pago Orden #${item.originalOrder.readable_id || item.originalOrder.id} (${op.method})`,
-                  transaction_date: new Date().toISOString().split('T')[0],
-                  created_by: currentUser?.id || 'system',
-                  status: TransactionStatus.COMPLETED,
-                  source: 'STORE',
-                  order_id: item.originalOrder.id
-                });
-              }
-            }
-          }
-
-          // If the order is fully paid, we finalize delivery. Otherwise, it's just a deposit.
-          const totalPaidBefore = (item.originalOrder.payments || []).reduce((sum, p) => sum + p.amount, 0);
-          const newTotalPaid = totalPaidBefore + actualPaidForThisItem;
-          
-          let orderTotal = 0;
-          if (item.originalOrder.orderType === OrderType.STORE) {
-            orderTotal = item.originalOrder.targetPrice || 0;
-          } else {
-            orderTotal = item.originalOrder.totalAmount ?? (item.originalOrder.finalPrice ?? (item.originalOrder.estimatedCost || 0));
-          }
-          
-          const isFullyPaid = newTotalPaid >= orderTotal;
-
-          if (isRefund) {
-            // Record expense for refund
-            await accountingService.addTransaction({
-              amount: -Math.abs(actualPaidForThisItem), // negative for expense
-              description: `Devolución de Saldo - Orden #${item.originalOrder.readable_id || item.originalOrder.id}`,
-              transaction_date: new Date().toISOString().split('T')[0],
-              created_by: currentUser?.id || 'system',
-              status: TransactionStatus.COMPLETED,
-              source: 'STORE'
-            });
-
-            // If the order is CANCELED or RETURNED, we just add the payment.
-            // If it's not RETURNED yet, we finalize delivery? Usually refunds happen when returning.
-            // Let's finalize delivery if it's not already RETURNED or CANCELED.
-            if (item.originalOrder.status === OrderStatus.REPAIRED) {
-              const updatedOrder = await finalizeDelivery(
-                item.originalOrder, 
-                orderPayments, 
-                currentUser!, 
-                addPayments, 
-                recordOrderLog
-              );
-              queryClient.invalidateQueries({ queryKey: ['orders'] });
-              queryClient.invalidateQueries({ queryKey: ['order', item.originalOrder.id] });
-              await fetchInventory();
-              
-              if (updatedOrder.orderType === OrderType.REPAIR || updatedOrder.orderType === OrderType.WARRANTY) {
-                try {
-                  const { sendWhatsAppNotification } = await import('../services/notificationService');
-                  sendWhatsAppNotification(updatedOrder, OrderStatus.RETURNED);
-                } catch (e) {
-                  console.warn("Error sending WA notification:", e);
-                }
-              }
-              
-              if (currentUser) {
-                await auditService.recordLog(
-                  { id: currentUser.id, name: currentUser.name },
-                  ActionType.PAYMENT_ADDED,
-                  `Devolución de saldo y entrega desde POS para Orden #${item.originalOrder.readable_id || item.originalOrder.id}: $${Math.abs(actualPaidForThisItem)}`,
-                  item.originalOrder.id
-                );
-              }
-              
-              setTimeout(() => {
-                try { printInvoice(updatedOrder, printWindows.get(item.id), 'INTAKE'); } catch(e) { console.warn(e); }
-              }, 100);
-            } else {
-              await addPayments(item.originalOrder.id, orderPayments);
-              
-              if (currentUser) {
-                await auditService.recordLog(
-                  { id: currentUser.id, name: currentUser.name },
-                  ActionType.PAYMENT_ADDED,
-                  `Devolución de saldo desde POS para Orden #${item.originalOrder.readable_id || item.originalOrder.id}: $${Math.abs(actualPaidForThisItem)}`,
-                  item.originalOrder.id
-                );
-              }
-              
-              const orderToPrint = { ...item.originalOrder, payments: [...(item.originalOrder.payments || []), ...orderPayments] };
-              setTimeout(() => {
-                try { printInvoice(orderToPrint, printWindows.get(item.id), 'INTAKE'); } catch(e) { console.warn(e); }
-              }, 100);
-            }
-
-          } else if (isFullyPaid && item.originalOrder.status === OrderStatus.REPAIRED) {
-            // Finalize delivery
-            const updatedOrder = await finalizeDelivery(
-              item.originalOrder, 
-              orderPayments, 
-              currentUser!, 
-              addPayments, 
-              recordOrderLog
-            );
-            queryClient.invalidateQueries({ queryKey: ['orders'] });
-            queryClient.invalidateQueries({ queryKey: ['order', item.originalOrder.id] });
-            await fetchInventory();
-            
-            if (updatedOrder.orderType === OrderType.REPAIR || updatedOrder.orderType === OrderType.WARRANTY) {
-              try {
-                const { sendWhatsAppNotification } = await import('../services/notificationService');
-                sendWhatsAppNotification(updatedOrder, OrderStatus.RETURNED);
-              } catch (e) {
-                console.warn("Error sending WA notification:", e);
-              }
-            }
-            
-            if (currentUser) {
-              await auditService.recordLog(
-                { id: currentUser.id, name: currentUser.name },
-                actualPaidForThisItem > 0 ? ActionType.PAYMENT_ADDED : ActionType.INFO_UPDATED,
-                actualPaidForThisItem > 0 
-                  ? `Pago final y entrega desde POS para Orden #${item.originalOrder.readable_id || item.originalOrder.id}: $${actualPaidForThisItem}`
-                  : `Entrega de equipo sin cobro (saldo $0) desde POS para Orden #${item.originalOrder.readable_id || item.originalOrder.id}`,
-                item.originalOrder.id
-              );
-            }
-
-            // Print invoice
-            setTimeout(() => {
-              try { printInvoice(updatedOrder, printWindows.get(item.id), 'FINAL'); } catch(e) { console.warn(e); }
-            }, 100);
-
-          } else {
-            // Just a deposit
-            await addPayments(item.originalOrder.id, orderPayments);
-            
-            if (currentUser) {
-              await auditService.recordLog(
-                { id: currentUser.id, name: currentUser.name },
-                ActionType.PAYMENT_ADDED,
-                `Abono desde POS para Orden #${item.originalOrder.readable_id || item.originalOrder.id}: $${actualPaidForThisItem}`,
-                item.originalOrder.id
-              );
-            }
-
-            // Print invoice with updated payments
-            const orderToPrint = { ...item.originalOrder, payments: [...(item.originalOrder.payments || []), ...orderPayments] };
-            setTimeout(() => {
-              try { printInvoice(orderToPrint, printWindows.get(item.id), 'INTAKE'); } catch(e) { console.warn(e); }
-            }, 100);
-          }
-        } else if (item.type === 'PRODUCT') {
-          // For direct sales, we record the income/expense in the accounting system
-          let remainingAmountForProduct = item.amount;
-          let actualPaidForThisItem = 0;
-          let creditAmountForThisProduct = 0;
-          
-          if (isRefund) {
-            actualPaidForThisItem = remainingAmountForProduct;
-            await accountingService.addTransaction({
-              amount: -Math.abs(actualPaidForThisItem), // negative for expense
-              description: `Devolución Producto: ${item.title} (POS)`,
-              transaction_date: new Date().toISOString().split('T')[0],
-              created_by: currentUser?.id || 'system',
-              status: TransactionStatus.COMPLETED,
-              source: 'STORE',
-              branch: currentUser?.branch || 'T4',
-              method: 'CASH' // Refunds are usually cash in this POS
-            });
-          } else {
-            // PRODUCTS (Venta Directa)
-            for (const pm of paymentsToRecord) {
-              if (remainingAmountForProduct <= 0) break;
-              if (pm.amount > 0) {
-                const amountToTake = Math.min(pm.amount, remainingAmountForProduct);
-                
-                if (pm.method === 'CREDIT') {
-                  creditAmountForThisProduct += amountToTake;
-                } else {
-                  // We'll record these as order_payments linked to the dummyOrder later
-                  productPayments.push({
-                    amount: amountToTake,
-                    method: pm.method,
-                    cashier_id: currentUser?.id || 'system',
-                    cashier_name: currentUser?.name || 'Sistema'
-                  });
-                  
-                  // We no longer add to accountingService here because productPayments is inserted into order_payments at the end.
-                  // This prevents double-counting the income.
-                }
-                
-                pm.amount -= amountToTake;
-                remainingAmountForProduct -= amountToTake;
-                actualPaidForThisItem += amountToTake;
-              }
-            }
-          }
-
-          // Record credit for product if any
-          if (creditAmountForThisProduct > 0) {
-            const clientName = currentCreditInfo?.name || 'Cliente POS';
-            const clientPhone = currentCreditInfo?.phone || '';
-
-            const { error: creditError } = await supabase.from('client_credits').insert({
-              client_name: clientName,
-              client_phone: clientPhone,
-              amount: creditAmountForThisProduct,
-              due_date: new Date(creditDueDate).toISOString(),
-              cashier_id: currentUser?.id,
-              cashier_name: currentUser?.name,
-              status: 'PENDING'
-            });
-
-            if (creditError) throw creditError;
-
-            // Send WhatsApp notification for credit
-            if (clientPhone) {
-              try {
-                const { sendWhatsAppNotification } = await import('../services/notificationService');
-                // Create a dummy order for the notification service
-                const dummyOrder: any = {
-                  id: 'POS-SALE',
-                  customer: { name: clientName, phone: clientPhone },
-                  deviceModel: item.title,
-                  orderType: OrderType.PART_ONLY
-                };
-                await sendWhatsAppNotification(
-                  dummyOrder,
-                  OrderStatus.PENDING,
-                  `Hola ${clientName}, se ha registrado un crédito pendiente por $${creditAmountForThisProduct.toLocaleString()} para tu compra de ${item.title}. Fecha límite de pago: ${new Date(creditDueDate).toLocaleDateString()}. Gracias por tu confianza.`
-                );
-              } catch (waErr) {
-                console.warn("Error sending WhatsApp credit notification:", waErr);
-              }
-            }
-          }
-
-          // Accumulate for PRODUCT sales invoice (now supporting returns with negative values)
-          const totalItemValue = actualPaidForThisItem + creditAmountForThisProduct;
-          if (totalItemValue !== 0) {
-              consolidaProducts.push({ 
-                  id: item.id, 
-                  title: item.title, 
-                  amount: totalItemValue, 
-                  cost: item.partCost || 0, 
-                  price: item.originalPrice !== undefined ? item.originalPrice : item.amount, 
-                  originalCost: item.partCost || 0,
-                  returnOriginalOrderId: item.returnOriginalOrderId,
-                  returnExpenseId: item.returnExpenseId,
-                  returnPartId: item.returnPartId
-              });
-              consolidaProductsTotalPaid += totalItemValue;
-              consolidaProductsTotalCost += item.partCost || 0;
-          }
-        } else if (item.type === 'CREDIT_ABONO' && item.creditInfo) {
-          let remainingAmountForCredit = item.amount;
-          let actualPaidForThisCredit = 0;
-          
-          if (!isRefund) {
-            for (const pm of paymentsToRecord) {
-              if (remainingAmountForCredit <= 0) break;
-              if (pm.amount > 0 && pm.method !== 'CREDIT') {
-                const amountToTake = Math.min(pm.amount, remainingAmountForCredit);
-                
-                // Record transaction
-                await accountingService.addTransaction({
-                  amount: amountToTake,
-                  description: `Abono a Crédito - Cliente: ${item.creditInfo.client_name}`,
-                  transaction_date: new Date().toISOString().split('T')[0],
-                  created_by: currentUser?.id || 'system',
-                  status: TransactionStatus.COMPLETED,
-                  source: 'STORE',
-                  branch: currentUser?.branch || 'T4',
-                  method: pm.method
-                });
-                
-                pm.amount -= amountToTake;
-                remainingAmountForCredit -= amountToTake;
-                actualPaidForThisCredit += amountToTake;
-              }
-            }
-          }
-
-          if (actualPaidForThisCredit > 0) {
-            // Update credit balance
-            const newAmount = item.creditInfo.amount - actualPaidForThisCredit;
-            const status = newAmount <= 0 ? 'PAID' : 'PENDING';
-            
-            await supabase
-              .from('client_credits')
-              .update({ 
-                amount: newAmount > 0 ? newAmount : 0,
-                status: status,
-                ...(status === 'PAID' ? { paid_at: new Date().toISOString() } : {})
-              })
-              .eq('id', item.creditInfo.id);
-
-            // Record payment in credit_payments table
-            await supabase
-              .from('credit_payments')
-              .insert({
-                credit_id: item.creditInfo.id,
-                amount: actualPaidForThisCredit,
-                payment_method: paymentsToRecord.find(p => p.amount > 0)?.method || 'CASH',
-                cashier_id: currentUser?.id || 'system',
-                cashier_name: currentUser?.name || 'Sistema'
-              });
-
-            // Send WhatsApp notification for abono
-            if (item.creditInfo.client_phone) {
-              try {
-                const { sendWhatsAppNotification } = await import('../services/notificationService');
-                const dummyOrder: any = {
-                  id: 'POS-ABONO',
-                  customer: { name: item.creditInfo.client_name, phone: item.creditInfo.client_phone },
-                  deviceModel: 'Abono a Crédito',
-                  orderType: OrderType.PART_ONLY
-                };
-                await sendWhatsAppNotification(
-                  dummyOrder,
-                  OrderStatus.PENDING,
-                  `Hola ${item.creditInfo.client_name}, hemos recibido tu abono de $${actualPaidForThisCredit.toLocaleString()}. ${newAmount > 0 ? `Tu saldo pendiente es de $${newAmount.toLocaleString()}.` : 'Tu crédito ha sido saldado en su totalidad.'} ¡Gracias!`
-                );
-              } catch (waErr) {
-                console.warn("Error sending WhatsApp abono notification:", waErr);
-              }
-            }
-
-            // Print receipt for abono
-            try {
-              const dummyAbonoOrder: any = {
-                id: `ABONO-${item.creditInfo.id.slice(0, 8)}`,
-                readable_id: `ABN-${item.creditInfo.id.slice(0, 4)}`,
-                customer: { name: item.creditInfo.client_name, phone: item.creditInfo.client_phone },
-                deviceModel: 'Abono a Crédito',
-                deviceIssue: 'Abono a cuenta pendiente',
-                orderType: OrderType.PART_ONLY,
-                status: OrderStatus.RETURNED,
-                finalPrice: actualPaidForThisCredit,
-                purchaseCost: actualPaidForThisCredit,
-                payments: paymentsToRecord.filter(p => p.amount > 0).map(p => ({
-                  amount: p.amount,
-                  method: p.method,
-                  date: new Date().toISOString()
-                }))
-              };
-              printInvoice(dummyAbonoOrder, printWindows.get(item.id));
-            } catch (e) {
-              console.warn("Error printing abono receipt:", e);
-            }
-          }
+          const updatedOrder = { ...item.originalOrder, status: OrderStatus.RETURNED }; // Simulated for print
+          try { printInvoice(updatedOrder as any, printWindows.get(item.id), 'FINAL'); } catch(e) {}
         }
-      }
-      
-      if (consolidaProducts.length > 0) {
-        try {
-          const deviceIssuesText = consolidaProducts.map(p => `${p.title} ($${p.amount.toLocaleString()})`).join(' | ');
-          
-          // Resolve Customer ID for the sale
-          let customerId = selectedCustomer ? (selectedCustomer as any).id : null;
-          
-          // If we have a selected customer but no ID (newly created in UI), we try to find it or create it now
-          if (selectedCustomer && !customerId) {
-            const cleanPhone = selectedCustomer.phone.replace(/\D/g, '');
-            const { data: existingCust } = await supabase
-              .from('customers')
-              .select('id')
-              .eq('phone', selectedCustomer.phone)
-              .maybeSingle();
-              
-            if (existingCust) {
-              customerId = existingCust.id;
-            } else {
-              customerId = `CUST-${Math.floor(10000 + Math.random() * 90000)}`;
-              await supabase.from('customers').insert([{
-                id: customerId,
-                name: selectedCustomer.name,
-                phone: selectedCustomer.phone,
-                address: selectedCustomer.address || null,
-                createdAt: Date.now()
-              }]);
-            }
-          }
-
-          const newOrderId = crypto.randomUUID();
-          let finalOrderForPrint = null;
-          
-          let generatedInvoiceId = `INV-${Date.now().toString().slice(-6)}`;
-          
-          const salesp = users?.find(u => u.id === selectedSalespersonId) || currentUser;
-
-          const dummyOrder: any = {
-            id: newOrderId,
-            orderType: OrderType.PART_ONLY,
-            status: OrderStatus.RETURNED,
-            customer: selectedCustomer || { name: 'Cliente POS', phone: 'S/N' },
-            customerId: customerId || 'pos-public',
-            deviceModel: consolidaProducts.length === 1 ? consolidaProducts[0].title : (consolidaProducts.length > 1 ? `${consolidaProducts[0].title} y ${consolidaProducts.length - 1} más` : 'Venta Diversa'),
-            deviceIssue: deviceIssuesText,
-            deviceCondition: 'Venta de productos - Estado verificado en inventario',
-            devicePassword: generatedInvoiceId,
-            accessories: 'N/A',
-            estimatedCost: consolidaProductsTotalPaid,
-            totalAmount: consolidaProductsTotalPaid,
-            finalPrice: consolidaProductsTotalPaid,
-            partsCost: consolidaProductsTotalCost,
-            assignedTo: salesp?.id,
-            metadata: {
-                salespersonId: salesp?.id,
-                salespersonName: salesp?.name,
-            },
-            expenses: consolidaProducts.map(p => ({
-                id: crypto.randomUUID(),
-                description: p.title,
-                cost: p.amount,      // El precio al que se vendió
-                price: p.price !== undefined ? p.price : p.amount, // El precio original si hubiese descuento
-                partCost: p.originalCost || 0, // El costo en inventario de la parte
-                partId: p.returnPartId || p.id, // we mapped it to p.id instead of p.partId earlier! (except returnPartId) wait, I should also support p.id.
-                returnExpenseId: p.returnExpenseId,
-                returnOriginalOrderId: p.returnOriginalOrderId,
-                date: new Date().toISOString()
-            })),
-            payments: initialPaymentsForPrint,
-            createdAt: Date.now(),
-            completedAt: Date.now(),
-            deadline: Date.now(),
-            priority: PriorityLevel.NORMAL,
-            currentBranch: currentUser?.branch || 'T4',
-            isRepairSuccessful: true,
-            techMessage: undefined,
-            history: [{ date: new Date().toISOString(), status: OrderStatus.RETURNED, note: "Venta directa de inventario (POS)", technician: currentUser?.name || 'Sistema' }]
-          };
-
-          // Save the sale record to the database for CRM and stats
-          try {
-            finalOrderForPrint = await addOrder(dummyOrder);
-          } catch (saleError: any) {
-            console.error("Sale error creation:", saleError);
-            finalOrderForPrint = dummyOrder;
-            // We do not throw here. Even if saving the order stat fails (e.g. missing column), 
-            // the customer MUST get their printed invoice and the inventory must be deducted.
-            showNotification('error', `Atención: Error al guardar la estadística de venta (${saleError.message || 'Error desconocido'}).`);
-          }
-          
-          if (!finalOrderForPrint) {
-             finalOrderForPrint = dummyOrder;
-          }
-          
-          // Consume inventory parts
-          for (const p of consolidaProducts) {
-             if (p.id && !p.id.startsWith('PROD-') && !p.id.startsWith('ret-')) {
-                 const qty = p.amount < 0 ? -1 : 1; // if amount is negative, restock!
-                 // In the cart we set the ID of the return item to ret-* so p.id might be ret-*
-                 // Wait! the partId is now saved in p.partId! Let's use p.partId or fallback.
-                 const actualPartId = p.returnPartId || p.id;
-                 if (actualPartId && !actualPartId.startsWith('PROD-') && !actualPartId.startsWith('ret-')) {
-                     try {
-                         await consumePart(actualPartId, qty, finalOrderForPrint.id, finalOrderForPrint.readable_id);
-                     } catch(err) {
-                         console.warn(`Error consuming part ${actualPartId}:`, err);
-                     }
-                 }
-             }
-          }
-
-          // Record the payments in order_payments for cash flow and daily closing
-          if (productPayments.length > 0) {
-            const { error: paymentsError } = await supabase.from('order_payments').insert(
-              productPayments.map(p => ({
-                id: crypto.randomUUID(),
-                order_id: finalOrderForPrint.id,
-                amount: p.amount,
-                method: p.method,
-                cashier_id: p.cashier_id,
-                cashier_name: p.cashier_name,
-                is_refund: false,
-                created_at: Date.now()
-              }))
-            );
-            if (paymentsError) console.warn("Error recording product sale payments:", paymentsError);
-          }
-          
-          try {
-            printInvoice(finalOrderForPrint, productPrintWindow, 'FINAL');
-          } catch(e) {
-            console.warn("Print error:", e);
-          }
-        } catch (e) {
-          console.warn("Error saving and printing consolidated product receipt:", e);
-          showNotification('error', 'Error al registrar la venta en la base de datos.');
+        else if (item.type === 'PRODUCT') {
+           // We could generate a generic invoice here for products
         }
       }
 
-      // Auto-save the selected customer into the DB if not existing, so we tightly integrate CRM
-      if (selectedCustomer && !location.state?.creditAbono) {
-        try {
-          const cleanPhone = selectedCustomer.phone.replace(/\D/g, '');
-          if (cleanPhone && cleanPhone.length > 5) {
-            const { data: existingCust } = await supabase
-              .from('customers')
-              .select('id')
-              .eq('phone', selectedCustomer.phone)
-              .maybeSingle();
-
-            if (!existingCust) {
-              const newCustId = `CUST-${Math.floor(10000 + Math.random() * 90000)}`;
-              await supabase.from('customers').insert([{
-                id: newCustId,
-                name: selectedCustomer.name,
-                phone: selectedCustomer.phone,
-                address: selectedCustomer.address || null,
-                createdAt: Date.now()
-              }]);
-            }
-          }
-        } catch (e) {
-          console.warn("Could not auto-create customer profile:", e);
-        }
+      if (productPrintWindow && rpcResult.sale_id) {
+         // Generate consolidated invoice for products using sale_id info
+         // (For now using current cart state to keep it fast)
+         const dummyOrder: any = {
+           id: rpcResult.sale_id,
+           readable_id: `POS-${rpcResult.sale_id.slice(0,4)}`,
+           customer: selectedCustomer || { name: 'Cliente POS', phone: 'S/N' },
+           deviceModel: 'Venta de Productos',
+           orderType: OrderType.PART_ONLY,
+           totalAmount: cartTotal,
+           payments: payload.payments,
+           expenses: cart.filter(c => c.type === 'PRODUCT').map(c => ({ description: c.title, cost: c.amount, price: c.amount }))
+         };
+         try { printInvoice(dummyOrder, productPrintWindow, 'FINAL'); } catch(e) {}
       }
 
-      const isDelivery = cart.some(i => i.type === 'ORDER' && i.originalOrder && i.originalOrder.status === OrderStatus.REPAIRED && (i.originalOrder.payments?.reduce((s,p)=>s+p.amount,0) || 0) + i.amount >= (i.originalOrder.totalAmount ?? (i.originalOrder.finalPrice || i.originalOrder.estimatedCost || 0)));
-      
-      if (isRefund) {
-        const refundOrders = cart.filter(i => i.type === 'ORDER');
-        if (refundOrders.length > 0) {
-          setHandoverData({ 
-            type: 'REFUND', 
-            amount: Math.abs(cartTotal), 
-            orders: refundOrders.map(o => ({ id: o.id, readableId: o.originalOrder?.readable_id?.toString() || o.id.slice(-4) })) 
-          });
-        } else {
-          finishTransaction();
-        }
-      } else if (isDelivery || cartTotal === 0) {
-        // Find all orders that are being delivered (REPAIRED and fully paid)
-        const deliveredOrders = cart.filter(i => {
-          if (i.type !== 'ORDER' || !i.originalOrder) return false;
-          const isRepairedAndPaid = i.originalOrder.status === OrderStatus.REPAIRED && ((i.originalOrder.payments?.reduce((s,p)=>s+p.amount,0) || 0) + i.amount >= (i.originalOrder.totalAmount ?? (i.originalOrder.finalPrice || i.originalOrder.estimatedCost || 0)));
-          return isRepairedAndPaid;
-        });
-        
-        if (deliveredOrders.length > 0) {
-          setHandoverData({ 
-            type: 'DELIVERY', 
-            amount: 0, 
-            orders: deliveredOrders.map(o => ({ id: o.id, readableId: o.originalOrder?.readable_id?.toString() || o.id.slice(-4) })) 
-          });
-        } else {
-          finishTransaction();
-        }
-      } else {
-        finishTransaction();
-      }
-      
+      // Finalize UI
+      finishTransaction();
+      showNotification('success', 'Venta procesada correctamente (Transacción Segura)');
+      await fetchInventory();
+      queryClient.invalidateQueries({ queryKey: ['orders'] });
+
     } catch (error: any) {
-      console.warn("Error en POS:", error);
+      console.error("Transactional POS Error:", error);
       showNotification('error', `Error al procesar el cobro: ${error.message}`);
-      
-      // Close pre-opened windows on error
-      printWindows.forEach(win => {
-        if (win && !win.closed) {
-          win.close();
-        }
-      });
+      // Close windows on error
+      printWindows.forEach(w => w?.close());
+      productPrintWindow?.close();
     } finally {
       setIsProcessing(false);
     }

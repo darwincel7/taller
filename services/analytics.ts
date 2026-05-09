@@ -41,358 +41,45 @@ export const fetchGlobalPayments = async (
     if (!supabase) return [];
 
     try {
-        let allPayments: FlatPayment[] = [];
+        // Llamar a la RPC unificada V19 que maneja orders, pos, gastos y movimientos de caja
+        const { data, error } = await supabase.rpc('get_payments_flat', {
+            p_start: startTs,
+            p_end: endTs,
+            p_cashier_id: cashierId,
+            p_branch: branch,
+            p_pending_only: pendingOnly,
+            p_closing_id: closingId
+        });
 
-        // Fetch all users to map created_by to name and branch
-        const { data: usersData, error: usersError } = await supabase.from('users').select('id, name, branch');
-        const usersMap = new Map<string, { name: string, branch: string }>();
-        if (!usersError && usersData) {
-            usersData.forEach(u => usersMap.set(u.id, { name: u.name, branch: u.branch }));
+        if (error) {
+            console.warn("RPC get_payments_flat error (Falling back in JS):", error);
+            // Fallback: If RPC fails, return empty or implement a simplified fallback if critical
+            // But since we are pushing this RPC as the definitive solution, we expect it to exist.
+            return [];
         }
 
-        // 1. Fetch from order_payments
-        let opQuery = supabase
-            .from('order_payments')
-            .select(`
-                id,
-                order_id,
-                amount,
-                method,
-                cashier_id,
-                cashier_name,
-                is_refund,
-                created_at,
-                closing_id,
-                orders (
-                    currentBranch,
-                    readable_id,
-                    deviceModel,
-                    orderType,
-                    partsCost,
-                    expenses
-                )
-            `)
-            .order('created_at', { ascending: false })
-            .limit(50000);
+        if (!data) return [];
 
-        if (closingId) {
-            opQuery = opQuery.eq('closing_id', closingId);
-        } else if (pendingOnly) {
-            opQuery = opQuery.is('closing_id', null);
-        } else {
-            if (startTs) opQuery = opQuery.gte('created_at', startTs);
-            if (endTs) opQuery = opQuery.lte('created_at', endTs);
-        }
-        if (cashierId) opQuery = opQuery.eq('cashier_id', cashierId);
-
-        const { data: opData, error: opError } = await opQuery;
-
-        if (opError) {
-            console.warn("Error fetching order_payments:", opError);
-        } else if (opData) {
-            const mappedOp = opData.map((p: any) => {
-                const orderBranch = p.orders?.currentBranch || 'T4';
-                const orderType = p.orders?.orderType as OrderType;
-                return {
-                    payment_id: p.id,
-                    id: p.id,
-                    order_id: p.order_id,
-                    amount: p.amount,
-                    method: p.method as PaymentMethod,
-                    cashier_id: p.cashier_id,
-                    cashier_name: p.cashier_name,
-                    is_refund: p.is_refund,
-                    created_at: p.created_at,
-                    date: p.created_at,
-                    closing_id: p.closing_id,
-                    order_branch: orderBranch,
-                    branch: orderBranch,
-                    order_readable_id: p.orders?.readable_id || 0,
-                    order_model: p.orders?.deviceModel || '',
-                    order_type: orderType,
-                    order_parts_cost: p.orders?.partsCost || 0,
-                    order_expenses: p.orders?.expenses || [],
-                    order_customer: '',
-                    notes: ''
-                };
-            });
-            
-            // Filter out RECIBIDOS (OrderType.STORE) and by branch if provided
-            const filteredOp = mappedOp.filter(p => {
-                // Filter out 'RECIBIDOS' as they are not workshop sales
-                if (p.order_type === OrderType.STORE) return false;
-                // Filter out WARRANTY orders that are not charged
-                if (p.order_type === OrderType.WARRANTY && p.amount <= 0) return false;
-                if (branch && p.order_branch !== branch) return false;
-                return true;
-            });
-            allPayments = [...allPayments, ...filteredOp];
-        }
-
-        // 2. Fetch from accounting_transactions (Try with new columns first, fallback to old)
-        try {
-            let atQuery = supabase
-                .from('accounting_transactions')
-                .select(`
-                    id,
-                    amount,
-                    method,
-                    created_by,
-                    created_at,
-                    closing_id,
-                    branch,
-                    readable_id,
-                    source,
-                    status,
-                    approval_status,
-                    order_id,
-                    description
-                `)
-                .in('source', ['STORE', 'ORDER', 'FLOATING', 'MANUAL'])
-                .order('created_at', { ascending: false })
-                .limit(50000);
-
-            if (closingId) {
-                atQuery = atQuery.eq('closing_id', closingId);
-            } else if (pendingOnly) {
-                atQuery = atQuery.is('closing_id', null);
-            } else {
-                if (startTs) atQuery = atQuery.gte('created_at', new Date(startTs).toISOString());
-                if (endTs) atQuery = atQuery.lte('created_at', new Date(endTs).toISOString());
-            }
-            if (cashierId) atQuery = atQuery.eq('created_by', cashierId);
-            if (branch) atQuery = atQuery.eq('branch', branch);
-
-            let atData: any[] | null = null;
-            let atError: any = null;
-            
-            const atResult = await atQuery;
-            atData = atResult.data;
-            atError = atResult.error;
-
-            // Fallback if columns don't exist
-            if (atError && atError.message.includes('does not exist')) {
-                let fallbackQuery = supabase
-                    .from('accounting_transactions')
-                    .select(`
-                        id,
-                        amount,
-                        created_by,
-                        created_at,
-                        source,
-                        status,
-                        approval_status,
-                        order_id,
-                        description
-                    `)
-                    .in('source', ['STORE', 'ORDER', 'FLOATING', 'MANUAL'])
-                    .order('created_at', { ascending: false })
-                    .limit(50000);
-                
-                if (closingId) {
-                    fallbackQuery = fallbackQuery.eq('closing_id', closingId);
-                } else if (pendingOnly) {
-                    fallbackQuery = fallbackQuery.is('closing_id', null);
-                } else {
-                    if (startTs) fallbackQuery = fallbackQuery.gte('created_at', new Date(startTs).toISOString());
-                    if (endTs) fallbackQuery = fallbackQuery.lte('created_at', new Date(endTs).toISOString());
-                }
-                if (cashierId) fallbackQuery = fallbackQuery.eq('created_by', cashierId);
-                // Cannot filter by branch in fallback
-                
-                const fallbackResult = await fallbackQuery;
-                atData = fallbackResult.data;
-                atError = fallbackResult.error;
-            }
-
-            if (!atError && atData) {
-                // Filter out STORE transactions that are related to an order (they are already fetched from order_payments)
-                // Also filter out REJECTED expenses
-                const validAtData = atData.filter((at: any) => {
-                    if (at.approval_status === 'REJECTED') return false;
-                    
-                    if (at.source === 'STORE') {
-                        // If it has an order_id, it's an order payment
-                        if (at.order_id) return false;
-                        // Legacy check: if description indicates it's an order payment or refund
-                        if (at.description && (
-                            at.description.startsWith('Pago Orden #') || 
-                            at.description.startsWith('Devolución de Saldo - Orden #')
-                        )) {
-                            return false;
-                        }
-                    }
-                    return true;
-                });
-
-                const mappedAt = validAtData.map((at: any) => {
-                    const ts = new Date(at.created_at).getTime();
-                    let orderId = 'GASTO_LOCAL';
-                    let orderModel = 'Gasto Local';
-                    if (at.source === 'STORE' && at.amount > 0) {
-                        orderId = 'PRODUCT_SALE';
-                        orderModel = 'Venta Directa';
-                    } else if (at.source === 'MANUAL') {
-                        orderId = 'MANUAL_TX';
-                        orderModel = 'Transacción Manual';
-                    } else if (at.source === 'ORDER') {
-                        orderId = at.order_id || 'GASTO_LOCAL';
-                        orderModel = 'Gasto Orden';
-                    }
-
-                    const user = usersMap.get(at.created_by);
-                    const cashierName = user?.name || 'Cajero';
-                    const orderBranch = at.branch || user?.branch || 'T4';
-
-                    return {
-                        payment_id: at.id,
-                        id: at.id,
-                        order_id: orderId,
-                        amount: at.amount,
-                        method: (at.method || 'CASH') as PaymentMethod,
-                        cashier_id: at.created_by || '',
-                        cashier_name: cashierName,
-                        is_refund: at.amount < 0,
-                        created_at: ts,
-                        date: ts,
-                        closing_id: at.closing_id || null,
-                        order_branch: orderBranch,
-                        branch: orderBranch,
-                        order_readable_id: at.readable_id || 0,
-                        order_model: orderModel,
-                        order_customer: '',
-                        description: at.description || '', // Add description
-                        notes: ''
-                    };
-                });
-
-                // Filter by date (since created_at is a string in DB, we filter in JS)
-                let filteredAt = mappedAt.filter(p => {
-                    if (!closingId && !pendingOnly) {
-                        if (startTs && p.date < startTs) return false;
-                        if (endTs && p.date > endTs) return false;
-                    }
-                    return true;
-                });
-                
-                // If we used fallback, we need to filter by branch here if requested (defaulting to T4)
-                if (branch && atError && atError.message?.includes('does not exist')) {
-                    filteredAt = filteredAt.filter(p => p.order_branch === branch);
-                }
-
-                allPayments = [...allPayments, ...filteredAt];
-            }
-        } catch (e) {
-            console.warn("Error fetching accounting_transactions:", e);
-        }
-
-        // 3. Fetch from floating_expenses (Try with new columns first, fallback to old)
-        try {
-            let feQuery = supabase
-                .from('floating_expenses')
-                .select(`
-                    id,
-                    amount,
-                    created_by,
-                    created_at,
-                    closing_id,
-                    readable_id,
-                    approval_status,
-                    branch_id
-                `)
-                .order('created_at', { ascending: false })
-                .limit(50000);
-
-            if (closingId) {
-                feQuery = feQuery.eq('closing_id', closingId);
-            } else if (pendingOnly) {
-                feQuery = feQuery.is('closing_id', null);
-            } else {
-                if (startTs) feQuery = feQuery.gte('created_at', new Date(startTs).toISOString());
-                if (endTs) feQuery = feQuery.lte('created_at', new Date(endTs).toISOString());
-            }
-            if (cashierId) feQuery = feQuery.eq('created_by', cashierId);
-
-            let feData: any[] | null = null;
-            let feError: any = null;
-            
-            const feResult = await feQuery;
-            feData = feResult.data;
-            feError = feResult.error;
-            
-            // Fallback if columns don't exist
-            if (feError && feError.message.includes('does not exist')) {
-                let fallbackQuery = supabase
-                    .from('floating_expenses')
-                    .select(`
-                        id,
-                        amount,
-                        created_by,
-                        created_at,
-                        approval_status
-                    `)
-                    .order('created_at', { ascending: false })
-                    .limit(50000);
-                
-                // Note: fallback table doesn't have closing_id, so we can't filter by it here
-                if (startTs) fallbackQuery = fallbackQuery.gte('created_at', new Date(startTs).toISOString());
-                if (endTs) fallbackQuery = fallbackQuery.lte('created_at', new Date(endTs).toISOString());
-                if (cashierId) fallbackQuery = fallbackQuery.eq('created_by', cashierId);
-                
-                const fallbackResult = await fallbackQuery;
-                feData = fallbackResult.data;
-                feError = fallbackResult.error;
-            }
-
-            if (!feError && feData) {
-                const validFeData = feData.filter((fe: any) => fe.approval_status !== 'REJECTED');
-                const mappedFe = validFeData.map((fe: any) => {
-                    const ts = new Date(fe.created_at).getTime();
-                    const user = usersMap.get(fe.created_by);
-                    const cashierName = user?.name || 'Gasto Flotante';
-                    const orderBranch = fe.branch_id || user?.branch || 'T4';
-                    
-                    return {
-                        payment_id: fe.id,
-                        id: fe.id,
-                        order_id: 'GASTO_FLOTANTE',
-                        amount: -Math.abs(fe.amount),
-                        method: 'CASH' as PaymentMethod,
-                        cashier_id: fe.created_by || '',
-                        cashier_name: cashierName,
-                        is_refund: true,
-                        created_at: ts,
-                        date: ts,
-                        closing_id: fe.closing_id,
-                        order_branch: orderBranch,
-                        branch: orderBranch,
-                        order_readable_id: fe.readable_id || 0,
-                        order_model: 'Gasto Flotante',
-                        order_customer: '',
-                        notes: ''
-                    };
-                });
-
-                // Filter by date and branch
-                const filteredFe = mappedFe.filter(p => {
-                    if (!closingId && !pendingOnly) {
-                        if (startTs && p.date < startTs) return false;
-                        if (endTs && p.date > endTs) return false;
-                    }
-                    if (branch && p.order_branch !== branch) return false;
-                    return true;
-                });
-
-                allPayments = [...allPayments, ...filteredFe];
-            }
-        } catch (e) {
-            console.warn("Error fetching floating_expenses:", e);
-        }
-
-        // Sort all payments by date descending
-        allPayments.sort((a, b) => b.date - a.date);
-
-        return allPayments;
+        // Mapear el resultado de la RPC al formato FlatPayment esperado por el resto de la app
+        return (data as any[]).map(p => ({
+            payment_id: p.id,
+            id: p.id,
+            order_id: p.order_id,
+            amount: p.amount,
+            method: p.method as PaymentMethod,
+            cashier_id: p.cashier_id,
+            cashier_name: p.cashier_name,
+            is_refund: p.is_refund,
+            created_at: p.created_at,
+            date: p.created_at,
+            closing_id: p.closing_id,
+            order_branch: p.branch,
+            branch: p.branch,
+            order_readable_id: p.order_readable_id || 0,
+            order_model: p.order_model || '',
+            order_customer: '',
+            notes: ''
+        }));
     } catch (e) {
         console.warn("Exception fetching payments:", e);
         return [];
