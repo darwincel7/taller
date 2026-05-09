@@ -67,7 +67,7 @@ function validateEnv() {
 async function startServer() {
   validateEnv();
   const app = express();
-  const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+  const PORT = 3000;
 
   // Enable trust proxy for express-rate-limit to work correctly behind the platform's proxy
   app.set('trust proxy', 1);

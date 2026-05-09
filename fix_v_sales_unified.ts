@@ -1,3 +1,7 @@
+import { supabase } from './services/supabase';
+
+async function updateView() {
+    const sql = `
 BEGIN;
 
 DROP VIEW IF EXISTS public.v_sales_unified CASCADE;
@@ -126,3 +130,28 @@ GRANT SELECT ON public.v_sales_unified TO authenticated;
 GRANT SELECT ON public.v_sales_unified TO service_role;
 
 COMMIT;
+`;
+    
+    console.log("Updating view...");
+    const { error } = await supabase.rpc('exec_sql', { sql_query: sql });
+    
+    if (error) {
+        console.error("RPC exec_sql error:", error);
+    } else {
+        console.log("View updated successfully");
+    }
+
+    const { data, error: fetchError } = await supabase
+        .from('v_sales_unified')
+        .select('*')
+        .eq('readable_id', '1295')
+        .limit(1);
+
+    if (fetchError) {
+        console.error("Fetch error:", fetchError);
+    } else {
+        console.log("Test Order #1295:", data);
+    }
+}
+
+updateView().then(() => process.exit(0)).catch(console.error);
