@@ -170,13 +170,18 @@ export const fetchSalesDetails = async (period: 'DAY' | 'WEEK' | 'MONTH' | 'ALL'
         startTs = 0;
     }
 
-    // We use fetchGlobalPayments instead of the RPC to ensure we filter out 'RECIBIDOS' (OrderType.STORE)
-    const data = await fetchGlobalPayments(startTs, now.getTime());
+    const isoStartTs = new Date(startTs).toISOString();
 
-    // Filter out refunds and sort by date descending
+    const { data } = await supabase
+        .from('v_sales_unified')
+        .select('*')
+        .gte('created_at', isoStartTs)
+        .order('created_at', { ascending: false });
+
+    // Filter out refunds since they are negative anyway and usually we show positive sales.
+    // The previous logic filtered out is_refund. v_sales_unified has is_refund bool.
     return (data || [])
-        .filter((s: any) => !s.is_refund)
-        .sort((a: any, b: any) => b.created_at - a.created_at);
+        .filter((s: any) => !s.is_refund);
 };
 
 export const fetchFlowDetails = async (period: 'DAY' | 'WEEK' | 'MONTH') => {
@@ -231,10 +236,15 @@ export const fetchAdvancedDashboardData = async () => {
     const sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 5, 1).getTime();
 
     try {
-        // 1. Fetch Sales (Actual Payments)
-        // We use fetchGlobalPayments instead of the RPC to ensure we filter out 'RECIBIDOS' (OrderType.STORE)
-        const sales = await fetchGlobalPayments(sixMonthsAgo, now.getTime());
-        
+        // 1. Fetch Sales (Actual Payments) Using v_sales_unified
+        const isoSixMonthsAgo = new Date(sixMonthsAgo).toISOString();
+        const { data: unifiedSales } = await supabase
+            .from('v_sales_unified')
+            .select('*')
+            .gte('created_at', isoSixMonthsAgo);
+
+        const sales = unifiedSales || [];
+
         // 2. Fetch Flow (All Orders created or completed in the last 6 months)
         const { data: flowData } = await supabase
             .from('orders')
@@ -246,8 +256,7 @@ export const fetchAdvancedDashboardData = async () => {
         const flow = flowData || [];
 
         // --- SALES & PROFIT CALCULATIONS (From Payments) ---
-        const getSalesAndProfit = (payments: any[], startTs: number, endTs?: number) => {
-            const processedOrders = new Set<string>();
+        const getSalesAndProfit = (salesData: any[], startTs: number, endTs?: number) => {
             let revenue = 0;
             let revenueTaller = 0;
             let revenueInventario = 0;
@@ -260,14 +269,18 @@ export const fetchAdvancedDashboardData = async () => {
             let partsCostT1 = 0;
             let partsCostT4 = 0;
 
-            for (const p of payments) {
-                if (p.created_at >= startTs && (!endTs || p.created_at < endTs) && !p.is_refund) {
-                    const amount = p.amount || 0;
+            for (const s of salesData) {
+                const createdTs = new Date(s.created_at).getTime();
+                
+                if (createdTs >= startTs && (!endTs || createdTs < endTs)) {
+                    const amount = Number(s.gross_amount) || 0;
+                    const cost = Number(s.cost_amount) || 0;
                     
                     if (amount >= 0) {
                         revenue += amount;
-                        const isModelVenta = p.order_model && String(p.order_model).toLowerCase().includes('venta');
-                        const isInventory = p.order_type === 'Pieza Independiente' || p.order_type === 'PART_ONLY' || p.order_id === 'PRODUCT_SALE' || p.description?.includes('POS') || isModelVenta || p.order_type === 'RECIBIDOS' || String(p.order_id).startsWith('POS-');
+                        partsCost += cost;
+                        
+                        const isInventory = s.source_type === 'POS';
                         
                         if (isInventory) {
                             revenueInventario += amount;
@@ -275,30 +288,19 @@ export const fetchAdvancedDashboardData = async () => {
                             revenueTaller += amount;
                         }
 
-                        if (p.branch === 'T1') revenueT1 += amount;
-                        if (p.branch === 'T4') revenueT4 += amount;
-                    } else {
-                        // Negative amounts are manual expenses or purchase costs handled through AT
-                        expenses += Math.abs(amount);
-                        if (p.branch === 'T1') expensesT1 += Math.abs(amount);
-                        if (p.branch === 'T4') expensesT4 += Math.abs(amount);
-                    }
-
-                    if (p.order_id && p.order_type !== undefined && !processedOrders.has(p.order_id)) {
-                        let cost = p.order_parts_cost || 0;
-                        
-                        // Add expenses to the cost
-                        if (p.order_expenses) {
-                            const expensesArr = typeof p.order_expenses === 'string' ? JSON.parse(p.order_expenses) : p.order_expenses;
-                            if (Array.isArray(expensesArr)) {
-                                cost += expensesArr.reduce((acc: number, e: any) => acc + (Number(e.amount) || 0), 0);
-                            }
+                        if (s.branch === 'T1') {
+                            revenueT1 += amount;
+                            partsCostT1 += cost;
                         }
-                        
-                        partsCost += cost;
-                        if (p.branch === 'T1') partsCostT1 += cost;
-                        if (p.branch === 'T4') partsCostT4 += cost;
-                        processedOrders.add(p.order_id);
+                        if (s.branch === 'T4') {
+                            revenueT4 += amount;
+                            partsCostT4 += cost;
+                        }
+                    } else {
+                        // Negative amounts (refunds)
+                        expenses += Math.abs(amount);
+                        if (s.branch === 'T1') expensesT1 += Math.abs(amount);
+                        if (s.branch === 'T4') expensesT4 += Math.abs(amount);
                     }
                 }
             }

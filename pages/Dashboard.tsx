@@ -145,14 +145,14 @@ const DashboardComponent: React.FC = () => {
     salesDetails.forEach((sale: any) => {
       // Group by Area (Taller vs Inventario) and Branch
       const branch = sale.branch || 'OTRO';
-      const isInventory = sale.order_type === 'Pieza Independiente' || sale.order_type === 'PART_ONLY' || sale.order_id === 'PRODUCT_SALE' || (sale.order_model && sale.order_model.includes('Venta')) || String(sale.order_id).startsWith('POS-') || sale.order_type === 'RECIBIDOS';
+      const isInventory = sale.source_type === 'POS' || sale.order_type === 'Pieza Independiente' || sale.order_type === 'PART_ONLY' || sale.order_id === 'PRODUCT_SALE' || (sale.order_model && sale.order_model.includes('Venta')) || String(sale.order_id).startsWith('POS-') || sale.order_type === 'RECIBIDOS';
       const category = isInventory ? `Inventario (${branch})` : `Taller (${branch})`;
       
       if (!grouped[category]) {
         grouped[category] = { items: [], total: 0 };
       }
       grouped[category].items.push(sale);
-      grouped[category].total += sale.amount || 0;
+      grouped[category].total += Number(sale.gross_amount) || sale.amount || 0;
     });
     return grouped;
   }, [salesDetails]);
@@ -1048,9 +1048,9 @@ const DashboardComponent: React.FC = () => {
                                       <div 
                                           key={i} 
                                           onClick={() => {
-                                              if (sale.order_id && sale.order_id !== 'PRODUCT_SALE' && sale.order_id !== 'GASTO_LOCAL' && sale.order_id !== 'MANUAL_TX') {
+                                              if (sale.source_type === 'ORDER' || sale.source_type === 'WORKSHOP') {
                                                   setSelectedSalesPeriod(null);
-                                                  navigate(`/orders/${sale.order_id}`);
+                                                  navigate(`/orders/${sale.source_id}`);
                                               } else {
                                                   setSelectedTransaction(sale);
                                               }
@@ -1073,10 +1073,10 @@ const DashboardComponent: React.FC = () => {
                                           </div>
                                           <div className="flex items-center gap-4">
                                               <div className="text-right">
-                                                  <p className="text-lg font-black text-slate-800">${sale.amount.toLocaleString()}</p>
-                                                  <p className="text-[9px] font-bold text-slate-400 uppercase">{sale.method}</p>
+                                                  <p className="text-lg font-black text-slate-800">${(Number(sale.gross_amount) || sale.amount || 0).toLocaleString()}</p>
+                                                  <p className="text-[9px] font-bold text-slate-400 uppercase">{sale.payment_method || sale.method || 'N/A'}</p>
                                               </div>
-                                              {sale.order_id && <ChevronRight className="w-5 h-5 text-slate-300 group-hover:text-blue-500 transition-colors" />}
+                                              {sale.source_id && <ChevronRight className="w-5 h-5 text-slate-300 group-hover:text-blue-500 transition-colors" />}
                                           </div>
                                       </div>
                                   );

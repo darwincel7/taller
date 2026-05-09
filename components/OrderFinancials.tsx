@@ -254,18 +254,27 @@ export const OrderFinancials: React.FC<OrderFinancialsProps> = ({
       } else if (mode === 'UNIT') {
           // LOGICA ESTANDAR (Unidad completa)
           if (selectedPart.stock > 0) {
-              // We don't use consumePart here directly because we don't have it in props, 
-              // but we can just do the update and log it here.
-              await updateInventoryPart(selectedPart.id, { stock: selectedPart.stock - 1 });
+              const { data: userData } = await supabase.auth.getUser();
+              const userName = userData.user?.user_metadata?.name || 'Sistema';
               
-              await supabase.from('audit_logs').insert([{
-                  action: 'INVENTORY_EXTRACTION',
-                  details: `[INV_ID: ${selectedPart.id}] Extracción: 1x ${selectedPart.name} ($${selectedPart.cost}) para Orden #${order.readable_id || order.id.slice(-4)}`,
-                  user_id: userData.user?.id,
-                  user_name: userName,
-                  order_id: order.id,
-                  created_at: Date.now()
-              }]);
+              // Usar la RPC oficial para descontar stock con trazabilidad
+              const { error: consumeErr } = await supabase.rpc('consume_inventory_item', {
+                  p_item_id: selectedPart.id,
+                  p_quantity: 1,
+                  p_source_type: 'ORDER',
+                  p_source_id: order.id,
+                  p_reason: `Extracción para Orden #${order.readable_id || order.id.slice(0, 8)}`,
+                  p_user_id: userData.user?.id
+              });
+
+              if (consumeErr) {
+                  showNotification('error', `Error al descontar inventario: ${consumeErr.message}`);
+                  setIsProcessing(false);
+                  return;
+              }
+              
+              // audit_logs is already covered by the RPC, but we can keep it if we want extra details,
+              // or drop it. We'll drop the manual audit_logs insert as consume_inventory_item handles it and inventory_movements.
 
               onAddExpense(selectedPart.name, selectedPart.cost, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, true); 
           } else {

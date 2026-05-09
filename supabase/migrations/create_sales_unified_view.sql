@@ -35,10 +35,10 @@ SELECT
     op.amount as gross_amount,
     -- Estimación de costo: proporcionalmente basado en el partsCost de la orden
     CASE 
-        WHEN COALESCE(o.finalPrice, 0) > 0 THEN (op.amount / o.finalPrice) * COALESCE(o.partsCost, 0)
+        WHEN COALESCE(o."finalPrice", 0) > 0 THEN (op.amount / o."finalPrice") * COALESCE(o."partsCost", 0)
         ELSE 0
     END as cost_amount,
-    op.amount - (CASE WHEN COALESCE(o.finalPrice, 0) > 0 THEN (op.amount / o.finalPrice) * COALESCE(o.partsCost, 0) ELSE 0 END) as net_profit,
+    op.amount - (CASE WHEN COALESCE(o."finalPrice", 0) > 0 THEN (op.amount / o."finalPrice") * COALESCE(o."partsCost", 0) ELSE 0 END) as net_profit,
     'Pago Taller: ' || COALESCE(o."deviceModel", 'Equipo') as description,
     'completed' as status
 FROM 

@@ -194,8 +194,9 @@ export const financialMetricsService = {
       const startLocal = new Date(Number(sy), Number(sm) - 1, Number(sd), 0, 0, 0);
       
       filteredPayments = filteredPayments.filter((p: any) => {
-        const val = p.created_at ? Number(p.created_at) : p.date;
-        return new Date(val) >= startLocal;
+        const val = p.created_at || p.date;
+        const d = typeof val === 'string' && val.includes('T') ? new Date(val) : new Date(Number(val));
+        return d >= startLocal;
       });
       filteredTransactions = filteredTransactions.filter((t: any) => {
         const [ty, tm, td] = t.transaction_date.split('T')[0].split('-');
@@ -207,8 +208,9 @@ export const financialMetricsService = {
       const endLocal = new Date(Number(ey), Number(em) - 1, Number(ed), 23, 59, 59, 999);
       
       filteredPayments = filteredPayments.filter((p: any) => {
-        const val = p.created_at ? Number(p.created_at) : p.date;
-        return new Date(val) <= endLocal;
+        const val = p.created_at || p.date;
+        const d = typeof val === 'string' && val.includes('T') ? new Date(val) : new Date(Number(val));
+        return d <= endLocal;
       });
       filteredTransactions = filteredTransactions.filter((t: any) => {
         const [ty, tm, td] = t.transaction_date.split('T')[0].split('-');
@@ -241,10 +243,9 @@ export const financialMetricsService = {
 
     rawData.payments.forEach((p: any) => {
       let d = new Date();
-      if (p.created_at) {
-          d = new Date(Number(p.created_at));
-      } else if (p.date) {
-          d = new Date(p.date); // fallback
+      const val = p.created_at || p.date;
+      if (val) {
+          d = typeof val === 'string' && val.includes('T') ? new Date(val) : new Date(Number(val));
       }
 
       const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
