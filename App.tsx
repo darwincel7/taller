@@ -24,7 +24,7 @@ import { FinancialDashboard } from './pages/FinancialDashboard';
 import { StrategicVault } from './pages/StrategicVault';
 import { CRM } from './pages/CRM';
 import { Customers } from './pages/Customers';
-import { WhatsAppSettings } from './pages/WhatsAppSettings';
+import { OmnicanalSettings } from './pages/OmnicanalSettings';
 import { Commissions } from './pages/Commissions';
 import { OrderProvider } from './contexts/OrderContext';
 import { InventoryProvider } from './contexts/InventoryContext'; 
@@ -96,7 +96,7 @@ const App: React.FC = () => {
                   <Route path="/vault" element={<ProtectedRoute><StrategicVault /></ProtectedRoute>} />
                   <Route path="/crm" element={<ProtectedRoute><CRM /></ProtectedRoute>} />
                   <Route path="/customers" element={<ProtectedRoute><Customers /></ProtectedRoute>} />
-                  <Route path="/whatsapp" element={<ProtectedRoute><WhatsAppSettings /></ProtectedRoute>} />
+                  <Route path="/omnicanal" element={<ProtectedRoute><OmnicanalSettings /></ProtectedRoute>} />
                   <Route path="/commissions" element={<ProtectedRoute><Commissions /></ProtectedRoute>} />
                   <Route path="/store" element={<ProtectedRoute><StoreStock /></ProtectedRoute>} />
                   <Route path="/store-inventory" element={<ProtectedRoute><StoreInventory /></ProtectedRoute>} />

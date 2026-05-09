@@ -16,13 +16,53 @@ export async function saveRawEvent(channel: ChannelType, eventType: string, raw:
   }
 }
 
+export async function startJobWorkers() {
+  setInterval(async () => {
+    const supabase = getSupabase();
+    if (!supabase) return;
+    
+    // Pick pending ai_summary jobs (limit 1 to avoid overload)
+    const { data: jobs } = await supabase
+      .from('crm_processing_jobs')
+      .select('*')
+      .eq('status', 'pending')
+      .eq('job_type', 'ai_summary')
+      .order('created_at', { ascending: true })
+      .limit(1);
+
+    if (jobs && jobs.length > 0) {
+      const job = jobs[0];
+      await supabase.from('crm_processing_jobs').update({ status: 'processing' }).eq('id', job.id);
+      
+      try {
+        const { data: conv } = await supabase.from('crm_conversations').select('contact_id').eq('id', job.reference_id).single();
+        if (conv) {
+           await updateAiSummary(conv.contact_id, job.reference_id);
+        }
+        await supabase.from('crm_processing_jobs').update({ status: 'completed' }).eq('id', job.id);
+      } catch (err) {
+        await supabase.from('crm_processing_jobs').update({ status: 'failed', payload: { error: String(err) } }).eq('id', job.id);
+      }
+    }
+  }, 10000); // Check every 10 seconds
+}
+
 export async function processIncomingMessage(msg: NormalizedIncomingMessage) {
   const supabase = getSupabase();
   if (!supabase) return;
 
   try {
-    // 1. Guarda raw event no es necesario aquí si lo hicimos antes, pero se pide en el flujo
-    // Si viene el mensaje normalizado de un webhook, ya guardamos el raw original.
+    // 1. Cortar flujo si el mensaje ya existe
+    const { data: existingMsg } = await supabase.from('crm_messages')
+      .select('id')
+      .eq('channel', msg.channel)
+      .eq('external_message_id', msg.externalMessageId)
+      .single();
+
+    if (existingMsg) {
+      console.log(`[Omnicanal Pipeline] Ignorando mensaje duplicado ${msg.externalMessageId}`);
+      return;
+    }
 
     // 2. Busca o crea contacto e identidad
     let contactId = null;
@@ -63,22 +103,24 @@ export async function processIncomingMessage(msg: NormalizedIncomingMessage) {
         });
     }
 
-    // 3. Busca o crea conversacion
+    // 3. Busca o crea conversacion (solo por contact_id, no se pide canal)
     let conversationId = null;
     const { data: existingConv } = await supabase
       .from('crm_conversations')
       .select('id, assigned_to')
       .eq('contact_id', contactId)
-      .eq('active_channel', msg.channel)
+      .order('created_at', { ascending: false })
+      .limit(1)
       .single();
 
     if (existingConv) {
       conversationId = existingConv.id;
-      // Actualizar ultima interacción
+      // Actualizar ultima interacción y cambiar el active_channel al canal del ultimo msj
       await supabase.from('crm_conversations').update({
         last_message: msg.text || `[${msg.messageType}]`,
         last_message_at: msg.createdAt,
-        status: 'open'
+        status: 'open',
+        active_channel: msg.channel
       }).eq('id', conversationId);
       
       await supabase.from('crm_contacts').update({
@@ -102,13 +144,21 @@ export async function processIncomingMessage(msg: NormalizedIncomingMessage) {
       conversationId = newConv.id;
     }
 
+    // Get channel_account_id if we have channelAccountId from msg
+    let internalChannelAccountId = null;
+    if (msg.channelAccountId) {
+       const { data: acc } = await supabase.from('crm_channel_accounts').select('id').eq('external_account_id', msg.channelAccountId).single();
+       if (acc) internalChannelAccountId = acc.id;
+    }
+
     // 4. Guarda mensaje
-    const { data: savedMsg, error: msgError } = await supabase
+    const { error: msgError } = await supabase
       .from('crm_messages')
       .insert({
         conversation_id: conversationId,
         contact_id: contactId,
         channel: msg.channel,
+        channel_account_id: internalChannelAccountId,
         external_message_id: msg.externalMessageId,
         external_conversation_id: msg.externalConversationId,
         direction: 'inbound',
@@ -118,27 +168,28 @@ export async function processIncomingMessage(msg: NormalizedIncomingMessage) {
         media_mime: msg.mediaMime,
         raw: msg.raw,
         created_at: msg.createdAt
-      })
-      .select('*')
-      .single();
+      });
 
-    // Ignore duplicate keys on messages silently
-    if (msgError && msgError.code !== '23505') {
-       throw msgError;
+    if (msgError) {
+      if (msgError.code === '23505') {
+        console.log(`[PIPELINE] Mensaje duplicado omitido: ${msg.externalMessageId}`);
+        return;
+      }
+      throw msgError;
     }
 
     // 5. Detecta telefonos en texto
     if (msg.text) {
-      await detectPhoneNumbers(msg.text, contactId, conversationId, savedMsg?.id);
+      await detectPhoneNumbers(msg.text, contactId, conversationId, msg.externalMessageId); // msg.id is missing but we can use external_message_id
     }
 
-    // 6. Actualiza resumen IA
-    // Trigger in background to not block
-    updateAiSummary(contactId, conversationId);
+    // 6. Actualiza resumen IA mediante jobs
+    await queueAiSummary(conversationId);
 
-    // 7. Asigna vendedor
-    // Background rule engine
-    assignAgent(conversationId);
+    // 7. Asigna vendedor solo si assigned_to es null
+    if (!existingConv || !existingConv.assigned_to) {
+      assignAgent(conversationId);
+    }
 
     // 8. Emite realtime
     // Supabase REALTIME will handle this if the client is subscribed to crm_messages
@@ -193,6 +244,16 @@ async function detectPhoneNumbers(text: string, contactId: string, conversationI
 
 // Stubs for future implementation
 import { GoogleGenAI, Type } from "@google/genai";
+
+async function queueAiSummary(conversationId: string) {
+  const supabase = getSupabase();
+  if (!supabase) return;
+  await supabase.from('crm_processing_jobs').insert({
+    job_type: 'ai_summary',
+    reference_id: conversationId,
+    status: 'pending'
+  });
+}
 
 const getAiClient = () => {
     let key = process.env.GEMINI_API_KEY!;

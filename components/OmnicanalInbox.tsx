@@ -38,6 +38,10 @@ export const OmnicanalInbox: React.FC = () => {
     try {
       setError(null);
       const res = await fetchWithAuth('/api/omnicanal/conversations');
+      const contentType = res.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        throw new Error("Invalid response from server");
+      }
       const data = await res.json();
       if (data.error) throw new Error(data.error);
       setConversations(data);
@@ -52,6 +56,10 @@ export const OmnicanalInbox: React.FC = () => {
   const fetchMessages = async (convId: string) => {
     try {
       const res = await fetchWithAuth(`/api/omnicanal/conversations/${convId}/messages`);
+      const contentType = res.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        throw new Error("Invalid response from server");
+      }
       const data = await res.json();
       if (data.error) throw new Error(data.error);
       setMessages(data);
@@ -115,6 +123,12 @@ export const OmnicanalInbox: React.FC = () => {
     const file = e.target.files[0];
     e.target.value = ''; // reset so the same file could be selected again
     
+    // Determine type
+    let msgType = 'image';
+    if (file.type.startsWith('video/')) msgType = 'video';
+    else if (file.type.startsWith('audio/')) msgType = 'audio';
+    else if (!file.type.startsWith('image/')) msgType = 'document';
+
     // Convert to base64 for quick preview / upload mock
     const reader = new FileReader();
     reader.onload = async (event) => {
@@ -123,7 +137,7 @@ export const OmnicanalInbox: React.FC = () => {
         const tempMsg = {
           id: `temp-${Date.now()}`,
           text: '',
-          message_type: 'image',
+          message_type: msgType,
           media_url: base64,
           direction: 'outbound',
           status: 'sending',
@@ -140,7 +154,7 @@ export const OmnicanalInbox: React.FC = () => {
               conversationId: activeConv.id, 
               text: '',
               mediaUrl: base64,
-              mediaType: 'image'
+              mediaType: msgType
             })
           });
           const data = await res.json();
@@ -153,6 +167,97 @@ export const OmnicanalInbox: React.FC = () => {
         }
     };
     reader.readAsDataURL(file);
+  };
+
+  const [isRecording, setIsRecording] = useState(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const [recordingDuration, setRecordingDuration] = useState(0);
+  const recordingTimerRef = useRef<any>(null);
+
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = async () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        const reader = new FileReader();
+        reader.readAsDataURL(audioBlob);
+        reader.onloadend = async () => {
+          const base64AudioMessage = reader.result as string;
+          // Send audio message
+          if (!activeConv) return;
+          const tempMsg = {
+            id: `temp-${Date.now()}`,
+            text: '',
+            message_type: 'audio',
+            media_url: base64AudioMessage,
+            direction: 'outbound',
+            status: 'sending',
+            created_at: new Date().toISOString(),
+            channel: activeConv.active_channel
+          };
+          setMessages(prev => [...prev, tempMsg]);
+
+          try {
+            const res = await fetchWithAuth('/api/omnicanal/send', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ 
+                conversationId: activeConv.id, 
+                text: '',
+                mediaUrl: base64AudioMessage,
+                mediaType: 'audio'
+              })
+            });
+            const data = await res.json();
+            if (!data.success) throw new Error(data.error);
+            setMessages(prev => prev.map(m => m.id === tempMsg.id ? { ...m, status: 'sent' } : m));
+          } catch (error) {
+            console.error('Error sending audio:', error);
+            setMessages(prev => prev.map(m => m.id === tempMsg.id ? { ...m, status: 'failed' } : m));
+          }
+        };
+        // Stop all tracks
+        stream.getTracks().forEach(track => track.stop());
+      };
+
+      mediaRecorder.start();
+      setIsRecording(true);
+      setRecordingDuration(0);
+      recordingTimerRef.current = setInterval(() => setRecordingDuration(prev => prev + 1), 1000);
+    } catch (err) {
+      console.error('Error starting recording:', err);
+      alert('Could not access microphone.');
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+      clearInterval(recordingTimerRef.current);
+    }
+  };
+
+  const cancelRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.onstop = () => {
+          mediaRecorderRef.current?.stream.getTracks().forEach(track => track.stop());
+      };
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+      clearInterval(recordingTimerRef.current);
+    }
   };
 
   const handleSend = async () => {
@@ -299,6 +404,8 @@ export const OmnicanalInbox: React.FC = () => {
                            <img src={msg.media_url} alt="Media" className="rounded-lg mb-2 max-w-sm"/>
                         ) : msg.message_type === 'audio' ? (
                            <audio src={msg.media_url} controls className="mb-2 w-48" />
+                        ) : msg.message_type === 'video' ? (
+                           <video src={msg.media_url} controls className="mb-2 max-w-sm rounded-lg" />
                         ) : (
                            <a href={msg.media_url} target="_blank" rel="noreferrer" className="text-sm font-bold underline mb-1 block">📎 Documento</a>
                         )
@@ -325,12 +432,26 @@ export const OmnicanalInbox: React.FC = () => {
 
             <div className="p-4 bg-white border-t border-slate-200">
                <div className="flex items-center gap-2 mb-2 px-1">
-                 <input type="file" id="omnicanal-img-upload" className="hidden" accept="image/*" onChange={handleImageSelect} />
+                 <input type="file" id="omnicanal-img-upload" className="hidden" accept="image/*,video/*" onChange={handleImageSelect} />
+                 <input type="file" id="omnicanal-doc-upload" className="hidden" accept=".pdf,.doc,.docx,.xls,.xlsx" onChange={handleImageSelect} />
                  <button className="text-slate-400 hover:text-indigo-600 transition p-1" onClick={() => document.getElementById('omnicanal-img-upload')?.click()}>
                     <ImageIcon className="w-5 h-5"/>
                  </button>
-                 <button className="text-slate-400 hover:text-indigo-600 transition p-1"><File className="w-5 h-5"/></button>
-                 <button className="text-slate-400 hover:text-indigo-600 transition p-1"><Mic className="w-5 h-5"/></button>
+                 <button className="text-slate-400 hover:text-indigo-600 transition p-1" onClick={() => document.getElementById('omnicanal-doc-upload')?.click()}>
+                    <File className="w-5 h-5"/>
+                 </button>
+                 <button 
+                  className={`transition p-1 ${isRecording ? 'text-red-500 animate-pulse' : 'text-slate-400 hover:text-indigo-600'}`}
+                  onClick={isRecording ? stopRecording : startRecording}
+                 >
+                    <Mic className="w-5 h-5"/>
+                 </button>
+                 {isRecording && (
+                   <div className="flex items-center gap-2 ml-2">
+                     <span className="text-red-500 text-xs font-bold">{Math.floor(recordingDuration / 60)}:{(recordingDuration % 60).toString().padStart(2, '0')}</span>
+                     <button onClick={cancelRecording} className="text-xs text-slate-500 hover:text-red-600">Cancelar</button>
+                   </div>
+                 )}
                  <div className="flex-1" />
                  {/* Cambio de canal selector simulado si hubiera más canales vinculados */}
                  <span className="text-[10px] font-bold text-slate-400">Respondiendo vía {activeConv.active_channel}</span>

@@ -305,9 +305,9 @@ const LayoutComponent: React.FC<LayoutProps> = ({ children }) => {
                     <ShoppingBag className="w-4 h-4" />
                     Comisiones
                 </Link>
-                <Link to="/whatsapp" className={getNavLinkClass('/whatsapp')}>
+                <Link to="/omnicanal" className={getNavLinkClass('/omnicanal')}>
                     <MessageSquare className="w-4 h-4" />
-                    WhatsApp
+                    Omnicanal
                 </Link>
                 {currentUser?.name?.includes('Darwin') || currentUser.email?.toLowerCase() === 'daruingmejia@gmail.com' ? (
                   <button 

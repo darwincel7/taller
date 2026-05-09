@@ -498,9 +498,13 @@ WulWnM5/R4sQkOsivcABDQ==
   const { default: metaRouter } = await import('./server/omnicanal/meta');
   const { default: tiktokRouter } = await import('./server/omnicanal/tiktok');
   const { default: omnicanalApiRouter } = await import('./server/omnicanal/api');
+  const { startJobWorkers } = await import('./server/omnicanal/pipeline');
+  
   app.use('/api/meta', metaRouter);
   app.use('/api/tiktok', tiktokRouter);
   app.use('/api/omnicanal', requireAuth, omnicanalApiRouter);
+  
+  startJobWorkers();
 
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {

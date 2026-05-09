@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { MessageSquare, RefreshCw, LogOut, CheckCircle2, AlertCircle, Loader2, AlertTriangle, Eye, ShieldAlert, X } from 'lucide-react';
 import { fetchWithAuth } from '../lib/fetchWithAuth';
 
-export const WhatsAppSettings: React.FC = () => {
+export const OmnicanalSettings: React.FC = () => {
   const [status, setStatus] = useState<'connecting' | 'open' | 'close'>('close');
   const [qrCode, setQrCode] = useState<string | null>(null);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
@@ -12,6 +12,48 @@ export const WhatsAppSettings: React.FC = () => {
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
   const [auditFilter, setAuditFilter] = useState<'all' | 'saved' | 'ignored' | 'error' | 'decryption_error'>('all');
   const [showRawModal, setShowRawModal] = useState<any | null>(null);
+
+  const [metaAccounts, setMetaAccounts] = useState<any[]>([]);
+  const [tiktokAccounts, setTiktokAccounts] = useState<any[]>([]);
+
+  const fetchOmnicanalAccounts = async () => {
+    try {
+      const [metaRes, tiktokRes] = await Promise.all([
+         fetchWithAuth('/api/meta/accounts').catch(() => null),
+         fetchWithAuth('/api/tiktok/accounts').catch(() => null)
+      ]);
+      if (metaRes && metaRes.ok) {
+         const data = await metaRes.json();
+         if (data.success) setMetaAccounts(data.data);
+      }
+      if (tiktokRes && tiktokRes.ok) {
+         const data = await tiktokRes.json();
+         if (data.success) setTiktokAccounts(data.data);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleConnectMeta = async () => {
+    try {
+      const res = await fetchWithAuth('/api/meta/connect', { method: 'POST' });
+      if (res.ok) {
+         const data = await res.json();
+         if (data.oauthUrl) window.location.href = data.oauthUrl;
+      }
+    } catch(e) { console.error(e); }
+  };
+
+  const handleConnectTikTok = async () => {
+    try {
+      const res = await fetchWithAuth('/api/tiktok/connect', { method: 'POST' });
+      if (res.ok) {
+         const data = await res.json();
+         if (data.oauthUrl) window.location.href = data.oauthUrl;
+      }
+    } catch(e) { console.error(e); }
+  };
 
   const fetchStatus = async () => {
     try {
@@ -48,8 +90,22 @@ export const WhatsAppSettings: React.FC = () => {
   };
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('meta_error')) {
+      alert('Hubo un error al vincular tu cuenta de Meta. Verifica las credenciales o asegúrate de dar los permisos requeridos.');
+      window.history.replaceState({}, '', '/omnicanal');
+    }
+    if (params.get('tiktok_error')) {
+      alert('Hubo un error al vincular tu cuenta de TikTok.');
+      window.history.replaceState({}, '', '/omnicanal');
+    }
+    if (params.get('meta_connected') || params.get('tiktok_connected')) {
+      window.history.replaceState({}, '', '/omnicanal');
+    }
+
     fetchStatus();
     fetchAuditLogs();
+    fetchOmnicanalAccounts();
     
     const interval = setInterval(() => {
       if (status !== 'open') {
@@ -140,11 +196,11 @@ export const WhatsAppSettings: React.FC = () => {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
-            <MessageSquare className="w-6 h-6 text-green-500" />
-            Conexión WhatsApp
+            <MessageSquare className="w-6 h-6 text-blue-500" />
+            Canales de Mensajería
           </h1>
           <p className="text-slate-500 dark:text-slate-400 mt-1">
-            Vincula el número del negocio para enviar notificaciones automáticas a los clientes.
+            Gestiona tus conexiones de WhatsApp, Facebook, Instagram y TikTok.
           </p>
         </div>
       </div>
@@ -348,6 +404,78 @@ export const WhatsAppSettings: React.FC = () => {
               </tbody>
             </table>
           </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {/* Meta Connect Card */}
+        <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-8 shadow-sm">
+           <h2 className="text-xl font-bold text-slate-900 dark:text-white mb-4 flex items-center gap-2">
+              <svg className="w-6 h-6 text-blue-600" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.477 2 12c0 4.991 3.657 9.128 8.438 9.879V14.89h-2.54V12h2.54V9.797c0-2.506 1.492-3.89 3.777-3.89 1.094 0 2.238.195 2.238.195v2.46h-1.26c-1.243 0-1.63.771-1.63 1.562V12h2.773l-.443 2.89h-2.33v6.989C18.343 21.129 22 16.99 22 12c0-5.523-4.477-10-10-10z"/></svg> 
+              Facebook e Instagram
+           </h2>
+           <p className="text-slate-500 dark:text-slate-400 mb-6">
+              Recibe y responde mensajes de tu Página de Facebook y cuenta Business de Instagram directamente desde el Inbox.
+           </p>
+           
+           {metaAccounts.length > 0 ? (
+             <div className="space-y-4 mb-6">
+               <h3 className="font-semibold text-sm text-slate-800 dark:text-slate-200">Cuentas Conectadas ({metaAccounts.length})</h3>
+               <div className="flex flex-col gap-2">
+                 {metaAccounts.map(acc => (
+                   <div key={acc.id} className="flex flex-row items-center justify-between bg-slate-50 dark:bg-slate-800 p-3 rounded-lg border border-slate-100 dark:border-slate-700">
+                     <div className="flex items-center gap-2">
+                       <CheckCircle2 className="w-4 h-4 text-green-500" />
+                       <span className="font-medium text-slate-700 dark:text-slate-200">{acc.account_name}</span>
+                     </div>
+                     <span className="text-xs text-slate-500">ID: {acc.external_account_id}</span>
+                   </div>
+                 ))}
+               </div>
+             </div>
+           ) : null}
+
+           <button
+             onClick={handleConnectMeta}
+             className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-medium transition-colors"
+           >
+             {metaAccounts.length > 0 ? "Vincular otra cuenta" : "Vincular con Meta"}
+           </button>
+        </div>
+
+        {/* TikTok Connect Card */}
+        <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-8 shadow-sm">
+           <h2 className="text-xl font-bold text-slate-900 dark:text-white mb-4 flex items-center gap-2">
+              <svg className="w-6 h-6 text-black dark:text-white" viewBox="0 0 24 24" fill="currentColor"><path d="M12.525.02c1.31-.02 2.61-.01 3.91-.02.08 1.53.63 3.09 1.75 4.17 1.12 1.11 2.7 1.62 4.24 1.79v4.03c-1.44-.05-2.89-.35-4.2-.97-.57-.26-1.1-.59-1.62-.93v7.03c-.02 2.65-2.07 5.06-4.69 5.25-2.67.19-5.32-1.63-5.74-4.26-.41-2.58 1.1-5.26 3.65-5.91 1.05-.27 2.15-.22 3.16.14.07-.1.08-.23.1-.35V6.16c-1.39.31-2.84.28-4.2-.1-2.57-.74-4.52-2.94-4.83-5.59h4.15c.16 1.48.97 2.83 2.15 3.63 1.05.7 2.3 1 3.56 1.05.02-1.74.01-3.48.01-5.23z"/></svg> 
+              TikTok Business
+           </h2>
+           <p className="text-slate-500 dark:text-slate-400 mb-6">
+              Recibe notificaciones de comentarios. Nota: La opción de envío de DM directos no está disponible por políticas de API de TikTok.
+           </p>
+
+           {tiktokAccounts.length > 0 ? (
+             <div className="space-y-4 mb-6">
+               <h3 className="font-semibold text-sm text-slate-800 dark:text-slate-200">Cuentas Conectadas ({tiktokAccounts.length})</h3>
+               <div className="flex flex-col gap-2">
+                 {tiktokAccounts.map(acc => (
+                   <div key={acc.id} className="flex flex-row items-center justify-between bg-slate-50 dark:bg-slate-800 p-3 rounded-lg border border-slate-100 dark:border-slate-700">
+                     <div className="flex items-center gap-2">
+                       <CheckCircle2 className="w-4 h-4 text-green-500" />
+                       <span className="font-medium text-slate-700 dark:text-slate-200">{acc.account_name}</span>
+                     </div>
+                     <span className="text-xs text-slate-500">ID: {acc.external_account_id}</span>
+                   </div>
+                 ))}
+               </div>
+             </div>
+           ) : null}
+
+           <button
+             onClick={handleConnectTikTok}
+             className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-slate-900 hover:bg-slate-800 dark:bg-white dark:text-slate-900 dark:hover:bg-slate-200 text-white rounded-xl font-medium transition-colors"
+           >
+             {tiktokAccounts.length > 0 ? "Vincular otra cuenta" : "Vincular con TikTok"}
+           </button>
         </div>
       </div>
 

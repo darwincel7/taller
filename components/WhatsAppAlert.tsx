@@ -105,7 +105,7 @@ export const WhatsAppAlert: React.FC = () => {
         className="bg-red-600 text-white px-3 py-2.5 rounded-2xl shadow-2xl flex items-center justify-between gap-2 transition-all animate-in fade-in slide-in-from-right-8 duration-300 border-2 border-red-400 pointer-events-auto group"
       >
         <div 
-          onClick={() => navigate('/whatsapp')}
+          onClick={() => navigate('/omnicanal')}
           className="flex items-center gap-2.5 cursor-pointer flex-1 mr-2"
         >
           <AlertTriangle className="w-6 h-6 animate-pulse shrink-0 text-white" />

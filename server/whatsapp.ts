@@ -4,6 +4,7 @@ import QRCode from 'qrcode';
 import pino from 'pino';
 import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
+import { processIncomingMessage } from './omnicanal/pipeline';
 
 dotenv.config();
 
@@ -824,7 +825,45 @@ export async function connectToWhatsApp(manual = false) {
             }
         }
 
+        // Further down, in 'messages.upsert' handler:
         sock.ev.on('messages.upsert', async (m: any) => {
+            const msg = m.messages[0];
+            if (!msg.message || msg.key.fromMe) return;
+
+            const senderJid = msg.key.remoteJid;
+            const messageId = msg.key.id;
+
+            // ... Existing Baileys parsing logic for type, text, etc.
+            
+            // Just basic fallback parser here:
+            let type = 'text';
+            let text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
+            
+            // Si es imagen
+            if (msg.message?.imageMessage) {
+               type = 'image';
+               text = msg.message?.imageMessage?.caption || '';
+            }
+
+            // Normalizamos para pipeline
+            const normalized = {
+               channel: 'whatsapp' as const,
+               channelAccountId: 'default', // O numero de empresa si soportan varios
+               externalConversationId: senderJid,
+               externalMessageId: messageId,
+               externalSenderId: senderJid,
+               senderName: msg.pushName || '',
+               text: text,
+               messageType: type as any,
+               createdAt: new Date().toISOString(),
+               raw: msg
+            };
+
+            await processIncomingMessage(normalized);
+            
+            // ... the rest of WhatsApp specific DB storage can stay for backwards compatibility
+            // or just rely on 'processIncomingMessage' now!
+
             try {
                 const allowedTypes = ['notify', 'append'];
                 if (!allowedTypes.includes(m.type)) return;
@@ -1049,20 +1088,20 @@ export async function connectToWhatsApp(manual = false) {
                     try {
                         const { processIncomingMessage } = await import('./omnicanal/pipeline');
                         const normalizedEvent = {
-                            channel: 'whatsapp' as const,
-                            channelAccountId: 'default',
-                            externalConversationId: identity.rawJid,
-                            externalMessageId: messageId,
-                            externalSenderId: identity.rawJid,
-                            senderName: identity.displayName,
-                            username: identity.pushName || identity.waName,
-                            text: finalText,
-                            messageType: (messageType === 'text' || messageType === 'image' || messageType === 'audio' || messageType === 'video' || messageType === 'document' || messageType === 'sticker') ? messageType : 'text',
-                            mediaUrl: mediaUrl || undefined,
-                            mediaMime: mediaType || undefined,
-                            raw: msg,
-                            createdAt: new Date().toISOString()
-                        };
+                        channel: 'whatsapp' as const,
+                        channelAccountId: 'default',
+                        externalConversationId: identity.rawJid,
+                        externalMessageId: messageId,
+                        externalSenderId: identity.rawJid,
+                        senderName: identity.displayName,
+                        username: identity.waName || identity.displayName,
+                        text: finalText,
+                        messageType: ((messageType === 'text' || messageType === 'image' || messageType === 'audio' || messageType === 'video' || messageType === 'document' || messageType === 'sticker') ? messageType : 'text') as "text" | "image" | "audio" | "video" | "document" | "sticker",
+                        mediaUrl: mediaUrl || undefined,
+                        mediaMime: mediaType || undefined,
+                        raw: msg,
+                        createdAt: new Date().toISOString()
+                    };
                         
                         processIncomingMessage(normalizedEvent).catch(e => console.error('[WA Omni] error:', e));
                     } catch(e) {

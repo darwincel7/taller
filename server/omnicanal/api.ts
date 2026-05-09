@@ -68,8 +68,44 @@ router.post('/send', async (req, res) => {
 
     if (idError || !identity) throw new Error('Identity not found for channel');
 
-    // 2. Send via specific channel adapter
     let externalMessageId = `crm-send-${Date.now()}`;
+    let finalMediaUrlForDb = mediaUrl; // defaults to whatever was passed
+
+    if (mediaUrl && mediaUrl.startsWith('data:')) {
+      // Decode and upload to supabase
+       const arr = mediaUrl.split(',');
+       const mimeMatch = arr[0].match(/:(.*?);/);
+       const mimeType = mimeMatch ? mimeMatch[1] : 'application/octet-stream';
+       const base64Data = arr[1];
+       const buffer = Buffer.from(base64Data, 'base64');
+       
+       const extension = mimeType.split('/')[1] || 'bin';
+       const fileName = `${conv.id}/${Date.now()}.${extension}`;
+       
+       const { error: uploadError } = await supabase.storage.from('crm-media').upload(fileName, buffer, {
+          contentType: mimeType
+       });
+
+       if (!uploadError) {
+          const { data } = supabase.storage.from('crm-media').getPublicUrl(fileName);
+          if (data.publicUrl) {
+             finalMediaUrlForDb = data.publicUrl;
+             // also save an entry in crm_media_assets
+             await supabase.from('crm_media_assets').insert({
+                message_id: null, // we don't have msg id yet
+                channel: conv.active_channel,
+                file_name: fileName,
+                mime_type: mimeType,
+                size_bytes: buffer.length,
+                storage_path: fileName,
+                public_url: data.publicUrl,
+                source: 'outbound'
+             });
+          }
+       } else {
+          console.error("Storage upload error:", uploadError);
+       }
+    }
 
     if (conv.active_channel === 'whatsapp') {
        const { sendWhatsAppMessage } = await import('../whatsapp');
@@ -80,20 +116,51 @@ router.post('/send', async (req, res) => {
 
        if (mediaUrl) {
          if (mediaType === 'image') {
-            imageObj = mediaUrl; // For testing base64 can be passed directly if sendWhatsAppMessage handles it, but typically it assumes a buffer or base64. Let's pass it as image.
+            imageObj = mediaUrl; // Keep passing original base64 to Baileys as it probably supports data:image
          } else {
             mediaObj = {
                base64: mediaUrl.split(',')[1] || mediaUrl,
-               mimetype: mediaType === 'audio' ? 'audio/mpeg' : 'application/pdf',
+               mimetype: mediaType === 'audio' ? 'audio/webm' : 'application/pdf',
                fileName: 'media_file'
             };
          }
        }
 
        await sendWhatsAppMessage(targetJid, text, imageObj, mediaObj);
+    } else if (conv.active_channel === 'facebook' || conv.active_channel === 'instagram') {
+       const { sendMetaMessage } = await import('./meta');
+       // We need the pageId (channelAccountId) from the last inbound message.
+       // Ideally we stored this in identity or somewhere.
+       // For now, let's query the last inbound message for this conversation.
+       const { data: lastInbound } = await supabase.from('crm_messages')
+         .select('channel_account_id:crm_channel_accounts(external_account_id)')
+         .eq('conversation_id', conv.id)
+         .eq('direction', 'inbound')
+         .order('created_at', { ascending: false })
+         .limit(1)
+         .single();
+         
+       // Supabase relation syntax: channel_account_id is a UUID, we requested the join.
+       // But wait, the standard approach is just to get the identity or message.
+       // Let's just fetch the raw message to get the channel_account_id.
+       const { data: rawMsg } = await supabase.from('crm_messages').select('channel_account_id').eq('conversation_id', conv.id).eq('direction', 'inbound').order('created_at', {ascending: false}).limit(1).single();
+       if (!rawMsg || !rawMsg.channel_account_id) throw new Error("Could not find Meta page ID for this conversation");
+       
+       const { data: acc } = await supabase.from('crm_channel_accounts').select('external_account_id').eq('id', rawMsg.channel_account_id).single();
+       if (!acc) throw new Error("Account not found");
+
+       await sendMetaMessage(acc.external_account_id, identity.external_id, text, finalMediaUrlForDb, mediaType);
+    } else if (conv.active_channel === 'tiktok') {
+       const { sendTikTokMessage } = await import('./tiktok');
+       const { data: rawMsg } = await supabase.from('crm_messages').select('channel_account_id').eq('conversation_id', conv.id).eq('direction', 'inbound').order('created_at', {ascending: false}).limit(1).single();
+       if (!rawMsg || !rawMsg.channel_account_id) throw new Error("Could not find TikTok account ID for this conversation");
+       
+       const { data: acc } = await supabase.from('crm_channel_accounts').select('external_account_id').eq('id', rawMsg.channel_account_id).single();
+       if (!acc) throw new Error("Account not found");
+
+       await sendTikTokMessage(acc.external_account_id, identity.external_id, text);
     } else {
-       console.log(`Sending to ${conv.active_channel}...`);
-       // TODO: Call meta/tiktok apis
+       throw new Error(`Sending to ${conv.active_channel} is not implemented`);
     }
 
     // 3. Save outbound message
@@ -107,11 +174,20 @@ router.post('/send', async (req, res) => {
         direction: 'outbound',
         message_type: mediaUrl ? mediaType : 'text',
         text,
-        media_url: mediaUrl,
+        media_url: finalMediaUrlForDb,
         status: 'sent'
       })
       .select('*')
       .single();
+
+    if (savedMsg) {
+       // Update message_id in crm_media_assets if uploaded
+       if (finalMediaUrlForDb && finalMediaUrlForDb !== mediaUrl) {
+           await supabase.from('crm_media_assets')
+             .update({ message_id: savedMsg.id })
+             .eq('public_url', finalMediaUrlForDb);
+       }
+    }
 
     res.json({ success: true, message: savedMsg });
   } catch (error: any) {
