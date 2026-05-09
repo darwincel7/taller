@@ -8,7 +8,7 @@ import { supabase } from '../services/supabase';
 import { CameraCapture } from '../components/CameraCapture';
 
 export const Inventory: React.FC = () => {
-  const { inventory, fetchInventory, addInventoryPart, updateInventoryPart, deleteInventoryPart } = useInventory();
+  const { inventory, fetchInventory, addInventoryPart, updateInventoryPart, adjustStock, deleteInventoryPart } = useInventory();
   const { currentUser } = useAuth();
   const [isEditing, setIsEditing] = useState<string | null>(null);
   
@@ -30,75 +30,13 @@ export const Inventory: React.FC = () => {
   const [selectedPart, setSelectedPart] = useState<InventoryPart | null>(null);
   const [selectedPartHistory, setSelectedPartHistory] = useState<any[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
-  const [isFixingIds, setIsFixingIds] = useState(false);
+  // Stock Adjust State
+  const [showAdjustModal, setShowAdjustModal] = useState(false);
+  const [adjustQty, setAdjustQty] = useState(0);
+  const [adjustType, setAdjustType] = useState<'IN' | 'OUT' | 'ADJUSTMENT'>('ADJUSTMENT');
+  const [adjustReason, setAdjustReason] = useState('');
 
   useEffect(() => { fetchInventory(); }, []);
-
-  const fixMissingNumbering = async () => {
-      if (!supabase) return;
-      setIsFixingIds(true);
-      try {
-          const { data: allItems } = await supabase.from('inventory_parts').select('*');
-          let maxId = 999;
-          const missing = [];
-          const productsWithId = [];
-          
-          for (const item of allItems || []) {
-              try {
-                  const cat = JSON.parse(item.category || '{}');
-                  if (cat.readable_id && cat.readable_id > maxId) {
-                      maxId = cat.readable_id;
-                  }
-                  
-                  let shouldHaveId = true;
-                  if (cat.type === 'STORE_PRODUCT' && cat.isCellphone) {
-                      shouldHaveId = false; 
-                  } else if (cat.type === 'STORE_ITEM' && cat.isCellphone === false) {
-                      shouldHaveId = false;
-                  } else if (['STORE_PURCHASE', 'STORE_ATTRIBUTE'].includes(cat.type)) {
-                      shouldHaveId = false;
-                  }
-
-                  if (shouldHaveId && !cat.readable_id) {
-                      missing.push(item);
-                  } else if (!shouldHaveId && cat.readable_id) {
-                      productsWithId.push(item); // Items that shouldn't have ID but do
-                  }
-              } catch(e) {
-                  missing.push(item);
-              }
-          }
-          
-          if (missing.length === 0 && productsWithId.length === 0) {
-              alert("Todos los artículos ya tienen la numeración correcta según su tipología.");
-              setIsFixingIds(false);
-              return;
-          }
-          
-          // Remove from STORE_PRODUCT
-          for (const p of productsWithId) {
-              let catObj: any = {};
-              try { catObj = JSON.parse(p.category || '{}'); } catch(e) {}
-              delete catObj.readable_id;
-              await supabase.from('inventory_parts').update({ category: JSON.stringify(catObj) }).eq('id', p.id);
-          }
-          
-          // Add to missing
-          for (const m of missing) {
-              maxId++;
-              let catObj: any = {};
-              try { catObj = JSON.parse(m.category || '{}'); } catch(e) {}
-              catObj.readable_id = maxId;
-              await supabase.from('inventory_parts').update({ category: JSON.stringify(catObj) }).eq('id', m.id);
-          }
-          
-          alert(`Se han corregido ${productsWithId.length} modelos base y se asignaron números a ${missing.length} artículos.`);
-          fetchInventory();
-      } catch (e: any) {
-          alert('Error: ' + e.message);
-      }
-      setIsFixingIds(false);
-  };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
@@ -173,16 +111,18 @@ export const Inventory: React.FC = () => {
       setSelectedPartHistory([]);
       
       try {
-          // Fetch from audit_logs where details contains the part ID
-          const { data } = await supabase
-              .from('audit_logs')
+          // Fetch from inventory_movements ledger (Formal)
+          const { data, error } = await supabase
+              .from('inventory_movements')
               .select('*')
-              .ilike('details', `%[INV_ID: ${part.id}]%`)
+              .eq('item_id', part.id)
               .order('created_at', { ascending: false })
               .limit(100);
+          
+          if (error) throw error;
               
           if (data) {
-              const orderIds = [...new Set(data.map(log => log.order_id).filter(Boolean))];
+              const orderIds = [...new Set(data.map(log => log.source_id).filter(Boolean))];
               if (orderIds.length > 0) {
                   const { data: orders } = await supabase.from('orders').select('id, readable_id').in('id', orderIds);
                   if (orders) {
@@ -191,8 +131,8 @@ export const Inventory: React.FC = () => {
                           return acc; 
                       }, {});
                       data.forEach(log => {
-                          if (log.order_id && orderMap[log.order_id]) {
-                              (log as any)._readable_order_id = orderMap[log.order_id];
+                          if (log.source_id && orderMap[log.source_id]) {
+                              (log as any)._readable_order_id = orderMap[log.source_id];
                           }
                       });
                   }
@@ -200,9 +140,35 @@ export const Inventory: React.FC = () => {
               setSelectedPartHistory(data);
           }
       } catch (e) {
-          console.warn(e);
+          console.warn("Falling back to audit_logs:", e);
+          // Fallback to legacy audit_logs if movements table doesn't exist yet
+          const { data } = await supabase
+              .from('audit_logs')
+              .select('*')
+              .ilike('details', `%[INV_ID: ${part.id}]%`)
+              .order('created_at', { ascending: false });
+          if (data) setSelectedPartHistory(data);
       } finally {
           setLoadingHistory(false);
+      }
+  };
+
+  const handleAdjustStock = async () => {
+      if (!selectedPart || adjustQty === 0 || !adjustReason) {
+          alert('Por favor completa todos los campos (Cantidad, Tipo y Motivo).');
+          return;
+      }
+      
+      const success = await adjustStock(selectedPart.id, adjustQty, adjustType, adjustReason);
+      if (success) {
+          alert('Inventario actualizado correctamente.');
+          setShowAdjustModal(false);
+          setAdjustQty(0);
+          setAdjustReason('');
+          fetchInventory();
+          viewDetails({ ...selectedPart, stock: selectedPart.stock + (adjustType === 'OUT' ? -adjustQty : adjustQty) });
+      } else {
+          alert('Error al actualizar el inventario.');
       }
   };
 
@@ -249,16 +215,6 @@ export const Inventory: React.FC = () => {
                 </h1>
                 <p className="text-slate-500 font-medium mt-2 flex items-center gap-4">
                     Gestiona repuestos, equipos donantes e insumos.
-                    {isAdmin && (
-                        <button 
-                            onClick={fixMissingNumbering}
-                            disabled={isFixingIds}
-                            className="flex items-center gap-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 px-3 py-1 rounded-lg text-xs font-bold border border-slate-200 transition-colors"
-                        >
-                            <Hash className="w-3 h-3" />
-                            {isFixingIds ? 'Asignando...' : 'Fijar No. Artículos'}
-                        </button>
-                    )}
                 </p>
             </div>
             
@@ -290,22 +246,24 @@ export const Inventory: React.FC = () => {
                     <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-indigo-500 via-blue-500 to-sky-500"></div>
                 )}
                 
-                <div className="flex items-center justify-between mb-8">
-                    <div className="flex items-center gap-4">
-                        <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 border ${isEditing ? 'bg-amber-50 text-amber-600 border-amber-200/50' : 'bg-indigo-50 text-indigo-600 border-indigo-200/50'} shadow-inner`}>
-                            {isEditing ? <Edit2 className="w-6 h-6"/> : <Plus className="w-6 h-6"/>}
+                        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                            <div className="flex items-center gap-4">
+                                <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 border ${isEditing ? 'bg-amber-50 text-amber-600 border-amber-200/50' : 'bg-indigo-50 text-indigo-600 border-indigo-200/50'} shadow-inner`}>
+                                    {isEditing ? <Edit2 className="w-6 h-6"/> : <Plus className="w-6 h-6"/>}
+                                </div>
+                                <div>
+                                    <h2 className="text-xl font-bold text-slate-800 tracking-tight">{isEditing ? 'Editar Artículo' : 'Nuevo Artículo'}</h2>
+                                    <p className="text-sm font-medium text-slate-500 mt-0.5">{isEditing ? 'Modificando los detalles del repuesto seleccionado.' : 'Registra un repuesto, donante o insumo al inventario.'}</p>
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                {isEditing && (
+                                    <button type="button" onClick={resetForm} className="p-2.5 text-slate-400 hover:text-slate-600 bg-slate-50 hover:bg-slate-100 rounded-xl transition-colors border border-transparent hover:border-slate-200">
+                                        <X className="w-5 h-5"/>
+                                    </button>
+                                )}
+                            </div>
                         </div>
-                        <div>
-                            <h2 className="text-xl font-bold text-slate-800 tracking-tight">{isEditing ? 'Editar Artículo' : 'Nuevo Artículo'}</h2>
-                            <p className="text-sm font-medium text-slate-500 mt-0.5">{isEditing ? 'Modificando los detalles del repuesto seleccionado.' : 'Registra un repuesto, donante o insumo al inventario.'}</p>
-                        </div>
-                    </div>
-                    {isEditing && (
-                        <button type="button" onClick={resetForm} className="p-2.5 text-slate-400 hover:text-slate-600 bg-slate-50 hover:bg-slate-100 rounded-xl transition-colors border border-transparent hover:border-slate-200">
-                            <X className="w-5 h-5"/>
-                        </button>
-                    )}
-                </div>
 
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
                     {/* Main Info */}
@@ -599,14 +557,17 @@ export const Inventory: React.FC = () => {
                     <div className="flex-1 overflow-y-auto px-6 sm:px-8 py-8 space-y-8 bg-slate-50/50">
                         {/* Stats Grid */}
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 sm:gap-6">
-                            <div className="bg-white p-5 rounded-2xl border border-slate-200/60 shadow-sm relative overflow-hidden group">
-                                <div className={`absolute inset-0 bg-gradient-to-br ${selectedPart.stock <= selectedPart.min_stock ? 'from-red-50 to-white' : 'from-emerald-50 to-white'} opacity-50`}></div>
+                            <div className="bg-white p-5 rounded-2xl border border-slate-200/60 shadow-sm relative overflow-hidden group hover:border-indigo-300 transition-all cursor-pointer" onClick={() => setShowAdjustModal(true)}>
+                                <div className={`absolute inset-0 bg-gradient-to-br ${selectedPart.stock <= selectedPart.min_stock ? 'from-red-50 to-white' : 'from-indigo-50 to-white'} opacity-50`}></div>
                                 <div className="relative">
                                     <div className="flex items-center justify-between mb-2">
                                         <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Stock Actual</p>
-                                        <div className={`w-2 h-2 rounded-full ${selectedPart.stock <= selectedPart.min_stock ? 'bg-red-500 animate-pulse' : 'bg-emerald-500'}`}></div>
+                                        <div className="flex items-center gap-1">
+                                            <Edit2 className="w-3 h-3 text-indigo-400 opacity-0 group-hover:opacity-100 transition-opacity" />
+                                            <div className={`w-2 h-2 rounded-full ${selectedPart.stock <= selectedPart.min_stock ? 'bg-red-500 animate-pulse' : 'bg-emerald-500'}`}></div>
+                                        </div>
                                     </div>
-                                    <p className={`text-4xl font-black tracking-tight ${selectedPart.stock <= selectedPart.min_stock ? 'text-red-600' : 'text-emerald-600'}`}>
+                                    <p className={`text-4xl font-black tracking-tight ${selectedPart.stock <= selectedPart.min_stock ? 'text-red-600' : 'text-indigo-600'}`}>
                                         {selectedPart.stock}
                                     </p>
                                 </div>
@@ -627,6 +588,57 @@ export const Inventory: React.FC = () => {
                             </div>
                         </div>
 
+                        {showAdjustModal && (
+                            <div className="bg-indigo-50/50 p-6 rounded-2xl border-2 border-indigo-200 animate-in slide-in-from-top-4 duration-300">
+                                <div className="flex items-center justify-between mb-4">
+                                    <h4 className="font-black text-indigo-800 uppercase text-xs tracking-widest flex items-center gap-2">
+                                        <Wrench className="w-4 h-4" /> Ajuste Formal de Stock (Auditado)
+                                    </h4>
+                                    <button onClick={() => setShowAdjustModal(false)} className="text-indigo-400 hover:text-indigo-600">
+                                        <X className="w-4 h-4" />
+                                    </button>
+                                </div>
+                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
+                                    <div>
+                                        <label className="text-[10px] font-bold text-indigo-400 uppercase mb-1 block">Cantidad</label>
+                                        <input 
+                                            type="number" 
+                                            className="w-full p-2.5 rounded-xl border border-indigo-200 bg-white font-black text-indigo-700 focus:ring-2 focus:ring-indigo-500/20 outline-none" 
+                                            value={adjustQty} 
+                                            onChange={e => setAdjustQty(Math.abs(parseInt(e.target.value) || 0))}
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="text-[10px] font-bold text-indigo-400 uppercase mb-1 block">Tipo Movimiento</label>
+                                        <select 
+                                            className="w-full p-2.5 rounded-xl border border-indigo-200 bg-white font-bold text-indigo-700 focus:ring-2 focus:ring-indigo-500/20 outline-none"
+                                            value={adjustType}
+                                            onChange={e => setAdjustType(e.target.value as any)}
+                                        >
+                                            <option value="IN">Entrada (+)</option>
+                                            <option value="OUT">Salida (-)</option>
+                                            <option value="ADJUSTMENT">Ajuste Manual</option>
+                                        </select>
+                                    </div>
+                                    <div className="sm:col-span-1">
+                                        <label className="text-[10px] font-bold text-indigo-400 uppercase mb-1 block">Motivo Obligatorio</label>
+                                        <input 
+                                            placeholder="Ej: Conteo físico, Devolución..." 
+                                            className="w-full p-2.5 rounded-xl border border-indigo-200 bg-white font-medium text-slate-700 focus:ring-2 focus:ring-indigo-500/20 outline-none" 
+                                            value={adjustReason}
+                                            onChange={e => setAdjustReason(e.target.value)}
+                                        />
+                                    </div>
+                                </div>
+                                <button 
+                                    onClick={handleAdjustStock}
+                                    className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-2"
+                                >
+                                    Confirmar Movimiento
+                                </button>
+                            </div>
+                        )}
+
                         {/* History Section */}
                         <div className="bg-white rounded-2xl border border-slate-200/60 shadow-sm overflow-hidden mb-8">
                             <div className="p-5 sm:p-6 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
@@ -646,108 +658,75 @@ export const Inventory: React.FC = () => {
                                 ) : selectedPartHistory.length > 0 ? (
                                     <div className="relative pl-4 space-y-6 before:absolute before:inset-0 before:ml-[31px] before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-0.5 before:bg-gradient-to-b before:from-transparent before:via-slate-200 before:to-transparent">
                                         {selectedPartHistory.map((log, i) => {
-                                            let details = log.details.replace(/\[INV_ID:.*?\]\s*/, '');
-                                            const readableOrder = (log as any)._readable_order_id;
-                                            
-                                            // Make a clean order number to display
-                                            const displayOrderNum = readableOrder || (log.order_id ? log.order_id.toString().replace('INV-', '') : '');
-                                            
-                                            // Make text more natural by stripping out the raw UUID
-                                            if (log.order_id && details.includes(log.order_id)) {
-                                                details = details.replace(log.order_id, displayOrderNum.toString());
-                                            } else if (log.order_id && details.includes(log.order_id.slice(-4))) {
-                                                details = details.replace(log.order_id.slice(-4), displayOrderNum.toString());
-                                            }
-                                            
-                                            // Extract action prefix for styling (e.g. "Extracción Fraccionada:", "Creado:", "Extracción:")
-                                            const actionSplit = details.split(': ');
-                                            const actionPrefix = actionSplit.length > 1 ? actionSplit[0] : '';
-                                            const actionText = actionSplit.length > 1 ? actionSplit.slice(1).join(': ') : details;
-
-                                            let Icon = Wrench;
+                                            const isFormalMovement = !!log.movement_type;
                                             let iconBg = "bg-white";
                                             let iconColor = "text-slate-400";
-                                            let borderColor = "border-slate-200";
                                             let badgeClass = "bg-slate-100 text-slate-700 font-medium";
-
-                                            if (log.action === 'INVENTORY_CREATED') {
-                                                Icon = Plus;
-                                                iconBg = "bg-emerald-50";
-                                                iconColor = "text-emerald-500";
-                                                borderColor = "border-emerald-200";
-                                                badgeClass = "bg-emerald-100/80 text-emerald-700 font-semibold border border-emerald-200/50";
-                                            } else if (log.action === 'INVENTORY_UPDATED') {
-                                                Icon = Edit2;
-                                                iconBg = "bg-amber-50";
-                                                iconColor = "text-amber-500";
-                                                borderColor = "border-amber-200";
-                                                badgeClass = "bg-amber-100/80 text-amber-700 font-semibold border border-amber-200/50";
-                                            } else if (log.action === 'INVENTORY_DELETED') {
-                                                Icon = Trash2;
-                                                iconBg = "bg-red-50";
-                                                iconColor = "text-red-500";
-                                                borderColor = "border-red-200";
-                                                badgeClass = "bg-red-100/80 text-red-700 font-semibold border border-red-200/50";
-                                            } else if (log.action === 'INVENTORY_EXTRACTION') {
-                                                Icon = Package;
-                                                iconBg = "bg-indigo-50";
-                                                iconColor = "text-indigo-500";
-                                                borderColor = "border-indigo-200";
-                                                badgeClass = "bg-indigo-100/80 text-indigo-700 font-semibold border border-indigo-200/50";
+                                            let Icon = History;
+                                            
+                                            // Format for formal movements
+                                            if (isFormalMovement) {
+                                                const mType = log.movement_type;
+                                                if (mType === 'IN') {
+                                                    Icon = Plus;
+                                                    iconBg = "bg-emerald-50"; iconColor = "text-emerald-500";
+                                                    badgeClass = "bg-emerald-100 text-emerald-700 border border-emerald-200";
+                                                } else if (mType === 'SALE' || mType === 'OUT') {
+                                                    Icon = Package;
+                                                    iconBg = "bg-indigo-50"; iconColor = "text-indigo-500";
+                                                    badgeClass = "bg-indigo-100 text-indigo-700 border border-indigo-200";
+                                                } else if (mType === 'ADJUSTMENT') {
+                                                    Icon = Edit2;
+                                                    iconBg = "bg-amber-50"; iconColor = "text-amber-500";
+                                                    badgeClass = "bg-amber-100 text-amber-700 border border-amber-200";
+                                                }
+                                            } else {
+                                                // Legacy audit logs
+                                                if (log.action === 'INVENTORY_CREATED') {
+                                                    Icon = Plus; iconBg = "bg-emerald-50"; iconColor = "text-emerald-500";
+                                                } else if (log.action === 'INVENTORY_DELETED') {
+                                                    Icon = Trash2; iconBg = "bg-red-50"; iconColor = "text-red-500";
+                                                }
                                             }
-
-                                            const dateObj = log.created_at ? new Date(log.created_at) : null;
-                                            const isValidDate = dateObj && dateObj.getFullYear() > 2000;
 
                                             return (
                                                 <div key={i} className="relative flex items-center justify-between md:justify-normal md:odd:flex-row-reverse group is-active">
                                                     <div className={`flex items-center justify-center w-8 h-8 rounded-full border-2 border-white ${iconBg} ${iconColor} shadow-sm shrink-0 md:order-1 md:group-odd:-translate-x-1/2 md:group-even:translate-x-1/2 ring-4 ring-white z-10 mx-4 md:mx-0 transition-transform group-hover:scale-110`}>
                                                         <Icon className="w-3.5 h-3.5" />
                                                     </div>
-                                                    <div className="w-[calc(100%-4rem)] md:w-[calc(50%-2.5rem)] p-4 sm:p-5 rounded-2xl border border-slate-100 bg-white shadow-sm hover:shadow-md transition-all group-hover:border-indigo-100 cursor-default relative">
-                                                        <div className="flex flex-col gap-3">
-                                                            {/* Header Row */}
-                                                            <div className="flex items-start justify-between gap-4">
-                                                                <div className="flex-1">
-                                                                    {actionPrefix ? (
-                                                                        <div className="inline-flex">
-                                                                            <span className={`text-[10px] uppercase tracking-widest px-2.5 py-1 rounded-md ${badgeClass} mb-2 shadow-sm`}>
-                                                                                {actionPrefix}
-                                                                            </span>
-                                                                        </div>
-                                                                    ) : null}
-                                                                    <p className="font-semibold text-slate-800 text-sm leading-relaxed">
-                                                                        {actionText}
-                                                                    </p>
+                                                    <div className="w-[calc(100%-4rem)] md:w-[calc(50%-2.5rem)] p-4 sm:p-5 rounded-2xl border border-slate-100 bg-white shadow-sm hover:shadow-md transition-all border-l-4 group-hover:border-indigo-100 cursor-default relative">
+                                                        <div className="flex flex-col gap-2">
+                                                            <div className="flex items-start justify-between gap-2">
+                                                                <div>
+                                                                    <span className={`text-[10px] uppercase tracking-widest px-2 py-0.5 rounded-md ${badgeClass} mb-2 inline-block`}>
+                                                                        {isFormalMovement ? log.movement_type : log.action}
+                                                                    </span>
+                                                                    <div className="font-bold text-slate-800 text-sm">
+                                                                        {isFormalMovement ? (
+                                                                            <>
+                                                                                {log.movement_type === 'IN' ? 'Entrada' : log.movement_type === 'OUT' ? 'Salida' : 'Movimiento'}: {log.quantity} unidades
+                                                                                <span className="block text-xs text-slate-500 font-medium mt-1">Stock: {log.before_stock} → {log.after_stock}</span>
+                                                                            </>
+                                                                        ) : log.details?.replace(/\[INV_ID:.*?\]\s*/, '')}
+                                                                    </div>
+                                                                    {log.reason && <p className="text-xs text-indigo-600 font-bold mt-1 inline-flex items-center gap-1"><Wrench className="w-3 h-3" /> {log.reason}</p>}
                                                                 </div>
                                                                 
-                                                                {displayOrderNum && (
-                                                                    <div className="shrink-0 flex items-center justify-center bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 shadow-inner">
-                                                                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mr-1">ORDEN</span>
-                                                                        <span className="font-mono text-sm font-black text-indigo-600">#{displayOrderNum}</span>
+                                                                {(log.source_id || log.order_id) && (
+                                                                    <div className="shrink-0 flex items-center justify-center bg-slate-50 border border-slate-200 rounded-lg px-2 py-1">
+                                                                        <span className="font-mono text-[10px] font-black text-indigo-600">#{(log as any)._readable_order_id || log.source_id || log.order_id}</span>
                                                                     </div>
                                                                 )}
                                                             </div>
 
-                                                            {/* Footer details */}
-                                                            <div className="pt-3 mt-1 border-t border-slate-50 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
-                                                                <div className="flex items-center gap-1.5 text-slate-600">
-                                                                    <div className="w-5 h-5 rounded-md bg-slate-100 flex items-center justify-center text-[10px] font-bold text-slate-500 border border-slate-200 shadow-sm">
-                                                                        <User className="w-3 h-3 text-slate-400" />
-                                                                    </div>
-                                                                    <span className="font-semibold text-slate-700">{log.user_name}</span>
+                                                            <div className="pt-2 mt-1 border-t border-slate-50 flex items-center justify-between text-[10px]">
+                                                                <div className="flex items-center gap-1 text-slate-500 font-bold">
+                                                                    <User className="w-3 h-3" />
+                                                                    {log.user_name || 'Sistema'}
                                                                 </div>
-                                                                
-                                                                {isValidDate && (
-                                                                    <>
-                                                                        <span className="text-slate-200 font-bold">•</span>
-                                                                        <div className="flex items-center gap-1.5 text-slate-500 font-medium">
-                                                                            <Calendar className="w-3 h-3 text-slate-400" />
-                                                                            {dateObj.toLocaleDateString()}
-                                                                            <span className="text-slate-400 ml-1 font-mono bg-slate-50 border border-slate-100 px-1 py-0.5 rounded">{dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                                                                        </div>
-                                                                    </>
-                                                                )}
+                                                                <div className="text-slate-400 font-mono">
+                                                                    {new Date(log.created_at || (log.created_at * 1000)).toLocaleString()}
+                                                                </div>
                                                             </div>
                                                         </div>
                                                     </div>

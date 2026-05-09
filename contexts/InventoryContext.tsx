@@ -9,10 +9,11 @@ interface InventoryContextType {
   fetchInventory: () => Promise<void>;
   addInventoryPart: (part: Partial<InventoryPart>) => Promise<InventoryPart | null>;
   updateInventoryPart: (id: string, updates: Partial<InventoryPart>) => Promise<void>;
+  adjustStock: (id: string, quantity: number, type: 'IN' | 'OUT' | 'ADJUSTMENT', reason: string) => Promise<boolean>;
   deleteInventoryPart: (id: string) => Promise<void>;
   fetchWiki: () => Promise<void>;
   addWikiArticle: (article: Partial<WikiArticle>) => Promise<void>;
-  consumePart: (id: string, quantity: number, orderId?: string, orderDetails?: string) => Promise<boolean>; // Logic for auto-decrement
+  consumePart: (id: string, quantity: number, orderId?: string, orderDetails?: string) => Promise<boolean>; 
 }
 
 const InventoryContext = createContext<InventoryContextType | undefined>(undefined);
@@ -23,7 +24,12 @@ export const InventoryProvider: React.FC<{ children: ReactNode }> = ({ children 
 
   const fetchInventory = async () => {
     if (!supabase) return;
-    const { data } = await supabase.from('inventory_parts').select('*').order('name');
+    // Hide archived items by default
+    const { data } = await supabase.from('inventory_parts')
+      .select('*')
+      .is('deleted_at', null)
+      .neq('status', 'archived')
+      .order('name');
     if (data) setInventory(data as InventoryPart[]);
   };
 
@@ -61,53 +67,27 @@ export const InventoryProvider: React.FC<{ children: ReactNode }> = ({ children 
   const addInventoryPart = async (part: Partial<InventoryPart>) => {
       if (!supabase) return null;
       
-      // Auto-assign readable_id starting from 1000 if not present (skip for STORE_PRODUCT)
-      try {
-        let catObj = part.category ? JSON.parse(part.category) : {};
-        
-        let shouldAssign = true;
-        if (catObj.readable_id !== undefined) {
-           shouldAssign = false;
-        } else if (catObj.type === 'STORE_PRODUCT' && catObj.isCellphone) {
-           shouldAssign = false; // Cellphone models don't get ID
-        } else if (catObj.type === 'STORE_ITEM' && catObj.isCellphone === false) {
-           shouldAssign = false; // Non-cellphone items inherit from their product, they don't get their own ID
-        } else if (['STORE_PURCHASE', 'STORE_ATTRIBUTE'].includes(catObj.type)) {
-           shouldAssign = false;
-        }
+      const { data: { user } } = await supabase.auth.getUser();
+      const userId = user?.id || 'unknown';
 
-        if (shouldAssign) {
-            const { data: allItems } = await supabase.from('inventory_parts').select('category');
-            let maxId = 999;
-            for (const row of allItems || []) {
-                try {
-                    const c = JSON.parse(row.category || '{}');
-                    if (c.readable_id && c.readable_id > maxId) {
-                        maxId = c.readable_id;
-                    }
-                } catch(e) {}
-            }
-            catObj.readable_id = maxId + 1;
-            part.category = JSON.stringify(catObj);
-        }
-      } catch (e) {
-          console.error("Error setting readable_id: ", e);
+      // Using the atomic RPC to create the item
+      const { data: newId, error } = await supabase.rpc('create_inventory_item', {
+          p_name: part.name,
+          p_stock: part.stock || 0,
+          p_cost: part.cost || 0,
+          p_price: part.price || 0,
+          p_category: part.category || '{}',
+          p_user_id: userId,
+          p_sku: (part as any).sku,
+          p_image_url: (part as any).image_url
+      });
+
+      if (error) {
+          console.error("Error creating inventory item:", error);
+          return null;
       }
-      
-      const { data, error } = await supabase.from('inventory_parts').insert([part]).select().single();
-      
-      if (data) {
-          const { data: userData } = await supabase.auth.getUser();
-          const userName = userData.user?.user_metadata?.name || userData.user?.email || 'Sistema';
 
-          await supabase.from('audit_logs').insert([{
-              action: 'INVENTORY_CREATED',
-              details: `[INV_ID: ${data.id}] Creado: ${data.name} con stock de ${data.stock} (${data.category ? parseInventoryCategory(data.category).type : ''})`,
-              user_id: userData.user?.id,
-              user_name: userName,
-              created_at: Date.now()
-          }]);
-
+      if (newId) {
           if (part.category) {
               const parsed = parseInventoryCategory(part.category);
               if (parsed.type === 'PART' && parsed.isExpenseRecorded && part.cost && part.cost > 0) {
@@ -121,39 +101,66 @@ export const InventoryProvider: React.FC<{ children: ReactNode }> = ({ children 
                       status: 'COMPLETED',
                       source: 'INVENTORY',
                       expense_destination: 'STORE',
-                      created_by: userData.user?.id
+                      created_by: userId
                   }]);
               }
           }
+          
+          fetchInventory();
+          // Small delay to ensure DB propagation before fetching single
+          const { data } = await supabase.from('inventory_parts').select('*').eq('id', newId).single();
+          return data;
       }
       
-      fetchInventory();
-      return data;
+      return null;
   };
 
   const updateInventoryPart = async (id: string, updates: Partial<InventoryPart>) => {
       if (!supabase) return;
       
-      const { data: userData } = await supabase.auth.getUser();
-      const userName = userData.user?.user_metadata?.name || userData.user?.email || 'Sistema';
+      const { data: { user } } = await supabase.auth.getUser();
+      const userName = user?.user_metadata?.name || user?.email || 'Sistema';
+
+      // If updates include stock, we should probably warn or block it if not using adjustStock
+      // but to maintain compatibility we'll allow it but log it as a warning in audit
+      if (updates.stock !== undefined) {
+          console.warn("Direct stock update detected. Use adjustStock for a cleaner audit trail.");
+      }
 
       await supabase.from('inventory_parts').update(updates).eq('id', id);
 
-      // Extract keys changed to make the log useful
       const changes = Object.keys(updates).filter(k => k !== 'id').join(', ');
       
-      // If we are just consuming a part (handled by OrderedFinancials.tsx), don't double log.
-      // But updateInventoryPart is also called from the Inventory UI when saving edits!
-      // For simplicity, we just log "Inventario actualizado".
       await supabase.from('audit_logs').insert([{
           action: 'INVENTORY_UPDATED',
           details: `[INV_ID: ${id}] Inventario actualizado: Modificó ${changes}`,
-          user_id: userData.user?.id,
+          user_id: user?.id,
           user_name: userName,
           created_at: Date.now()
       }]);
 
       fetchInventory();
+  };
+
+  const adjustStock = async (id: string, quantity: number, type: 'IN' | 'OUT' | 'ADJUSTMENT', reason: string): Promise<boolean> => {
+      if (!supabase) return false;
+      const { data: { user } } = await supabase.auth.getUser();
+      
+      const { data, error } = await supabase.rpc('adjust_inventory_stock', {
+          p_item_id: id,
+          p_quantity: quantity,
+          p_movement_type: type,
+          p_reason: reason,
+          p_user_id: user?.id
+      });
+
+      if (error) {
+          console.error("Error adjusting stock:", error);
+          return false;
+      }
+      
+      fetchInventory();
+      return !!data;
   };
 
   const deleteInventoryPart = async (id: string) => {
@@ -162,15 +169,20 @@ export const InventoryProvider: React.FC<{ children: ReactNode }> = ({ children 
       const part = inventory.find(p => p.id === id);
       const name = part ? part.name : 'Desconocido';
 
-      const { data: userData } = await supabase.auth.getUser();
-      const userName = userData.user?.user_metadata?.name || userData.user?.email || 'Sistema';
+      const { data: { user } } = await supabase.auth.getUser();
+      const userName = user?.user_metadata?.name || user?.email || 'Sistema';
 
-      await supabase.from('inventory_parts').delete().eq('id', id);
+      // Phase 1 calls for Soft Delete
+      await supabase.from('inventory_parts').update({
+          deleted_at: new Date().toISOString(),
+          deleted_by: user?.id,
+          status: 'archived'
+      }).eq('id', id);
 
       await supabase.from('audit_logs').insert([{
           action: 'INVENTORY_DELETED',
-          details: `[INV_ID: ${id}] Eliminado: El artículo ${name} fue eliminado del inventario.`,
-          user_id: userData.user?.id,
+          details: `[INV_ID: ${id}] Archivado (Soft-Delete): El artículo ${name} fue movido a archivo.`,
+          user_id: user?.id,
           user_name: userName,
           created_at: Date.now()
       }]);
@@ -186,61 +198,32 @@ export const InventoryProvider: React.FC<{ children: ReactNode }> = ({ children 
 
   const consumePart = async (id: string, quantity: number, orderId?: string, orderDetails?: string): Promise<boolean> => {
       if (!supabase) return false;
-      const part = inventory.find(p => p.id === id);
-      if (!part || part.stock < quantity) return false;
       
-      const newStock = part.stock - quantity;
-      const updates: Partial<InventoryPart> = { stock: newStock };
+      const { data: { user } } = await supabase.auth.getUser();
       
-      const parsed = parseInventoryCategory(part.category) as any;
-      if (parsed.type === 'STORE_ITEM') {
-          const { data: userData } = await supabase.auth.getUser();
-          const userName = userData.user?.user_metadata?.name || userData.user?.email || 'Sistema';
+      const { data, error } = await supabase.rpc('consume_inventory_item', {
+          p_item_id: id,
+          p_quantity: quantity,
+          p_source_type: orderId ? 'ORDER' : 'MANUAL',
+          p_source_id: orderId || null,
+          p_reason: `Consumo para ${orderDetails || 'operación general'}`,
+          p_user_id: user?.id,
+          p_order_details: orderDetails
+      });
 
-          const newHistory = [
-              ...(parsed.history || []),
-              {
-                  action: quantity > 0 ? 'VENDIDO/CONSUMIDO' : 'DEVOLUCIÓN',
-                  date: new Date().toISOString(),
-                  user: userName,
-                  details: `Unidad consumida/vendida (Cantidad: ${quantity}). ${orderDetails || ''} ${orderId ? `Vinculado a Orden/Venta: ${orderId}` : ''}`
-              }
-          ];
-
-          updates.category = JSON.stringify({
-              ...parsed,
-              status: newStock <= 0 ? 'SOLD' : parsed.status,
-              history: newHistory
-          });
+      if (error) {
+          console.error("Error consuming part:", error);
+          return false;
       }
 
-      await updateInventoryPart(id, updates);
-
-      // Log the extraction
-      const { data: userData } = await supabase.auth.getUser();
-      const userName = userData.user?.user_metadata?.name || userData.user?.email || 'Sistema';
-      
-      let details = `[INV_ID: ${id}] Extracción: ${quantity}x ${part.name} ($${part.cost})`;
-      if (orderDetails) {
-          details += ` para ${orderDetails}`;
-      }
-
-      await supabase.from('audit_logs').insert([{
-          action: 'INVENTORY_EXTRACTION',
-          details: details,
-          user_id: userData.user?.id,
-          user_name: userName,
-          order_id: orderId,
-          created_at: Date.now()
-      }]);
-
-      return true;
+      fetchInventory();
+      return !!data;
   };
 
   return (
     <InventoryContext.Provider value={{ 
         inventory, wikiArticles, 
-        fetchInventory, addInventoryPart, updateInventoryPart, deleteInventoryPart,
+        fetchInventory, addInventoryPart, updateInventoryPart, adjustStock, deleteInventoryPart,
         fetchWiki, addWikiArticle, consumePart
     }}>
       {children}

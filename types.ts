@@ -410,6 +410,29 @@ export interface InventoryPart {
   cost: number;
   price: number;
   category?: string; // JSON
+  sku?: string;
+  item_type?: 'PART' | 'DEVICE' | 'ITEM';
+  imei?: string;
+  branch?: string;
+  image_url?: string;
+  status?: 'active' | 'archived' | 'sold';
+  deleted_at?: string;
+}
+
+export interface InventoryMovement {
+  id: string;
+  item_id: string;
+  movement_type: 'IN' | 'OUT' | 'SALE' | 'RETURN' | 'ADJUSTMENT' | 'TRANSFER' | 'CAMBIAZO_IN';
+  quantity: number;
+  before_stock: number;
+  after_stock: number;
+  unit_cost?: number;
+  unit_price?: number;
+  source_type?: 'POS' | 'ORDER' | 'CAMBIAZO' | 'MANUAL' | 'RETURN';
+  source_id?: string;
+  reason?: string;
+  created_by?: string;
+  created_at: string;
 }
 
 export interface InventoryExtraction {
