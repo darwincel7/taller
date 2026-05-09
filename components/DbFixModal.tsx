@@ -389,7 +389,7 @@ GRANT EXECUTE ON FUNCTION public.perform_robust_closing(text, text, text, numeri
 GRANT EXECUTE ON FUNCTION public.perform_robust_closing(text, text, text, numeric, numeric, numeric, bigint, text, text[]) TO service_role;
 GRANT EXECUTE ON FUNCTION public.get_closing_details(text) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.get_closing_details(text) TO service_role;
-`;`;
+`;
 
 export const DbFixModal = ({ onClose }: { onClose: () => void }) => {
   const handleCopy = () => {

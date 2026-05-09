@@ -58,6 +58,7 @@ DECLARE
     v_total_cost numeric := 0;
     v_item_json jsonb;
     v_payment_json jsonb;
+    v_item_id uuid;
 BEGIN
     -- 1. Verificar idempotencia
     IF EXISTS (SELECT 1 FROM pos_sales WHERE idempotency_key = p_payload->>'idempotency_key') THEN
@@ -116,18 +117,61 @@ BEGIN
             movement_type, amount, method, 
             branch, cashier_id, source_type, source_id, reason
         ) VALUES (
-            'SALE_IN',
+            CASE 
+                WHEN (v_payment_json->>'amount')::numeric < 0 THEN 'REFUND_OUT'
+                ELSE 'SALE_IN'
+            END,
             (v_payment_json->>'amount')::numeric,
             v_payment_json->>'method',
             p_payload->>'branch',
             p_payload->>'seller_id',
             'POS',
             v_sale_id::text,
-            'Cobro Venta POS'
+            CASE 
+                WHEN (v_payment_json->>'amount')::numeric < 0 THEN 'Reembolso Venta POS'
+                ELSE 'Cobro Venta POS'
+            END
         );
     END LOOP;
 
-    -- 6. Integración con Órdenes de Reparación y Contabilidad
+    -- 6. Procesar Equipos Recibidos (Cambiazo) (Phase 5)
+    IF p_payload ? 'received_items' THEN
+        FOR v_item_json IN SELECT * FROM jsonb_array_elements(p_payload->'received_items')
+        LOOP
+            -- Crear el item en inventario como equipo para venta (STORE_PRODUCT o DONOR)
+            -- Usamos un costo basado en el valor dado al cliente
+            INSERT INTO inventory_parts (
+                name, stock, cost, price, category, status, created_by
+            ) VALUES (
+                v_item_json->>'name',
+                1,
+                (v_item_json->>'value')::numeric,
+                (v_item_json->>'value')::numeric * 1.2, -- Sugerir margen 20% inicial
+                jsonb_build_object(
+                    'type', COALESCE(v_item_json->>'type', 'DONOR'),
+                    'imei', v_item_json->>'imei',
+                    'received_via', 'EXCHANGE',
+                    'original_sale_id', v_sale_id
+                ),
+                'available',
+                (p_payload->>'seller_id')::uuid
+            ) RETURNING id INTO v_item_id;
+
+            -- Registrar movimiento inicial
+            INSERT INTO inventory_movements (
+                item_id, movement_type, quantity, stock_before, stock_after, 
+                unit_cost, reason, created_by, source_type, source_id
+            ) VALUES (
+                v_item_id, 'IN', 1, 0, 1, 
+                (v_item_json->>'value')::numeric, 
+                'Recibido por Cambiazo', 
+                (p_payload->>'seller_id')::uuid,
+                'POS', v_sale_id::text
+            );
+        END LOOP;
+    END IF;
+
+    -- 7. Integración con Órdenes de Reparación y Contabilidad
     FOR v_item_json IN SELECT * FROM jsonb_array_elements(p_payload->'items')
     LOOP
         IF (v_item_json->>'type') = 'ORDER' THEN

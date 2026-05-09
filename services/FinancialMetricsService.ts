@@ -16,24 +16,30 @@ export const financialMetricsService = {
     let flujoEfectivo = 0;
     let deduccionesVenta = 0;
     
-    // 1. Process Sales from get_payments_flat
-    // This is the source of truth for all sales, deposits, and POS transactions.
-    rawData.payments.forEach((p: any) => {
-      const amount = Number(p.amount);
-      if (p.is_refund) {
-        deduccionesVenta += Math.abs(amount);
-        ventasNetas -= Math.abs(amount);
-        flujoEfectivo -= Math.abs(amount);
-      } else {
-        // CREDIT sales increase revenue (ventasNetas) but not cash (flujo)
-        ventasNetas += amount;
-        if (p.method !== 'CREDIT') {
-          flujoEfectivo += amount;
-        }
-      }
-    });
+    // 1. Process Sales from v_sales_unified
+    // This is the new source of truth for metrics
+    if (rawData.unifiedSales) {
+        rawData.unifiedSales.forEach((s: any) => {
+            const amount = Number(s.gross_amount);
+            const cost = Number(s.cost_amount);
+            
+            if (s.source_type === 'WORKSHOP_REFUND') {
+                deduccionesVenta += Math.abs(amount);
+                ventasNetas -= Math.abs(amount);
+                // Refunds subtract from flow too (assuming they are cash/card, not credit)
+                flujoEfectivo -= Math.abs(amount);
+            } else {
+                ventasNetas += amount;
+                costoVenta += cost;
+                // Currently v_sales_unified doesn't specify payment method
+                // We assume sales contribute to flow unless we join with payments
+                // For simplicity in Dashboard vs Cashflow, we'll refine this if needed
+                flujoEfectivo += amount;
+            }
+        });
+    }
 
-    // 2. Process accounting transactions for Income, Expense, Flujo
+    // 2. Process accounting transactions for Expenses and extra Income (exclude those already in sales)
     rawData.transactions.forEach((t: any) => {
       const amount = Number(t.amount);
 
@@ -42,41 +48,23 @@ export const financialMetricsService = {
         gastosOperativos += Math.abs(amount);
         flujoEfectivo -= Math.abs(amount);
       } else {
-        // Ingreso
-        // POS double-records to accounting_transactions in some flows.
-        // Prevent double counting by checking if it matches known POS duplicate patterns.
+        // Ingreso extra (no POS, no Taller)
         const desc = t.description?.toLowerCase() || '';
-        const isPosDuplicate = 
+        const isAlreadyInUnified = 
           t.order_id != null || 
+          t.source === 'STORE' ||
           desc.includes('pago orden') || 
           desc.includes('venta producto') || 
           desc.includes('abono a crédito');
 
-        if (!isPosDuplicate) {
+        if (!isAlreadyInUnified) {
           ventasNetas += amount;
           flujoEfectivo += amount;
         }
       }
     });
 
-    // 3. Costo de venta (calculate from unique orders in payments)
-    const processedOrders = new Set<string>();
-    rawData.payments.forEach((p: any) => {
-      if (p.order_id && !processedOrders.has(p.order_id)) {
-        processedOrders.add(p.order_id);
-        
-        let cost = p.orders?.partsCost || p.order_parts_cost || 0;
-        // Optionally add expenses of the order depending on your accounting style
-        if (p.orders?.expenses) {
-             const expensesArr = typeof p.orders.expenses === 'string' ? JSON.parse(p.orders.expenses) : p.orders.expenses;
-             if (Array.isArray(expensesArr)) {
-                 cost += expensesArr.reduce((acc: number, e: any) => acc + (Number(e.amount) || 0), 0);
-             }
-         }
-        costoVenta += cost;
-      }
-    });
-
+    // 3. Margin calculations
     const margenBruto = ventasNetas - costoVenta;
     const margenBrutoPorcentaje = ventasNetas > 0 ? (margenBruto / ventasNetas) * 100 : 0;
     const utilidadOperativa = margenBruto - gastosOperativos;
@@ -105,23 +93,15 @@ export const financialMetricsService = {
     });
 
     // Ticket promedio
-    // Using count of unique orders + standalone sales
-    const countVentas = processedOrders.size;
+    // Using count of unique entries in unifiedSales
+    const countVentas = rawData.unifiedSales?.length || 0;
     const ticketPromedio = countVentas > 0 ? ventasNetas / countVentas : 0;
 
     const capitalTrabajo = flujoEfectivo + cuentasPorCobrar + valorInventario; // We don't have CxP right now
     
     // Rentabilidad de taller
     let rentabilidadTaller = 0; 
-    let tallerIngresos = 0;
-    let tallerCostos = 0;
     
-    Array.from(processedOrders).forEach(orderId => {
-      const orderPayments = rawData.payments.filter(p => p.order_id === orderId);
-      const isRepair = true; // Determine if it's repair
-      // Simplified
-    });
-
     return {
       current_income: ventasNetas, // Map for backwards compat
       current_expenses: gastosOperativos,
@@ -188,7 +168,22 @@ export const financialMetricsService = {
     const { data: credits } = await supabase.from('client_credits').select('*');
 
     // 4. Fetch Inventory
-    const { data: inventory } = await supabase.from('inventory').select('id, stock, price, cost');
+    const { data: inventory } = await supabase
+      .from('inventory_parts')
+      .select('id, stock, price, cost, status, deleted_at')
+      .is('deleted_at', null)
+      .neq('status', 'archived');
+
+    // 5. Fetch Unified Sales View
+    const { data: unifiedSales, error: salesError } = await supabase
+      .from('v_sales_unified')
+      .select('*')
+      .gte('created_at', startDate || '2000-01-01')
+      .lte('created_at', endDate || new Date().toISOString());
+
+    if (salesError) {
+        console.warn("Error fetching v_sales_unified:", salesError);
+    }
 
     // Filter by date if needed
     let filteredPayments = payments || [];
@@ -225,7 +220,8 @@ export const financialMetricsService = {
       payments: filteredPayments,
       transactions: filteredTransactions,
       credits: credits || [],
-      inventory: inventory || []
+      inventory: inventory || [],
+      unifiedSales: unifiedSales || []
     };
   },
 

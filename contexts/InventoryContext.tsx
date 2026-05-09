@@ -121,11 +121,21 @@ export const InventoryProvider: React.FC<{ children: ReactNode }> = ({ children 
       const { data: { user } } = await supabase.auth.getUser();
       const userName = user?.user_metadata?.name || user?.email || 'Sistema';
 
-      // If updates include stock, we should probably warn or block it if not using adjustStock
-      // but to maintain compatibility we'll allow it but log it as a warning in audit
+      // Phase 1.1: Bloquear stock directo
       if (updates.stock !== undefined) {
-          console.warn("Direct stock update detected. Use adjustStock for a cleaner audit trail.");
+          delete updates.stock;
+          console.warn("Direct stock update blocked. Use adjustStock for a cleaner audit trail.");
+          
+          await supabase.from('audit_logs').insert([{
+              action: 'INVENTORY_STOCK_DIRECT_EDIT_BLOCKED',
+              details: `[INV_ID: ${id}] Intento bloqueado de editar stock directamente en actualización de artículo.`,
+              user_id: user?.id,
+              user_name: userName,
+              created_at: Date.now()
+          }]);
       }
+
+      if (Object.keys(updates).length === 0) return;
 
       await supabase.from('inventory_parts').update(updates).eq('id', id);
 

@@ -314,12 +314,14 @@ export const Inventory: React.FC = () => {
                             </div>
                         </div>
                         
-                        <div className="grid grid-cols-2 gap-5">
-                            <div className="relative group">
-                                <label className="flex items-center gap-1.5 text-xs font-black text-slate-500 uppercase tracking-widest mb-2">Stock Actual</label>
-                                <input required type="number" min="0" className="w-full p-3.5 border-2 border-slate-200/70 rounded-xl bg-slate-50/50 hover:bg-slate-50 focus:bg-white text-slate-800 font-black text-lg transition-colors outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10" value={stock} onChange={e => setStock(parseInt(e.target.value) || 0)} />
-                            </div>
-                            <div className="relative group">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+                            {!isEditing && (
+                                <div className="relative group">
+                                    <label className="flex items-center gap-1.5 text-xs font-black text-slate-500 uppercase tracking-widest mb-2">Stock Inicial</label>
+                                    <input required type="number" min="0" className="w-full p-3.5 border-2 border-slate-200/70 rounded-xl bg-slate-50/50 hover:bg-slate-50 focus:bg-white text-slate-800 font-black text-lg transition-colors outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10" value={stock} onChange={e => setStock(parseInt(e.target.value) || 0)} />
+                                </div>
+                            )}
+                            <div className={`relative group ${isEditing ? 'col-span-2' : ''}`}>
                                 <label className="flex items-center gap-1.5 text-xs font-black text-slate-500 uppercase tracking-widest mb-2">Stock Mínimo (Alerta)</label>
                                 <input required type="number" min="0" className="w-full p-3.5 border-2 border-slate-200/70 rounded-xl bg-slate-50/50 hover:bg-slate-50 focus:bg-white text-slate-800 font-black text-lg transition-colors outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10" value={minStock} onChange={e => setMinStock(parseInt(e.target.value) || 0)} />
                             </div>
