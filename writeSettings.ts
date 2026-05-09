@@ -1,4 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import fs from 'fs';
+
+const content = `import React, { useState, useEffect } from 'react';
 import { MessageSquare, RefreshCw, LogOut, CheckCircle2, AlertCircle, Loader2, AlertTriangle, Eye, ShieldAlert, X } from 'lucide-react';
 import { fetchWithAuth } from '../lib/fetchWithAuth';
 
@@ -16,7 +18,7 @@ export const WhatsAppSettings: React.FC = () => {
   const fetchStatus = async () => {
     try {
       const res = await fetchWithAuth('/api/whatsapp/status');
-      if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+      if (!res.ok) throw new Error(\`HTTP error! status: \${res.status}\`);
       const text = await res.text();
       try {
         const data = JSON.parse(text);
@@ -64,7 +66,7 @@ export const WhatsAppSettings: React.FC = () => {
     setIsConnecting(true);
     try {
       const res = await fetchWithAuth('/api/whatsapp/connect', { method: 'POST' });
-      if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+      if (!res.ok) throw new Error(\`HTTP error! status: \${res.status}\`);
       const text = await res.text();
       try {
         const data = JSON.parse(text);
@@ -86,7 +88,7 @@ export const WhatsAppSettings: React.FC = () => {
     setIsConnecting(true);
     try {
       const res = await fetchWithAuth('/api/whatsapp/reconnect', { method: 'POST' });
-      if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+      if (!res.ok) throw new Error(\`HTTP error! status: \${res.status}\`);
     } catch (error) {
       console.warn('Error reconnecting to WhatsApp:', error);
     } finally {
@@ -98,7 +100,7 @@ export const WhatsAppSettings: React.FC = () => {
     setIsConnecting(true);
     try {
       const res = await fetchWithAuth('/api/whatsapp/logout', { method: 'POST' });
-      if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+      if (!res.ok) throw new Error(\`HTTP error! status: \${res.status}\`);
       setStatus('close');
       setQrCode(null);
     } catch (error) {
@@ -305,7 +307,7 @@ export const WhatsAppSettings: React.FC = () => {
                 {filteredLogs.length === 0 ? (
                   <tr>
                     <td colSpan={6} className="px-4 py-8 text-center text-slate-500">
-                      No hay eventos recientes {auditFilter !== 'all' ? `para el filtro: ${auditFilter}` : ''}
+                      No hay eventos recientes {auditFilter !== 'all' ? \`para el filtro: \${auditFilter}\` : ''}
                     </td>
                   </tr>
                 ) : (
@@ -315,10 +317,10 @@ export const WhatsAppSettings: React.FC = () => {
                         {new Date(log.created_at).toLocaleTimeString()}
                       </td>
                       <td className="px-4 py-2">
-                        <span className={`px-2 py-0.5 rounded-full text-xs font-medium 
-                          ${log.action === 'saved' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' :
+                        <span className={\`px-2 py-0.5 rounded-full text-xs font-medium 
+                          \${log.action === 'saved' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' :
                             log.action === 'error' ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400' :
-                            'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-400'}`}>
+                            'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-400'}\`}>
                           {log.action}
                         </span>
                       </td>
@@ -377,3 +379,10 @@ export const WhatsAppSettings: React.FC = () => {
     </div>
   );
 };
+`;
+
+fs.writeFileSync('pages/WhatsAppSettings.tsx', content);
+
+console.log('done!');
+
+console.log('done!');

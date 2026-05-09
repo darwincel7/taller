@@ -150,3 +150,36 @@ add column if not exists message_upsert_type text;
 
 create unique index if not exists idx_whatsapp_messages_jid_msg_unique
 on whatsapp_messages(raw_jid, wa_message_id);
+
+create table if not exists whatsapp_message_audit (
+ id uuid primary key default gen_random_uuid(),
+ wa_message_id text,
+ raw_jid text,
+ upsert_type text,
+ from_me boolean,
+ push_name text,
+ original_keys text[],
+ unwrapped_keys text[],
+ resolved_phone text,
+ identity_key text,
+ message_type text,
+ final_text text,
+ action text check (action in ('received','ignored','saved','error')),
+ reason_to_ignore text,
+ error_message text,
+ raw jsonb,
+ created_at timestamptz default now()
+);
+
+create index if not exists idx_whatsapp_audit_created_at
+on whatsapp_message_audit(created_at desc);
+
+create index if not exists idx_whatsapp_audit_reason
+on whatsapp_message_audit(reason_to_ignore);
+
+create index if not exists idx_whatsapp_audit_raw_jid
+on whatsapp_message_audit(raw_jid);
+
+alter table whatsapp_message_audit enable row level security;
+-- Recomendado: lectura solo para usuarios autenticados/admin.
+-- Escritura solo por backend con service_role.

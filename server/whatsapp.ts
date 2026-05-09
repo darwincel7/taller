@@ -781,6 +781,49 @@ export async function connectToWhatsApp(manual = false) {
             }
         });
 
+        async function auditWhatsAppMessage(payload: {
+            waMessageId?: string | null;
+            rawJid?: string | null;
+            upsertType?: string | null;
+            fromMe?: boolean | null;
+            pushName?: string | null;
+            originalKeys?: string[];
+            unwrappedKeys?: string[];
+            resolvedPhone?: string | null;
+            identityKey?: string | null;
+            messageType?: string | null;
+            finalText?: string | null;
+            action: 'received' | 'ignored' | 'saved' | 'error';
+            reasonToIgnore?: string | null;
+            errorMessage?: string | null;
+            raw?: any;
+        }) {
+            try {
+                const supabase = getSupabase();
+                if (!supabase) return;
+            
+                await supabase.from('whatsapp_message_audit').insert({
+                    wa_message_id: payload.waMessageId || null,
+                    raw_jid: payload.rawJid || null,
+                    upsert_type: payload.upsertType || null,
+                    from_me: payload.fromMe ?? null,
+                    push_name: payload.pushName || null,
+                    original_keys: payload.originalKeys || [],
+                    unwrapped_keys: payload.unwrappedKeys || [],
+                    resolved_phone: payload.resolvedPhone || null,
+                    identity_key: payload.identityKey || null,
+                    message_type: payload.messageType || null,
+                    final_text: payload.finalText || null,
+                    action: payload.action,
+                    reason_to_ignore: payload.reasonToIgnore || null,
+                    error_message: payload.errorMessage || null,
+                    raw: payload.raw || null
+                });
+            } catch (e) {
+                console.warn('[WA AUDIT] Error saving audit:', e);
+            }
+        }
+
         sock.ev.on('messages.upsert', async (m: any) => {
             try {
                 const allowedTypes = ['notify', 'append'];
@@ -789,74 +832,105 @@ export async function connectToWhatsApp(manual = false) {
                 for (const msg of m.messages) {
                     const identity = resolveContactIdentity(msg, sock);
                     const unwrapped = unwrapMessage(msg);
+                    const identityKey = identity.phone ? identity.phone : identity.lid ? `lid:${identity.lid}` : `jid:${identity.rawJid}`;
                     
-                    const logPayload = {
-                        type: m.type,
-                        remoteJid: msg.key?.remoteJid,
-                        participant: msg.key?.participant,
+                    const auditPayload = {
+                        waMessageId: msg.key?.id,
+                        rawJid: identity.rawJid,
+                        upsertType: m.type,
                         fromMe: msg.key?.fromMe,
-                        id: msg.key?.id,
                         pushName: msg.pushName,
                         originalKeys: Object.keys(msg.message || {}),
                         unwrappedKeys: Object.keys(unwrapped || {}),
-                        identity,
-                        reasonToIgnore: ''
+                        resolvedPhone: identity.phone,
+                        identityKey: identityKey,
+                        raw: msg
                     };
 
                     // Check for decryption errors due to corrupted session
                     if (msg.messageStubType === 2) { 
-                        logPayload.reasonToIgnore = 'decryption_error';
-                        console.log('[WA DEBUG UPSERT]', logPayload);
+                        await auditWhatsAppMessage({
+                            ...auditPayload,
+                            action: 'ignored',
+                            reasonToIgnore: 'decryption_error'
+                        });
                         continue;
-                     }
+                    }
 
                     if (!msg.message) {
-                        logPayload.reasonToIgnore = 'no_message_object';
-                        console.log('[WA DEBUG UPSERT]', logPayload);
+                        await auditWhatsAppMessage({
+                            ...auditPayload,
+                            action: 'ignored',
+                            reasonToIgnore: 'no_message_object'
+                        });
                         continue;
                     }
                     if (isInternalWhatsAppMessage(msg)) {
-                        logPayload.reasonToIgnore = 'is_internal_message';
-                        console.log('[WA DEBUG UPSERT]', logPayload);
+                        await auditWhatsAppMessage({
+                            ...auditPayload,
+                            action: 'ignored',
+                            reasonToIgnore: 'is_internal_message'
+                        });
                         continue;
                     }
                     if (msg.key.fromMe) {
-                        logPayload.reasonToIgnore = 'from_me';
-                        console.log('[WA DEBUG UPSERT]', logPayload);
+                        await auditWhatsAppMessage({
+                            ...auditPayload,
+                            action: 'ignored',
+                            reasonToIgnore: 'from_me'
+                        });
                         continue;
                     }
                     if (identity.isSelf) {
-                        logPayload.reasonToIgnore = 'is_self';
-                        console.log('[WA DEBUG UPSERT]', logPayload);
+                        await auditWhatsAppMessage({
+                            ...auditPayload,
+                            action: 'ignored',
+                            reasonToIgnore: 'is_self'
+                        });
                         continue;
                     }
                     if (!identity.rawJid || identity.rawJid === 'status@broadcast') {
-                        logPayload.reasonToIgnore = 'broadcast_or_no_jid';
-                        console.log('[WA DEBUG UPSERT]', logPayload);
+                        await auditWhatsAppMessage({
+                            ...auditPayload,
+                            action: 'ignored',
+                            reasonToIgnore: 'broadcast_or_no_jid'
+                        });
                         continue;
                     }
                     if (identity.rawJid.endsWith('@g.us')) {
-                        logPayload.reasonToIgnore = 'group';
-                        console.log('[WA DEBUG UPSERT]', logPayload);
+                        await auditWhatsAppMessage({
+                            ...auditPayload,
+                            action: 'ignored',
+                            reasonToIgnore: 'group'
+                        });
                         continue;
                     }
                     if (identity.rawJid.endsWith('@newsletter')) {
-                        logPayload.reasonToIgnore = 'newsletter';
-                        console.log('[WA DEBUG UPSERT]', logPayload);
-                        continue; // Ignore newsletters
+                        await auditWhatsAppMessage({
+                            ...auditPayload,
+                            action: 'ignored',
+                            reasonToIgnore: 'newsletter'
+                        });
+                        continue;
                     }
 
                     const messageId = msg.key.id;
                     if (!messageId) {
-                        logPayload.reasonToIgnore = 'no_message_id';
-                        console.log('[WA DEBUG UPSERT]', logPayload);
+                        await auditWhatsAppMessage({
+                            ...auditPayload,
+                            action: 'ignored',
+                            reasonToIgnore: 'no_message_id'
+                        });
                         continue;
                     }
 
                     const alreadyExists = await messageExists(identity.rawJid, messageId);
                     if (alreadyExists) {
-                        logPayload.reasonToIgnore = 'duplicate';
-                        console.log('[WA DEBUG UPSERT]', logPayload);
+                        await auditWhatsAppMessage({
+                            ...auditPayload,
+                            action: 'ignored',
+                            reasonToIgnore: 'duplicate'
+                        });
                         continue;
                     }
 
@@ -865,21 +939,24 @@ export async function connectToWhatsApp(manual = false) {
                     let fallbackText = getFallbackText(messageType);
                     
                     if (!extractedText && !fallbackText) {
-                        logPayload.reasonToIgnore = 'empty_content';
-                        console.log('[WA DEBUG UPSERT]', logPayload);
+                        await auditWhatsAppMessage({
+                            ...auditPayload,
+                            action: 'ignored',
+                            reasonToIgnore: 'empty_content'
+                        });
                         continue; 
                     }
                     
                     const finalText = extractedText || fallbackText;
 
                     if (!finalText && messageType === 'text') {
-                        logPayload.reasonToIgnore = 'empty_text';
-                        console.log('[WA DEBUG UPSERT]', logPayload);
+                        await auditWhatsAppMessage({
+                            ...auditPayload,
+                            action: 'ignored',
+                            reasonToIgnore: 'empty_text'
+                        });
                         continue;
                     }
-
-                    logPayload.reasonToIgnore = 'none_saving_message';
-                    console.log('[WA DEBUG UPSERT]', logPayload);
 
                     // Parse media
                     let mediaUrl = undefined;
@@ -939,12 +1016,6 @@ export async function connectToWhatsApp(manual = false) {
                         }
                     }
 
-                    const identityKey = identity.phone 
-                        ? identity.phone 
-                        : identity.lid 
-                        ? `lid:${identity.lid}` 
-                        : `jid:${identity.rawJid}`;
-
                     const conversation = await getOrCreateConversation({
                         identityKey,
                         phone: identity.phone,
@@ -974,10 +1045,31 @@ export async function connectToWhatsApp(manual = false) {
                         raw: msg
                     });
 
+                    await auditWhatsAppMessage({
+                        ...auditPayload,
+                        messageType,
+                        finalText,
+                        action: 'saved'
+                    });
+
                     console.log(`[WA] Mensaje entrante guardado: ${identity.displayName} / ${messageId}`);
                 }
-            } catch (err) {
+            } catch (err: any) {
                 console.warn('Issue processing incoming message:', err);
+                try {
+                    // Try to log the error to audit table
+                    const errorAuditPayload: any = {
+                        action: 'error',
+                        errorMessage: err.message,
+                        reasonToIgnore: 'exception'
+                    };
+                    const supabase = getSupabase();
+                    if (supabase) {
+                        await supabase.from('whatsapp_message_audit').insert(errorAuditPayload);
+                    }
+                } catch (e) {
+                    // Ignore
+                }
             }
         });
 

@@ -240,6 +240,42 @@ WulWnM5/R4sQkOsivcABDQ==
     res.json(getDiagnostics());
   });
 
+  app.get('/api/whatsapp/audit', requireAuth, async (req, res) => {
+    try {
+      const limit = Number(req.query.limit || 50);
+      const safeLimit = Math.min(Math.max(limit, 1), 200);
+      const { createClient } = await import('@supabase/supabase-js');
+      const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || "https://ruwcektpadeqovwtdixd.supabase.co";
+      const supabaseRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || process.env.VITE_SUPABASE_ANON_KEY || "sb_publishable_FFOEpTNXpWSsQuJ3HosR-Q_QXNWnU4_";
+      
+      const supabaseAdmin = createClient(supabaseUrl, supabaseRoleKey);
+
+      const { data, error } = await supabaseAdmin
+        .from('whatsapp_message_audit')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(safeLimit);
+        
+      if (error) throw error;
+      res.json({ success: true, data: data || [] });
+    } catch (error: any) {
+      res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  app.post('/api/whatsapp/repair-session', requireAuth, async (req, res) => {
+    try {
+      const { logoutWhatsApp, connectToWhatsApp, clearWhatsAppSession } = await import('./server/whatsapp');
+      await logoutWhatsApp();
+      await clearWhatsAppSession();
+      // Connect will be triggered, it will return the new QR when ready by polling
+      connectToWhatsApp(true); 
+      res.json({ success: true, message: 'Session repair initiated' });
+    } catch (error: any) {
+      res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
   app.get("/api/whatsapp/status", requireAuth, (req, res) => {
     res.json(getWhatsAppStatus());
   });
