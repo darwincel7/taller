@@ -255,19 +255,22 @@ export const fetchAdvancedDashboardData = async () => {
 
         const flow = flowData || [];
 
-        // --- SALES & PROFIT CALCULATIONS (From Payments) ---
+        // --- SALES & PROFIT CALCULATIONS (From Unified View) ---
         const getSalesAndProfit = (salesData: any[], startTs: number, endTs?: number) => {
             let revenue = 0;
             let revenueTaller = 0;
             let revenueInventario = 0;
             let revenueT1 = 0;
             let revenueT4 = 0;
-            let expenses = 0;
-            let expensesT1 = 0;
-            let expensesT4 = 0;
-            let partsCost = 0;
-            let partsCostT1 = 0;
-            let partsCostT4 = 0;
+            let refunds = 0;
+            let refundsT1 = 0;
+            let refundsT4 = 0;
+            let totalCost = 0;
+            let totalCostT1 = 0;
+            let totalCostT4 = 0;
+            let profit = 0;
+            let profitT1 = 0;
+            let profitT4 = 0;
 
             for (const s of salesData) {
                 const createdTs = new Date(s.created_at).getTime();
@@ -275,12 +278,15 @@ export const fetchAdvancedDashboardData = async () => {
                 if (createdTs >= startTs && (!endTs || createdTs < endTs)) {
                     const amount = Number(s.gross_amount) || 0;
                     const cost = Number(s.cost_amount) || 0;
+                    const net = Number(s.net_profit) || 0;
+                    const cashEffect = Number(s.cash_effect_amount) || 0;
                     
-                    if (amount >= 0) {
+                    if (!s.is_refund) {
                         revenue += amount;
-                        partsCost += cost;
+                        totalCost += cost;
+                        profit += net;
                         
-                        const isInventory = s.source_type === 'POS';
+                        const isInventory = s.source_type?.startsWith('POS') || s.source_type === 'INVENTORY';
                         
                         if (isInventory) {
                             revenueInventario += amount;
@@ -290,17 +296,26 @@ export const fetchAdvancedDashboardData = async () => {
 
                         if (s.branch === 'T1') {
                             revenueT1 += amount;
-                            partsCostT1 += cost;
+                            totalCostT1 += cost;
+                            profitT1 += net;
                         }
                         if (s.branch === 'T4') {
                             revenueT4 += amount;
-                            partsCostT4 += cost;
+                            totalCostT4 += cost;
+                            profitT4 += net;
                         }
-                    } else {
-                        // Negative amounts (refunds)
-                        expenses += Math.abs(amount);
-                        if (s.branch === 'T1') expensesT1 += Math.abs(amount);
-                        if (s.branch === 'T4') expensesT4 += Math.abs(amount);
+                    } else if (s.is_refund) {
+                        const rAmount = Math.abs(amount);
+                        refunds += rAmount;
+                        profit -= rAmount; // Subtract from profit as it's a refund (assuming net_profit wasn't added)
+                        if (s.branch === 'T1') {
+                            refundsT1 += rAmount;
+                            profitT1 -= rAmount;
+                        }
+                        if (s.branch === 'T4') {
+                            refundsT4 += rAmount;
+                            profitT4 -= rAmount;
+                        }
                     }
                 }
             }
@@ -310,11 +325,11 @@ export const fetchAdvancedDashboardData = async () => {
                 currentInventario: revenueInventario,
                 t1: revenueT1, 
                 t4: revenueT4,
-                profit: revenue - partsCost - expenses,
-                profitT1: revenueT1 - partsCostT1 - expensesT1,
-                profitT4: revenueT4 - partsCostT4 - expensesT4,
-                partsCost,
-                expenses
+                profit: profit,
+                profitT1: profitT1,
+                profitT4: profitT4,
+                partsCost: totalCost,
+                expenses: refunds
             };
         };
 

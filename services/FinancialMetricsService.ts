@@ -20,33 +20,41 @@ export const financialMetricsService = {
     // This is the new source of truth for metrics
     if (rawData.unifiedSales) {
         rawData.unifiedSales.forEach((s: any) => {
-            const amount = Number(s.gross_amount);
-            const cost = Number(s.cost_amount);
+            const amount = Number(s.gross_amount) || 0;
+            const cost = Number(s.cost_amount) || 0;
             
-            if (s.source_type === 'WORKSHOP_REFUND') {
+            if (s.is_refund) {
                 deduccionesVenta += Math.abs(amount);
                 ventasNetas -= Math.abs(amount);
-                // Refunds subtract from flow too (assuming they are cash/card, not credit)
-                flujoEfectivo -= Math.abs(amount);
             } else {
                 ventasNetas += amount;
                 costoVenta += cost;
-                // Currently v_sales_unified doesn't specify payment method
-                // We assume sales contribute to flow unless we join with payments
-                // For simplicity in Dashboard vs Cashflow, we'll refine this if needed
-                flujoEfectivo += amount;
             }
         });
     }
 
-    // 2. Process accounting transactions for Expenses and extra Income (exclude those already in sales)
+    // 2. Process cash_movements for Real Cash Flow
+    if (rawData.cashMovements) {
+        rawData.cashMovements.forEach((cm: any) => {
+            const amount = Number(cm.amount) || 0;
+            // Only non-credit inbound is cash positive
+            if (cm.type === 'IN') {
+                if (!['CREDIT', 'EXCHANGE', 'CAMBIAZO'].includes(cm.method)) {
+                    flujoEfectivo += amount;
+                }
+            } else if (cm.type === 'OUT') {
+                flujoEfectivo -= Math.abs(amount);
+            }
+        });
+    }
+
+    // 3. Process accounting transactions for Expenses and extra Income (exclude those already in sales)
     rawData.transactions.forEach((t: any) => {
       const amount = Number(t.amount);
 
       if (amount < 0) {
         // Gasto / Compra / Egreso
         gastosOperativos += Math.abs(amount);
-        flujoEfectivo -= Math.abs(amount);
       } else {
         // Ingreso extra (no POS, no Taller)
         const desc = t.description?.toLowerCase() || '';
@@ -59,7 +67,6 @@ export const financialMetricsService = {
 
         if (!isAlreadyInUnified) {
           ventasNetas += amount;
-          flujoEfectivo += amount;
         }
       }
     });
@@ -135,31 +142,9 @@ export const financialMetricsService = {
   async fetchRawFinancialData(startDate?: string, endDate?: string) {
     if (!supabase) throw new Error('Supabase client not initialized');
 
-    // 1. Fetch payments
-    const { data: rawPayments } = await supabase.rpc('get_payments_flat');
-    
-    // Load related orders to get partsCost
-    const orderIds = Array.from(new Set((rawPayments || []).map((p: any) => p.order_id).filter(Boolean)));
-    const orderCostsMap: Record<string, { partsCost: number, expenses: any }> = {};
-    
-    // Chunk order queries if necessary, here we assume it's under reasonable limits for a dashboard or we just query them all. 
-    // To be safe with large queries, we can split them or ensure it's filtered if there's too many, 
-    // but the get_payments_flat without dates might be large anyway. We'll chunk to 500 max per query if needed,
-    // or just run one query. Let's run chunks of 500 just in case.
-    for (let i = 0; i < orderIds.length; i += 500) {
-        const chunk = orderIds.slice(i, i + 500);
-        const { data: orders } = await supabase.from('orders').select('id, partsCost, expenses').in('id', chunk);
-        if (orders) {
-            orders.forEach(o => {
-                orderCostsMap[o.id] = { partsCost: o.partsCost, expenses: o.expenses };
-            });
-        }
-    }
-    
-    const payments = (rawPayments || []).map((p: any) => ({
-        ...p,
-        orders: p.order_id ? orderCostsMap[p.order_id] : undefined
-    }));
+    // 1. Fetch cash movements
+    const { data: rawCashMovements } = await supabase.from('cash_movements').select('*').in('status', ['COMPLETED', 'PAID', 'active']);
+    const cashMovements = rawCashMovements || [];
     
     // 2. Fetch accounting transactions
     const { data: transactions } = await supabase.from('accounting_transactions').select('*, accounting_categories(name)').eq('status', 'COMPLETED');
@@ -186,14 +171,14 @@ export const financialMetricsService = {
     }
 
     // Filter by date if needed
-    let filteredPayments = payments || [];
+    let filteredCashMovements = cashMovements || [];
     let filteredTransactions = transactions || [];
     
     if (startDate) {
       const [sy, sm, sd] = startDate.split('T')[0].split('-');
       const startLocal = new Date(Number(sy), Number(sm) - 1, Number(sd), 0, 0, 0);
       
-      filteredPayments = filteredPayments.filter((p: any) => {
+      filteredCashMovements = filteredCashMovements.filter((p: any) => {
         const val = p.created_at || p.date;
         const d = typeof val === 'string' && val.includes('T') ? new Date(val) : new Date(Number(val));
         return d >= startLocal;
@@ -207,7 +192,7 @@ export const financialMetricsService = {
       const [ey, em, ed] = endDate.split('T')[0].split('-');
       const endLocal = new Date(Number(ey), Number(em) - 1, Number(ed), 23, 59, 59, 999);
       
-      filteredPayments = filteredPayments.filter((p: any) => {
+      filteredCashMovements = filteredCashMovements.filter((p: any) => {
         const val = p.created_at || p.date;
         const d = typeof val === 'string' && val.includes('T') ? new Date(val) : new Date(Number(val));
         return d <= endLocal;
@@ -219,7 +204,7 @@ export const financialMetricsService = {
     }
 
     return {
-      payments: filteredPayments,
+      cashMovements: filteredCashMovements,
       transactions: filteredTransactions,
       credits: credits || [],
       inventory: inventory || [],
@@ -228,22 +213,21 @@ export const financialMetricsService = {
   },
 
   async getCashflow(startDate?: string, endDate?: string): Promise<any[]> {
-    // Force fetching at least 6 months of data for the cashflow chart
     const now = new Date();
     const sixMonthsAgoDate = new Date(now.getFullYear(), now.getMonth() - 5, 1);
     const sixMonthsAgoStr = `${sixMonthsAgoDate.getFullYear()}-${String(sixMonthsAgoDate.getMonth() + 1).padStart(2, '0')}-01`;
     
     let effectiveStartDate = startDate;
     if (!effectiveStartDate || new Date(effectiveStartDate) > sixMonthsAgoDate) {
-        effectiveStartDate = sixMonthsAgoStr; // Always fetch at least 6 months
+        effectiveStartDate = sixMonthsAgoStr;
     }
 
     const rawData = await this.fetchRawFinancialData(effectiveStartDate, endDate);
     const monthlyData: { [key: string]: { income: number, expenses: number, purchases: number } } = {};
 
-    rawData.payments.forEach((p: any) => {
+    rawData.cashMovements.forEach((cm: any) => {
       let d = new Date();
-      const val = p.created_at || p.date;
+      const val = cm.created_at || cm.date;
       if (val) {
           d = typeof val === 'string' && val.includes('T') ? new Date(val) : new Date(Number(val));
       }
@@ -252,15 +236,14 @@ export const financialMetricsService = {
       if (!monthlyData[monthKey]) {
         monthlyData[monthKey] = { income: 0, expenses: 0, purchases: 0 };
       }
-      if (p.is_refund) {
-          monthlyData[monthKey].expenses += Math.abs(p.amount);
-      } else {
-          // CREDIT shouldn't add to cashflow, but maybe to Income? Depending on old logic, cashflow counted all non-refund positive as income. 
-          // Let's exclude CREDIT from cash flow OR include it in sales?
-          // Real cash flow: only non credit. But previously getCashflow queried accounting_transactions which only had paid values.
-          if (p.method !== 'CREDIT') {
-              monthlyData[monthKey].income += p.amount;
+      
+      const amount = Number(cm.amount) || 0;
+      if (cm.type === 'IN') {
+          if (!['CREDIT', 'EXCHANGE', 'CAMBIAZO'].includes(cm.method)) {
+              monthlyData[monthKey].income += amount;
           }
+      } else if (cm.type === 'OUT') {
+          monthlyData[monthKey].expenses += Math.abs(amount);
       }
     });
 
@@ -335,9 +318,9 @@ export const financialMetricsService = {
     
     // Refunds also count towards expenses for this distribution? No, usually kept separate or under 'Devoluciones'
     let refunds = 0;
-    rawData.payments.forEach((p: any) => {
-        if (p.is_refund) {
-            refunds += Math.abs(p.amount);
+    rawData.unifiedSales.forEach((s: any) => {
+        if (s.is_refund) {
+            refunds += Math.abs(Number(s.gross_amount) || 0);
         }
     });
 

@@ -145,7 +145,7 @@ const DashboardComponent: React.FC = () => {
     salesDetails.forEach((sale: any) => {
       // Group by Area (Taller vs Inventario) and Branch
       const branch = sale.branch || 'OTRO';
-      const isInventory = sale.source_type === 'POS' || sale.order_type === 'Pieza Independiente' || sale.order_type === 'PART_ONLY' || sale.order_id === 'PRODUCT_SALE' || (sale.order_model && sale.order_model.includes('Venta')) || String(sale.order_id).startsWith('POS-') || sale.order_type === 'RECIBIDOS';
+      const isInventory = sale.source_type?.startsWith('POS') || sale.source_type === 'INVENTORY';
       const category = isInventory ? `Inventario (${branch})` : `Taller (${branch})`;
       
       if (!grouped[category]) {
@@ -1044,42 +1044,59 @@ const DashboardComponent: React.FC = () => {
 
                                   if (!invData && !talData) return null;
 
-                                  const renderSaleCard = (sale: any, i: number) => (
-                                      <div 
-                                          key={i} 
-                                          onClick={() => {
-                                              if (sale.source_type === 'ORDER' || sale.source_type === 'WORKSHOP') {
-                                                  setSelectedSalesPeriod(null);
-                                                  navigate(`/orders/${sale.source_id}`);
-                                              } else {
-                                                  setSelectedTransaction(sale);
-                                              }
-                                          }}
-                                          className={`bg-white p-4 rounded-2xl border border-slate-200 shadow-sm transition-all flex items-center justify-between hover:shadow-md hover:border-blue-300 cursor-pointer group`}
-                                      >
-                                          <div className="flex items-center gap-4">
-                                              <div className="w-10 h-10 rounded-xl bg-green-50 flex items-center justify-center text-green-600 shrink-0">
-                                                  <DollarSign className="w-5 h-5" />
+                                  const renderSaleCard = (sale: any, i: number) => {
+                                      const isWorkshop = sale.source_type === 'WORKSHOP' || sale.source_type === 'WORKSHOP_REFUND';
+                                      const isRefund = sale.is_refund;
+                                      const navId = sale.order_id || sale.navigation_id;
+                                      
+                                      return (
+                                          <div 
+                                              key={i} 
+                                              onClick={() => {
+                                                  if (isWorkshop && navId) {
+                                                      setSelectedSalesPeriod(null);
+                                                      navigate(`/orders/${navId}`);
+                                                  } else if (!isWorkshop && navId && navId !== 'PRODUCT_SALE' && navId !== 'GASTO_LOCAL' && navId !== 'MANUAL_TX') {
+                                                      setSelectedSalesPeriod(null);
+                                                      navigate(`/orders/${navId}`);
+                                                  } else {
+                                                      setSelectedTransaction(sale);
+                                                  }
+                                              }}
+                                              className={`bg-white p-4 rounded-2xl border ${isRefund ? 'border-red-200' : 'border-slate-200'} shadow-sm transition-all flex items-center justify-between hover:shadow-md cursor-pointer group`}
+                                          >
+                                              <div className="flex items-center gap-4">
+                                                  <div className={`w-10 h-10 rounded-xl ${isRefund ? 'bg-red-50 text-red-600' : 'bg-green-50 text-green-600'} flex items-center justify-center shrink-0`}>
+                                                      <DollarSign className="w-5 h-5" />
+                                                  </div>
+                                                  <div>
+                                                      <h4 className="font-bold text-slate-800 flex items-center gap-2">
+                                                          {sale.description || 'Venta'}
+                                                      </h4>
+                                                      <p className="text-xs text-slate-500 font-medium mt-0.5 flex gap-2">
+                                                          <span>{new Date(sale.created_at).toLocaleString()}</span>
+                                                          <span className="text-[10px] text-slate-400">#{sale.order_readable_id || navId?.slice(0,8) || 'N/A'}</span>
+                                                      </p>
+                                                  </div>
                                               </div>
-                                              <div>
-                                                  <h4 className="font-bold text-slate-800 flex items-center gap-2">
-                                                      {sale.description || 'Venta'}
-                                                  </h4>
-                                                  <p className="text-xs text-slate-500 font-medium mt-0.5 flex gap-2">
-                                                      <span>{new Date(sale.created_at).toLocaleString()}</span>
-                                                      <span className="text-[10px] text-slate-400">#{sale.order_readable_id || 'N/A'}</span>
-                                                  </p>
+                                              <div className="flex items-center gap-4">
+                                                  <div className="text-right">
+                                                      <p className={`text-sm font-black ${isRefund ? 'text-red-600' : 'text-slate-800'}`}>
+                                                          ${(Number(sale.gross_amount) || sale.amount || 0).toLocaleString()}
+                                                      </p>
+                                                      <div className="flex flex-col items-end mt-1">
+                                                          <span className="text-[10px] text-slate-400">Costo: ${(Number(sale.cost_amount) || 0).toLocaleString()}</span>
+                                                          <span className={`text-[10px] font-bold ${isRefund ? 'text-red-500' : 'text-emerald-500'}`}>Ganancia: ${(Number(sale.net_profit) || 0).toLocaleString()}</span>
+                                                          <span className="text-[9px] font-bold text-slate-400 uppercase mt-1">
+                                                             {sale.payment_method || sale.method || 'N/A'} {isRefund ? '(DEVOLUCIÓN)' : ''}
+                                                          </span>
+                                                      </div>
+                                                  </div>
+                                                  <ChevronRight className="w-5 h-5 text-slate-300 group-hover:text-blue-500 transition-colors" />
                                               </div>
                                           </div>
-                                          <div className="flex items-center gap-4">
-                                              <div className="text-right">
-                                                  <p className="text-lg font-black text-slate-800">${(Number(sale.gross_amount) || sale.amount || 0).toLocaleString()}</p>
-                                                  <p className="text-[9px] font-bold text-slate-400 uppercase">{sale.payment_method || sale.method || 'N/A'}</p>
-                                              </div>
-                                              {sale.source_id && <ChevronRight className="w-5 h-5 text-slate-300 group-hover:text-blue-500 transition-colors" />}
-                                          </div>
-                                      </div>
-                                  );
+                                      );
+                                  };
 
                                   return (
                                       <div key={sucursal} className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200">
