@@ -23,12 +23,18 @@ export const OmnicanalInbox: React.FC = () => {
   const [inputText, setInputText] = useState('');
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<{messages: any[], contacts: any[]} | null>(null);
+  const [isSearching, setIsSearching] = useState(false);
   const [filterChannel, setFilterChannel] = useState<string>('all');
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [filterPriority, setFilterPriority] = useState<string>('all');
+  const [filterAssignment, setFilterAssignment] = useState<'all' | 'mine' | 'unassigned'>('all');
+  const [agents, setAgents] = useState<any[]>([]);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const userId = localStorage.getItem('user_id'); // Assuming user_id is stored
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -66,6 +72,48 @@ export const OmnicanalInbox: React.FC = () => {
     }
   };
 
+  const fetchAgents = async () => {
+    try {
+      const res = await fetchWithAuth('/api/omnicanal/agents');
+      if (res.ok) setAgents(await res.json());
+    } catch (e) { console.error(e); }
+  };
+
+  const handleClaim = async (convId: string) => {
+    try {
+      const res = await fetchWithAuth(`/api/omnicanal/conversations/${convId}/claim`, { method: 'POST' });
+      if (res.ok) fetchConversations();
+    } catch (e) { console.error(e); }
+  };
+
+  const handleAssign = async (convId: string, agentId: string) => {
+    try {
+      const res = await fetchWithAuth(`/api/omnicanal/conversations/${convId}/assign`, { 
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agentId })
+      });
+      if (res.ok) fetchConversations();
+    } catch (e) { console.error(e); }
+  };
+
+  const handleSearch = async (query: string) => {
+    setSearchQuery(query);
+    if (!query.trim()) {
+      setSearchResults(null);
+      setIsSearching(false);
+      return;
+    }
+    
+    setIsSearching(true);
+    try {
+      const res = await fetchWithAuth(`/api/omnicanal/search?query=${encodeURIComponent(query)}`);
+      if (res.ok) {
+        setSearchResults(await res.json());
+      }
+    } catch (e) { console.error(e); }
+  };
+
   const fetchMessages = async (convId: string) => {
     try {
       const res = await fetchWithAuth(`/api/omnicanal/conversations/${convId}/messages`);
@@ -92,6 +140,7 @@ export const OmnicanalInbox: React.FC = () => {
 
   useEffect(() => {
     fetchConversations();
+    fetchAgents();
     const interval = setInterval(fetchConversations, 15000);
     
     const realtimeSub = supabase.channel('crm_conversations_changes')
@@ -342,8 +391,11 @@ export const OmnicanalInbox: React.FC = () => {
     const channelMatch = filterChannel === 'all' || c.active_channel === filterChannel;
     const statusMatch = filterStatus === 'all' || c.status === filterStatus;
     const priorityMatch = filterPriority === 'all' || c.priority === filterPriority;
+    const assignmentMatch = filterAssignment === 'all' || 
+                          (filterAssignment === 'mine' && c.assigned_to === userId) ||
+                          (filterAssignment === 'unassigned' && !c.assigned_to);
 
-    return searchMatch && channelMatch && statusMatch && priorityMatch;
+    return searchMatch && channelMatch && statusMatch && priorityMatch && assignmentMatch;
   });
 
   return (
@@ -360,31 +412,34 @@ export const OmnicanalInbox: React.FC = () => {
               <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
               <input 
                 type="text" 
-                placeholder="Buscar cliente..."
+                placeholder="Buscar mensajes o clientes..."
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
+                onChange={(e) => handleSearch(e.target.value)}
                 className="w-full bg-slate-100 border-none rounded-xl pl-9 pr-4 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
               />
             </div>
             <div className="flex gap-2">
-              <select value={filterChannel} onChange={e => setFilterChannel(e.target.value)} className="w-1/3 text-xs bg-slate-100 border-none rounded-lg p-1.5 focus:ring-1 focus:ring-indigo-500">
-                <option value="all">Canal: Todos</option>
-                <option value="whatsapp">WhatsApp</option>
-                <option value="instagram">Instagram</option>
-                <option value="facebook">Facebook</option>
-                <option value="tiktok">TikTok</option>
+              <select value={filterChannel} onChange={e => setFilterChannel(e.target.value)} className="w-1/4 text-xs bg-slate-100 border-none rounded-lg p-1.5 focus:ring-1 focus:ring-indigo-500">
+                <option value="all">Canal</option>
+                <option value="whatsapp">WA</option>
+                <option value="instagram">IG</option>
+                <option value="facebook">FB</option>
+                <option value="tiktok">TK</option>
               </select>
-              <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} className="w-1/3 text-xs bg-slate-100 border-none rounded-lg p-1.5 focus:ring-1 focus:ring-indigo-500">
-                <option value="all">Estado: Todos</option>
+              <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} className="w-1/4 text-xs bg-slate-100 border-none rounded-lg p-1.5 focus:ring-1 focus:ring-indigo-500">
+                <option value="all">Estado</option>
                 <option value="open">Abierto</option>
-                <option value="in_progress">En progreso</option>
                 <option value="closed">Cerrado</option>
               </select>
-              <select value={filterPriority} onChange={e => setFilterPriority(e.target.value)} className="w-1/3 text-xs bg-slate-100 border-none rounded-lg p-1.5 focus:ring-1 focus:ring-indigo-500">
-                <option value="all">Pri: Todas</option>
-                <option value="normal">Normal</option>
-                <option value="high">Alta</option>
-                <option value="urgent">Urgente</option>
+              <select value={filterAssignment} onChange={e => setFilterAssignment(e.target.value as any)} className="w-1/4 text-xs bg-slate-100 border-none rounded-lg p-1.5 focus:ring-1 focus:ring-indigo-500">
+                <option value="all">Asign.</option>
+                <option value="mine">Míos</option>
+                <option value="unassigned">Sin asign</option>
+              </select>
+              <select value={filterPriority} onChange={e => setFilterPriority(e.target.value)} className="w-1/4 text-xs bg-slate-100 border-none rounded-lg p-1.5 focus:ring-1 focus:ring-indigo-500">
+                <option value="all">Prior.</option>
+                <option value="normal">Norm</option>
+                <option value="urgent">Urg</option>
               </select>
             </div>
           </div>
@@ -451,11 +506,29 @@ export const OmnicanalInbox: React.FC = () => {
                      <p className="text-xs text-slate-500">{activeConv.crm_contacts.primary_phone}</p>
                   )}
                </div>
-               <div className="ml-auto flex items-center gap-2">
-                 <select className="text-xs border-slate-200 rounded-lg p-1.5 focus:ring-1 focus:ring-indigo-500">
-                   <option value="">Transferir a...</option>
-                   <option value="agent_1">Vendedora 1</option>
-                   <option value="agent_2">Taller</option>
+                <div className="ml-auto flex items-center gap-2">
+                 {activeConv.assigned_to ? (
+                    <div className="text-[10px] bg-indigo-50 text-indigo-700 px-2 py-1 rounded-md border border-indigo-100 flex items-center gap-1">
+                      <User className="w-3 h-3" />
+                      {agents.find(a => a.id === activeConv.assigned_to)?.full_name || 'Agente'}
+                    </div>
+                 ) : (
+                    <button 
+                      onClick={() => handleClaim(activeConv.id)}
+                      className="text-xs bg-indigo-600 text-white px-3 py-1.5 rounded-lg hover:bg-indigo-700 transition font-medium"
+                    >
+                      Tomar Chat
+                    </button>
+                 )}
+                 <select 
+                   onChange={(e) => handleAssign(activeConv.id, e.target.value)}
+                   className="text-xs border-slate-200 rounded-lg p-1.5 focus:ring-1 focus:ring-indigo-500"
+                   value={activeConv.assigned_to || ''}
+                 >
+                   <option value="">{activeConv.assigned_to ? 'Reasignar...' : 'Asignar a...'}</option>
+                   {agents.map(agent => (
+                     <option key={agent.id} value={agent.id}>{agent.full_name}</option>
+                   ))}
                  </select>
                  <button className="text-xs bg-amber-50 text-amber-700 border border-amber-200 px-3 py-1.5 rounded-lg hover:bg-amber-100 transition" onClick={() => {
                    const note = prompt("Escribe una nota interna para este cliente:");
@@ -476,7 +549,32 @@ export const OmnicanalInbox: React.FC = () => {
                </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50/50">
+            <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50/50 relative">
+              {activeConv.ai_suggested_reply && (
+                <div className="sticky top-0 z-10 mb-4 animate-in fade-in slide-in-from-top-4">
+                  <div className="bg-indigo-600 text-white rounded-2xl p-4 shadow-xl border border-indigo-500 flex items-start gap-3">
+                    <Bot className="w-5 h-5 flex-shrink-0" />
+                    <div className="flex-1">
+                      <p className="text-[10px] uppercase font-black tracking-widest opacity-80 mb-1">Darwin AI Sugiere:</p>
+                      <p className="text-sm font-medium mb-3">"{activeConv.ai_suggested_reply}"</p>
+                      <div className="flex gap-2">
+                        <button 
+                          onClick={() => setInputText(activeConv.ai_suggested_reply)}
+                          className="px-4 py-1.5 bg-white text-indigo-600 rounded-lg text-xs font-bold hover:bg-slate-100 transition"
+                        >
+                          Usar Sugerencia
+                        </button>
+                        <button 
+                          onClick={() => handleClaim(activeConv.id)}
+                          className="px-4 py-1.5 bg-indigo-500/50 text-white rounded-lg text-xs font-medium hover:bg-indigo-500 transition"
+                        >
+                          Ignorar
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
               {messages.map(msg => {
                 const isOutbound = msg.direction === 'outbound' || msg.direction === 'system';
                 return (

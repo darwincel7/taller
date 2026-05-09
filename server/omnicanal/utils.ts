@@ -1,9 +1,16 @@
 import crypto from 'crypto';
 
+function getEncryptionKey(): Buffer {
+  const keyStr = process.env.ENCRYPTION_KEY;
+  if (!keyStr || keyStr.length < 32) {
+    throw new Error('ENCRYPTION_KEY faltante o demasiado corta. Configura una clave segura de 32+ caracteres en .env');
+  }
+  return crypto.createHash('sha256').update(keyStr).digest();
+}
+
 export function encryptToken(text: string): string {
   if (!text) return text;
-  const secretKey = process.env.ENCRYPTION_KEY || 'default_secret_key_needs_32_bytes_here';
-  const key = crypto.createHash('sha256').update(String(secretKey)).digest('base64').substring(0, 32);
+  const key = getEncryptionKey();
   const iv = crypto.randomBytes(16);
   const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
   let encrypted = cipher.update(text, 'utf8', 'hex');
@@ -15,10 +22,9 @@ export function encryptToken(text: string): string {
 export function decryptToken(encryptedData: string): string {
   if (!encryptedData) return encryptedData;
   try {
-    const secretKey = process.env.ENCRYPTION_KEY || 'default_secret_key_needs_32_bytes_here';
-    const key = crypto.createHash('sha256').update(String(secretKey)).digest('base64').substring(0, 32);
+    const key = getEncryptionKey();
     const parts = encryptedData.split(':');
-    if (parts.length !== 3) return encryptedData;
+    if (parts.length !== 3) return encryptedData; // Might be old unencrypted data
     const iv = Buffer.from(parts[0], 'hex');
     const authTag = Buffer.from(parts[1], 'hex');
     const encryptedText = parts[2];
@@ -28,6 +34,7 @@ export function decryptToken(encryptedData: string): string {
     decrypted += decipher.final('utf8');
     return decrypted;
   } catch (e) {
-    return encryptedData; // fallback if it was saved unencrypted before
+    console.warn("Decryption failed, returning raw data (legacy support)", e);
+    return encryptedData;
   }
 }

@@ -24,40 +24,24 @@ export async function assignAgent(conversationId: string, rule: 'round_robin' | 
       return;
     }
 
-    // RULE 2: Menor carga
-    const { data: agents } = await supabase
-      .from('crm_agents')
-      .select('id, name')
-      .eq('active', true);
+    // RULE 2: Menor carga (Optimizado via View)
+    const { data: workloads, error: workloadError } = await supabase
+      .from('v_agent_workload')
+      .select('agent_id, open_conversations, max_open_conversations')
+      .order('open_conversations', { ascending: true })
+      .limit(1);
       
-    if (!agents || agents.length === 0) return; // No hay agentes disponibles
+    if (workloadError || !workloads || workloads.length === 0) return;
 
-    // Count open convs per agent
-    const { data: workloads } = await supabase
-      .from('crm_conversations')
-      .select('assigned_to')
-      .eq('status', 'open');
-
-    // Default to 0 load
-    const agentLoad: Record<string, number> = {};
-    agents.forEach(a => agentLoad[a.id] = 0);
+    const bestAgent = workloads[0];
     
-    workloads?.forEach(w => {
-       if (w.assigned_to && agentLoad[w.assigned_to] !== undefined) {
-         agentLoad[w.assigned_to]++;
-       }
-    });
-
-    let bestAgentId = agents[0].id;
-    let minLoad = agentLoad[bestAgentId];
-    for (const [id, load] of Object.entries(agentLoad)) {
-       if (load < minLoad) {
-         bestAgentId = id;
-         minLoad = load;
-       }
+    // Safety check: is the agent overloaded?
+    if (bestAgent.open_conversations >= (bestAgent.max_open_conversations || 50)) {
+       console.warn(`[Omnicanal Assignment] Todos los agentes saturados. Conv ${conversationId} queda sin asignar por ahora.`);
+       return;
     }
 
-    await assign(conversationId, bestAgentId, 'menor_carga');
+    await assign(conversationId, bestAgent.agent_id, 'menor_carga');
 
   } catch(e) {
     console.error('Error assigning agent:', e);

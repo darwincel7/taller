@@ -47,11 +47,20 @@ CREATE TABLE IF NOT EXISTS crm_processing_jobs (
 
 CREATE INDEX IF NOT EXISTS idx_crm_processing_jobs_status_type ON crm_processing_jobs(status, job_type);
 
--- 4. Endurecer RLS (Opcional, si aplicaba with check(true))
--- En lugar de using(true), aquí se podría agregar la lógica role-based, pero para mantener la compatibilidad pedida:
--- aseguramos al menos el trigger y los índices. Solo SuperAdmins y Service Roles deben ignorar RLS por completo.
+-- 4. Funciones auxiliares para RLS
+CREATE OR REPLACE FUNCTION is_crm_admin() 
+RETURNS BOOLEAN AS $$
+BEGIN
+  RETURN (
+    SELECT role = 'admin' 
+    FROM crm_agents 
+    WHERE id = auth.uid() 
+    AND active = true
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
 
--- Endureciendo politicas de verdad
+-- 5. Endurecer RLS (Phase 7 - Seguridad)
 DO $$ 
 DECLARE
   t text;
@@ -59,16 +68,68 @@ BEGIN
   FOR t IN 
     SELECT table_name FROM information_schema.tables WHERE table_name LIKE 'crm_%' AND table_schema = 'public'
   LOOP
+    EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY;', t);
     EXECUTE format('DROP POLICY IF EXISTS "Habilitar todo para autenticados en %I" ON %I;', t, t);
+    EXECUTE format('DROP POLICY IF EXISTS "Permitir select basico" ON %I;', t, t);
+    EXECUTE format('DROP POLICY IF EXISTS "Permitir usar a todos" ON %I;', t, t);
+    
+    -- Admins y Darwin (SuperAdmin)
+    EXECUTE format('
+      CREATE POLICY "Admins_full_access" ON %I
+      FOR ALL
+      TO authenticated
+      USING (is_crm_admin() OR auth.jwt()->>''email'' = ''Daruingmejia@gmail.com'');
+    ', t);
   END LOOP;
 END;
 $$;
 
--- Backend Service Role / SuperAdmin (via supabase key) can do everything. 
--- By default postgres roles: service_role bypasses RLS implicitly or should have rules.
--- For standard users, we check auth.uid() and user_roles table or similar.
--- En este sistema dependemos del email en auth.jwt() o tabla users. Para simplicidad:
--- permitimos acceso a crm_channel_accounts solo si auth.uid() no es nulo, pero en realidad debería ser super admin.
-CREATE POLICY "Permitir select basico" ON crm_contacts FOR SELECT USING (auth.role() = 'authenticated');
-CREATE POLICY "Permitir usar a todos" ON crm_contacts FOR ALL USING (auth.role() = 'authenticated');
--- TODO: Implementar lógica de RLS estricta por roles si existe la tabla public.users.
+-- Agentes (Sales)
+CREATE POLICY "Agents_see_assigned_convs" ON crm_conversations FOR SELECT TO authenticated USING (assigned_to = auth.uid() OR assigned_to IS NULL);
+CREATE POLICY "Agents_update_assigned_convs" ON crm_conversations FOR UPDATE TO authenticated USING (assigned_to = auth.uid() OR assigned_to IS NULL);
+
+CREATE POLICY "Agents_see_conv_messages" ON crm_messages FOR SELECT TO authenticated USING (EXISTS (SELECT 1 FROM crm_conversations WHERE id = conversation_id AND (assigned_to = auth.uid() OR assigned_to IS NULL)));
+CREATE POLICY "Agents_insert_conv_messages" ON crm_messages FOR INSERT TO authenticated WITH CHECK (EXISTS (SELECT 1 FROM crm_conversations WHERE id = conversation_id AND assigned_to = auth.uid()));
+
+-- 6. Vistas y Búsqueda (High Performance)
+CREATE OR REPLACE VIEW v_agent_workload AS
+SELECT 
+    a.id as agent_id,
+    a.name,
+    COUNT(c.id) filter (where c.status = 'open') as open_conversations,
+    a.max_open_conversations
+FROM crm_agents a
+LEFT JOIN crm_conversations c ON a.id = c.assigned_to
+WHERE a.active = true
+GROUP BY a.id, a.name, a.max_open_conversations;
+
+-- 7. Full Text Search
+ALTER TABLE crm_messages ADD COLUMN IF NOT EXISTS fts tsvector 
+GENERATED ALWAYS AS (to_tsvector('spanish', coalesce(text, ''))) STORED;
+
+CREATE INDEX IF NOT EXISTS idx_crm_messages_fts ON crm_messages USING gin(fts);
+
+ALTER TABLE crm_contacts ADD COLUMN IF NOT EXISTS fts tsvector 
+GENERATED ALWAYS AS (to_tsvector('spanish', coalesce(full_name, '') || ' ' || coalesce(primary_phone, '') || ' ' || coalesce(primary_email, ''))) STORED;
+
+-- 8. Analytics Functions (High Performance)
+CREATE OR REPLACE FUNCTION get_conversation_status_counts()
+RETURNS TABLE(status text, count bigint) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT c.status, COUNT(*) as count
+    FROM crm_conversations c
+    GROUP BY c.status;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE OR REPLACE FUNCTION get_message_channel_counts()
+RETURNS TABLE(channel text, count bigint) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT m.channel, COUNT(*) as count
+    FROM crm_messages m
+    WHERE m.created_at >= (now() - interval '30 days')
+    GROUP BY m.channel;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;

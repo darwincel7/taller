@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { MessageSquare, RefreshCw, LogOut, CheckCircle2, AlertCircle, Loader2, AlertTriangle, Eye, ShieldAlert, X } from 'lucide-react';
+import { MessageSquare, RefreshCw, LogOut, CheckCircle2, AlertCircle, Loader2, AlertTriangle, Eye, ShieldAlert, X, Activity } from 'lucide-react';
 import { fetchWithAuth } from '../lib/fetchWithAuth';
+import { OmnicanalDiagnostics } from '../components/OmnicanalDiagnostics';
 
 export const OmnicanalSettings: React.FC = () => {
+  const [activeTab, setActiveTab] = useState<'config' | 'diagnostics'>('config');
   const [status, setStatus] = useState<'connecting' | 'open' | 'close'>('close');
   const [qrCode, setQrCode] = useState<string | null>(null);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
@@ -41,16 +43,22 @@ export const OmnicanalSettings: React.FC = () => {
       if (res.ok) {
          const data = await res.json();
          if (data.oauthUrl) window.location.href = data.oauthUrl;
+      } else {
+        const err = await res.json();
+        alert(err.error || 'No autorizado');
       }
     } catch(e) { console.error(e); }
   };
 
   const handleConnectTikTok = async () => {
     try {
-      const res = await fetchWithAuth('/api/tiktok/connect', { method: 'POST' });
+      const res = await fetchWithAuth('/api/tiktok/oauth/start');
       if (res.ok) {
          const data = await res.json();
-         if (data.oauthUrl) window.location.href = data.oauthUrl;
+         if (data.url) window.location.href = data.url;
+      } else {
+        const err = await res.json();
+        alert(err.error || 'No autorizado');
       }
     } catch(e) { console.error(e); }
   };
@@ -197,15 +205,35 @@ export const OmnicanalSettings: React.FC = () => {
         <div>
           <h1 className="text-2xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
             <MessageSquare className="w-6 h-6 text-blue-500" />
-            Canales de Mensajería
+            Configuración de Canales
           </h1>
           <p className="text-slate-500 dark:text-slate-400 mt-1">
             Gestiona tus conexiones de WhatsApp, Facebook, Instagram y TikTok.
           </p>
         </div>
+        <div className="flex gap-2 p-1 bg-slate-100 dark:bg-slate-800 rounded-xl">
+          <button 
+            onClick={() => setActiveTab('config')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${activeTab === 'config' ? 'bg-white dark:bg-slate-700 shadow-sm text-blue-600' : 'text-slate-500 hover:text-slate-700'}`}
+          >
+            <ShieldAlert className="w-4 h-4" />
+            Vínculos
+          </button>
+          <button 
+            onClick={() => setActiveTab('diagnostics')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${activeTab === 'diagnostics' ? 'bg-white dark:bg-slate-700 shadow-sm text-blue-600' : 'text-slate-500 hover:text-slate-700'}`}
+          >
+            <Activity className="w-4 h-4" />
+            Diagnóstico
+          </button>
+        </div>
       </div>
 
-      {hasDecryptionError && (
+      {activeTab === 'diagnostics' ? (
+        <OmnicanalDiagnostics />
+      ) : (
+        <>
+          {hasDecryptionError && (
         <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl p-4 flex gap-3 text-red-800 dark:text-red-300">
           <ShieldAlert className="w-6 h-6 flex-shrink-0" />
           <div className="text-sm">
@@ -501,6 +529,8 @@ export const OmnicanalSettings: React.FC = () => {
             </pre>
           </div>
         </div>
+      )}
+        </>
       )}
     </div>
   );

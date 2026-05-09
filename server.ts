@@ -43,7 +43,29 @@ process.on('unhandledRejection', (reason, promise) => {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+function validateEnv() {
+  const criticalVars = ['ENCRYPTION_KEY', 'SUPABASE_SERVICE_ROLE_KEY'];
+  const missing = criticalVars.filter(v => !process.env[v]);
+  
+  if (missing.length > 0) {
+    console.error(`\x1b[31m[CRITICAL] Faltan variables de entorno obligatorias: ${missing.join(', ')}\x1b[0m`);
+    if (process.env.NODE_ENV === 'production') {
+      process.exit(1);
+    }
+  }
+
+  const encryptionKey = process.env.ENCRYPTION_KEY;
+  if (encryptionKey && encryptionKey.length < 32) {
+    console.warn('\x1b[33m[WARNING] ENCRYPTION_KEY es demasiado corta (min 32 caracteres). El cifrado AES-256-GCM requiere una clave robusta.\x1b[0m');
+  }
+
+  if (!process.env.GEMINI_API_KEY) {
+    console.warn('\x1b[33m[WARNING] GEMINI_API_KEY no detectada. Las funciones de IA estarán desactivadas.\x1b[0m');
+  }
+}
+
 async function startServer() {
+  validateEnv();
   const app = express();
   const PORT = 3000;
 
@@ -164,7 +186,35 @@ async function startServer() {
     return value;
   }
 
-  // Require Auth Middleware
+  // Require Admin Middleware
+  const requireAdmin = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    // Primero validamos la autenticación básica
+    await requireAuth(req, res, async () => {
+      const userId = req.headers['x-user-id'] as string;
+      if (!userId) return res.status(401).json({ error: 'No autorizado' });
+
+      const { getSupabase } = await import('./server/whatsapp');
+      const supabase = getSupabase();
+      if (!supabase) return res.status(500).json({ error: 'DB error' });
+
+      // Verificar si el usuario es admin en crm_agents
+      const { data: agent, error } = await supabase
+        .from('crm_agents')
+        .select('role')
+        .eq('id', userId)
+        .single();
+
+      if (error || !agent || agent.role !== 'admin') {
+        // Fallback para Darwin (dueño) por email si está disponible en headers o via token
+        // Por ahora, si no es 'admin' expresamente, bloqueamos.
+        // PODEMOS agregar un bypass temporal para desarrollo si es necesario.
+        return res.status(403).json({ error: 'Acceso denegado: Se requiere rol Admin' });
+      }
+
+      next();
+    });
+  };
+
   const requireAuth = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
     try {
       const authHeader = req.headers.authorization;
@@ -255,7 +305,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/whatsapp/repair-session', requireAuth, async (req, res) => {
+  app.post('/api/whatsapp/repair-session', requireAdmin, async (req, res) => {
     try {
       const { logoutWhatsApp, connectToWhatsApp, clearWhatsAppSession } = await import('./server/whatsapp');
       await logoutWhatsApp();
@@ -272,7 +322,7 @@ async function startServer() {
     res.json(getWhatsAppStatus());
   });
 
-  app.post("/api/whatsapp/connect", requireAuth, async (req, res) => {
+  app.post("/api/whatsapp/connect", requireAdmin, async (req, res) => {
     try {
       await connectToWhatsApp(true);
       
@@ -292,12 +342,12 @@ async function startServer() {
     }
   });
 
-  app.post("/api/whatsapp/reconnect", requireAuth, async (req, res) => {
+  app.post("/api/whatsapp/reconnect", requireAdmin, async (req, res) => {
     await reconnectWhatsApp();
     res.json({ success: true, message: "Reconnecting to WhatsApp..." });
   });
 
-  app.post("/api/whatsapp/logout", requireAuth, async (req, res) => {
+  app.post("/api/whatsapp/logout", requireAdmin, async (req, res) => {
     await logoutWhatsApp();
     res.json({ success: true, message: "Logged out from WhatsApp" });
   });
@@ -485,6 +535,8 @@ async function startServer() {
   const { default: omnicanalApiRouter } = await import('./server/omnicanal/api');
   const { startJobWorkers } = await import('./server/omnicanal/pipeline');
   
+  app.use('/api/meta/connect', requireAdmin);
+  app.use('/api/tiktok/oauth/start', requireAdmin);
   app.use('/api/meta', metaRouter);
   app.use('/api/tiktok', tiktokRouter);
   app.use('/api/omnicanal', requireAuth, omnicanalApiRouter);

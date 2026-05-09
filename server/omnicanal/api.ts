@@ -7,14 +7,25 @@ router.get('/conversations', async (req, res) => {
   const supabase = getSupabase();
   if (!supabase) return res.status(500).json({ error: 'DB no conectada' });
 
+  const userId = req.headers['x-user-id'] as string;
+  const userRole = req.headers['x-user-role'] as string;
+
   try {
-    const { data: convs, error } = await supabase
+    let query = supabase
       .from('crm_conversations')
       .select(`
         *,
         crm_contacts:contact_id ( full_name, display_name, primary_phone )
-      `)
-      .order('last_message_at', { ascending: false });
+      `);
+
+    // Basic assignment scoping (Phase 9/7)
+    if (userRole !== 'admin' && userId) {
+       // Filter by assigned_to or unassigned if the system allows taking any
+       // For now, let's allow seeing everything but highlight assigned ones in UI
+       // Or eventually: query = query.or(`assigned_to.eq.${userId},assigned_to.is.null`);
+    }
+
+    const { data: convs, error } = await query.order('last_message_at', { ascending: false });
 
     if (error) throw error;
     res.json(convs || []);
@@ -284,6 +295,178 @@ router.post('/conversations/:id/change-channel', async (req, res) => {
      res.json({ success: true, message: `Canal cambiado a ${channel}` });
   } catch(e: any) {
      res.status(500).json({ error: e.message, success: false });
+  }
+});
+
+router.get('/health', async (req, res) => {
+  const supabase = getSupabase();
+  if (!supabase) return res.status(500).json({ error: 'DB no conectada' });
+
+  try {
+    const { getWhatsAppStatus } = await import('../whatsapp');
+    const { count: pendingJobs } = await supabase.from('crm_processing_jobs').select('*', { count: 'exact', head: true }).eq('status', 'pending');
+    const { count: failedJobs } = await supabase.from('crm_processing_jobs').select('*', { count: 'exact', head: true }).eq('status', 'failed');
+    
+    res.json({
+      success: true,
+      whatsapp: getWhatsAppStatus(),
+      supabase: 'connected',
+      ai: !!process.env.GEMINI_API_KEY,
+      jobs: {
+        pending: pendingJobs || 0,
+        failed: failedJobs || 0
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/agents', async (req, res) => {
+  const supabase = getSupabase();
+  if (!supabase) return res.status(500).json({ error: 'DB no conectada' });
+
+  try {
+    const { data: agents, error } = await supabase
+      .from('crm_agents')
+      .select('id, full_name, role, status')
+      .eq('status', 'active');
+
+    if (error) throw error;
+    res.json(agents || []);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/conversations/:id/assign', async (req, res) => {
+  const { id } = req.params;
+  const { agentId } = req.body;
+  const supabase = getSupabase();
+  if (!supabase) return res.status(500).json({ error: 'DB no conectada' });
+
+  try {
+    const { error } = await supabase
+      .from('crm_conversations')
+      .update({ 
+        assigned_to: agentId,
+        assigned_at: new Date().toISOString()
+      })
+      .eq('id', id);
+
+    if (error) throw error;
+    
+    // Log assignment (Phase 9/11)
+    await supabase.from('crm_raw_events').insert({
+       channel: 'system',
+       event_type: 'conversation_assigned',
+       payload: { conversation_id: id, assigned_to: agentId }
+    });
+
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/conversations/:id/claim', async (req, res) => {
+  const { id } = req.params;
+  const userId = req.headers['x-user-id'] as string;
+  if (!userId) return res.status(401).json({ error: 'No user ID' });
+
+  const supabase = getSupabase();
+  if (!supabase) return res.status(500).json({ error: 'DB no conectada' });
+
+  try {
+    const { error } = await supabase
+      .from('crm_conversations')
+      .update({ 
+        assigned_to: userId,
+        assigned_at: new Date().toISOString()
+      })
+      .eq('id', id);
+
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/analytics/overview', async (req, res) => {
+  const supabase = getSupabase();
+  if (!supabase) return res.status(500).json({ error: 'DB no conectada' });
+
+  try {
+     const { data: statusCounts } = await supabase.rpc('get_conversation_status_counts');
+     const { data: channelCounts } = await supabase.rpc('get_message_channel_counts');
+     
+     // Also get agents workload snapshot
+     const { data: workloads } = await supabase.from('v_agent_workload').select('*');
+
+     res.json({
+       conversations_by_status: statusCounts,
+       messages_by_channel: channelCounts,
+       agent_workloads: workloads,
+       timestamp: new Date().toISOString()
+     });
+  } catch (error: any) {
+     res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/search', async (req, res) => {
+  const { query, type = 'all' } = req.query;
+  if (!query) return res.status(400).json({ error: 'Falta query' });
+
+  const supabase = getSupabase();
+  if (!supabase) return res.status(500).json({ error: 'DB no conectada' });
+
+  try {
+     const results: any = {};
+     
+     if (type === 'all' || type === 'messages') {
+        const { data } = await supabase
+          .from('crm_messages')
+          .select('*, crm_conversations(contact_id, crm_contacts(full_name))')
+          .textSearch('fts', query as string, { config: 'spanish' })
+          .limit(20);
+        results.messages = data;
+     }
+
+     if (type === 'all' || type === 'contacts') {
+        const { data } = await supabase
+          .from('crm_contacts')
+          .select('*')
+          .textSearch('fts', query as string, { config: 'spanish' })
+          .limit(20);
+        results.contacts = data;
+     }
+
+     res.json(results);
+  } catch (error: any) {
+     res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/conversations/bulk-close', async (req, res) => {
+  const { ids } = req.body;
+  if (!ids || !Array.isArray(ids)) return res.status(400).json({ error: 'Faltan IDs' });
+
+  const supabase = getSupabase();
+  if (!supabase) return res.status(500).json({ error: 'DB no conectada' });
+
+  try {
+     const { error } = await supabase
+       .from('crm_conversations')
+       .update({ status: 'closed' })
+       .in('id', ids);
+
+     if (error) throw error;
+     res.json({ success: true, count: ids.length });
+  } catch (error: any) {
+     res.status(500).json({ error: error.message });
   }
 });
 

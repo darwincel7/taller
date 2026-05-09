@@ -21,12 +21,12 @@ export async function startJobWorkers() {
     const supabase = getSupabase();
     if (!supabase) return;
     
-    // Pick pending ai_summary jobs (limit 1 to avoid overload)
+    // Pick pending jobs (limit 1 to avoid overload)
     const { data: jobs } = await supabase
       .from('crm_processing_jobs')
       .select('*')
       .eq('status', 'pending')
-      .eq('job_type', 'ai_summary')
+      .in('job_type', ['ai_summary', 'ai_suggest_reply'])
       .order('created_at', { ascending: true })
       .limit(1);
 
@@ -35,9 +35,13 @@ export async function startJobWorkers() {
       await supabase.from('crm_processing_jobs').update({ status: 'processing' }).eq('id', job.id);
       
       try {
-        const { data: conv } = await supabase.from('crm_conversations').select('contact_id').eq('id', job.reference_id).single();
-        if (conv) {
-           await updateAiSummary(conv.contact_id, job.reference_id);
+        if (job.job_type === 'ai_summary') {
+          const { data: conv } = await supabase.from('crm_conversations').select('contact_id').eq('id', job.reference_id).single();
+          if (conv) {
+             await updateAiSummary(conv.contact_id, job.reference_id);
+          }
+        } else if (job.job_type === 'ai_suggest_reply') {
+           await processAiSuggestedReply(job.reference_id!);
         }
         await supabase.from('crm_processing_jobs').update({ status: 'completed' }).eq('id', job.id);
       } catch (err) {
@@ -180,6 +184,11 @@ export async function processIncomingMessage(msg: NormalizedIncomingMessage) {
       throw msgError;
     }
 
+    // 4.1 Process Media if present
+    if (msg.messageType !== 'text' && (msg.mediaUrl || msg.raw.media_id)) {
+       handleMediaStorage(savedMsg.id, msg).catch(e => console.error('[Pipeline Media] Error:', e));
+    }
+
     // 5. Detecta telefonos en texto
     if (msg.text) {
       await detectPhoneNumbers(msg.text, contactId, conversationId, savedMsg?.id);
@@ -187,6 +196,7 @@ export async function processIncomingMessage(msg: NormalizedIncomingMessage) {
 
     // 6. Actualiza resumen IA mediante jobs
     await queueAiSummary(conversationId);
+    await queueAiSuggestedReply(conversationId);
 
     // 7. Asigna vendedor solo si assigned_to es null
     if (!existingConv || !existingConv.assigned_to) {
@@ -199,6 +209,64 @@ export async function processIncomingMessage(msg: NormalizedIncomingMessage) {
   } catch (error) {
     console.error('[Omnicanal Pipeline] Error processing incoming message:', error);
   }
+}
+
+async function handleMediaStorage(messageId: string, msg: NormalizedIncomingMessage) {
+    const supabase = getSupabase();
+    if (!supabase) return;
+
+    try {
+        let buffer: Buffer | null = null;
+        let mime = msg.mediaMime || 'application/octet-stream';
+        
+        // If it's a URL we can download it (Meta/TikTok)
+        if (msg.mediaUrl && msg.mediaUrl.startsWith('http')) {
+            const resp = await fetch(msg.mediaUrl);
+            if (resp.ok) {
+                buffer = Buffer.from(await resp.arrayBuffer());
+                mime = resp.headers.get('content-type') || mime;
+            }
+        } 
+        // If it's base64 (coming from legacy WhatsApp logic)
+        else if (msg.mediaUrl && msg.mediaUrl.startsWith('data:')) {
+            const matches = msg.mediaUrl.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+            if (matches && matches.length === 3) {
+                mime = matches[1];
+                buffer = Buffer.from(matches[2], 'base64');
+            }
+        }
+        
+        // WhatsApp handled by adapter usually, but if we have it in raw.buffer we could use it
+        // For now, let's support what we can.
+
+        if (buffer) {
+            const ext = mime.split('/')[1] || 'bin';
+            const fileName = `${msg.channel}/${messageId}.${ext}`;
+            
+            const { error: uploadError } = await supabase.storage
+                .from('crm-media')
+                .upload(fileName, buffer, { contentType: mime, upsert: true });
+
+            if (!uploadError) {
+                const { data: { publicUrl } } = supabase.storage.from('crm-media').getPublicUrl(fileName);
+                
+                await supabase.from('crm_messages').update({ media_url: publicUrl }).eq('id', messageId);
+                
+                await supabase.from('crm_media_assets').insert({
+                    message_id: messageId,
+                    channel: msg.channel,
+                    file_name: fileName,
+                    mime_type: mime,
+                    size_bytes: buffer.length,
+                    storage_path: fileName,
+                    public_url: publicUrl,
+                    source: 'inbound'
+                });
+            }
+        }
+    } catch (e) {
+        console.error('[Media Storage] Failed to store media:', e);
+    }
 }
 
 async function detectPhoneNumbers(text: string, contactId: string, conversationId: string, messageId?: string) {
@@ -247,9 +315,88 @@ async function detectPhoneNumbers(text: string, contactId: string, conversationI
 // Stubs for future implementation
 import { GoogleGenAI, Type } from "@google/genai";
 
+async function queueAiSuggestedReply(conversationId: string) {
+  const supabase = getSupabase();
+  if (!supabase) return;
+  
+  const { data: existing } = await supabase
+    .from('crm_processing_jobs')
+    .select('id')
+    .eq('job_type', 'ai_suggest_reply')
+    .eq('reference_id', conversationId)
+    .in('status', ['pending', 'processing'])
+    .maybeSingle();
+
+  if (existing) return;
+
+  await supabase.from('crm_processing_jobs').insert({
+    job_type: 'ai_suggest_reply',
+    reference_id: conversationId,
+    status: 'pending'
+  });
+}
+
+async function processAiSuggestedReply(conversationId: string) {
+    const supabase = getSupabase();
+    if (!supabase) return;
+
+    const key = process.env.GEMINI_API_KEY;
+    if (!key) return;
+
+    const { data: messages } = await supabase
+      .from('crm_messages')
+      .select('*')
+      .eq('conversation_id', conversationId)
+      .order('created_at', { ascending: false })
+      .limit(10);
+
+    if (!messages || messages.length === 0) return;
+
+    const chatLog = messages.reverse().map(m => `${m.source === 'inbound' ? 'Cliente' : 'Asistente'}: ${m.text || '[Multimedia]'}`).join('\n');
+    
+    const prompt = `Actúa como un experto en ventas de una tienda de regalos. Sugiere una respuesta perfecta para el cliente.
+    Responde ÚNICAMENTE con la sugerencia en formato JSON plano: { "suggestion": "..." }
+    Chat actual:
+    ${chatLog}`;
+
+    const ai = getAiClient();
+    const response = await ai.models.generateContent({
+      model: "gemini-1.5-flash",
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+      }
+    });
+
+    const jsonStr = response.text?.trim();
+    if (!jsonStr) return;
+
+    try {
+      const result = JSON.parse(jsonStr);
+      if (result.suggestion) {
+         await supabase.from('crm_conversations').update({ 
+            ai_suggested_reply: result.suggestion,
+            ai_suggestion_updated_at: new Date().toISOString()
+         }).eq('id', conversationId);
+      }
+    } catch(e) {}
+}
+
 async function queueAiSummary(conversationId: string) {
   const supabase = getSupabase();
   if (!supabase) return;
+  
+  // Anti-duplicado: No insertar si ya hay uno pendiente o procesando
+  const { data: existing } = await supabase
+    .from('crm_processing_jobs')
+    .select('id')
+    .eq('job_type', 'ai_summary')
+    .eq('reference_id', conversationId)
+    .in('status', ['pending', 'processing'])
+    .maybeSingle();
+
+  if (existing) return;
+
   await supabase.from('crm_processing_jobs').insert({
     job_type: 'ai_summary',
     reference_id: conversationId,
@@ -258,9 +405,12 @@ async function queueAiSummary(conversationId: string) {
 }
 
 const getAiClient = () => {
-    let key = process.env.GEMINI_API_KEY!;
+    let key = process.env.GEMINI_API_KEY;
     if (!key) throw new Error("API Key not found in environment.");
+    
+    // Strip quotes if they were accidentally included and trim
     key = key.replace(/['"]/g, '').trim();
+    
     return new GoogleGenAI({ apiKey: key });
 };
 
@@ -299,10 +449,15 @@ No inventes datos. Si no sabes algo, usa null.
 Conversación:
 ${chatLog}`;
 
+    const key = process.env.GEMINI_API_KEY;
+    if (!key) {
+       console.warn('[Omnicanal IA] No GEMINI_API_KEY, skipping summary update');
+       return;
+    }
     const ai = getAiClient();
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: { parts: [{ text: prompt }] },
+      model: "gemini-3-flash-preview",
+      contents: prompt,
       config: {
         responseMimeType: "application/json",
         responseSchema: {
