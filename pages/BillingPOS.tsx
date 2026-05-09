@@ -664,6 +664,19 @@ export const BillingPOS: React.FC = () => {
       return;
     }
 
+    // Phase 7: Validar stock localmente antes de enviar
+    const productItemsInCart = cart.filter(i => i.type === 'PRODUCT');
+    for (const item of productItemsInCart) {
+        if (item.id && !item.id.startsWith('PROD-')) { // Sólo si es un producto real con UUID
+            const invItem = inventory.find(i => i.id === item.id);
+            if (invItem && invItem.stock <= 0) {
+                showNotification('error', `El artículo ${item.title} se ha agotado. Refresque el inventario.`);
+                setIsProcessing(false);
+                return;
+            }
+        }
+    }
+
     // Check for credit info
     const hasCredit = paymentMethods.some(pm => pm.method === 'CREDIT' && pm.amount > 0);
     const currentCreditInfo = overrideCreditInfo || creditClientInfo;
@@ -702,10 +715,10 @@ export const BillingPOS: React.FC = () => {
 
     try {
       // 1. Prepare Transaction Payload
-      const idempotencyKey = `pos-${currentUser?.id}-${Date.now()}`;
+      const idempotencyKey = `pos-${currentUser?.id}-${Date.now()}-${Math.random().toString(36).substring(7)}`;
       
       const payload = {
-        customer_id: (selectedCustomer as any)?.id || 'pos-public',
+        customer_id: (selectedCustomer as any)?.id || null,
         seller_id: currentUser?.id,
         branch: currentUser?.branch || 'T4',
         total: cartTotal,
