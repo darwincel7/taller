@@ -404,6 +404,7 @@ export interface AuditLog {
 
 export interface InventoryPart {
   id: string;
+  readable_id?: number;
   name: string;
   stock: number;
   min_stock: number;

@@ -522,7 +522,7 @@ export const StoreCatalogTab = () => {
                                                              <span className="text-[10px] font-semibold text-slate-500 font-mono truncate bg-slate-50 border border-slate-200 px-2 py-0.5 rounded-md" title={itemCat.imei}>IMEI: {itemCat.imei}</span>
                                                            )}
                                                            {!itemCat.imei && <div />}
-                                                           <span className="text-[9px] font-bold text-slate-400">ID: {itemCat.readable_id ? `#${itemCat.readable_id}` : item.id.slice(-4)}</span>
+                                                           <span className="text-[9px] font-bold text-slate-400">ID: #{item.readable_id || item.id.slice(-4)}</span>
                                                          </div>
                                                        </div>
                                                     </div>

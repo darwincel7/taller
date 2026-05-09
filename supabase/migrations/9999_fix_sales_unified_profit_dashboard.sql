@@ -23,7 +23,8 @@ SELECT
     COALESCE(ps.total < 0 OR ps.status = 'refunded', false) as is_refund,
     EXISTS(SELECT 1 FROM public.cash_movements WHERE source_id = ps.id::text AND method = 'CREDIT') as is_credit,
     EXISTS(SELECT 1 FROM public.cash_movements WHERE source_id = ps.id::text AND method IN ('EXCHANGE', 'CAMBIAZO')) as is_cambiazo,
-    ps.status
+    ps.status,
+    ps.readable_id::text as readable_id
 FROM 
     public.pos_sales ps
 LEFT JOIN
@@ -118,7 +119,8 @@ SELECT
     op.is_refund,
     op.method = 'CREDIT' as is_credit,
     op.method IN ('EXCHANGE', 'CAMBIAZO') as is_cambiazo,
-    'completed' as status
+    'completed' as status,
+    o.readable_id::text as readable_id
 FROM 
     public.order_payments op
 JOIN 

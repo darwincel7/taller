@@ -537,7 +537,7 @@ export const Inventory: React.FC = () => {
                                 </div>
                                 <div className="flex flex-wrap items-center gap-3 mt-4">
                                     <span className="font-mono text-xs font-semibold bg-slate-100/80 text-slate-600 px-3 py-1.5 rounded-lg border border-slate-200">
-                                        No. Artículo: {((parseInventoryCategory(selectedPart.category) as any).readable_id ? (parseInventoryCategory(selectedPart.category) as any).readable_id : selectedPart.id.slice(0, 8).toUpperCase())}
+                                        No. Artículo: #{selectedPart.readable_id || selectedPart.id.slice(0, 8).toUpperCase()}
                                     </span>
                                     <span className="text-[11px] font-bold uppercase tracking-widest bg-white text-slate-600 px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm flex items-center gap-1.5">
                                         {getTypeIcon(parseInventoryCategory(selectedPart.category).type)}

@@ -318,7 +318,7 @@ async function startServer() {
     }
   });
 
-  app.get("/api/whatsapp/status", requireAuth, (req, res) => {
+  app.get("/api/whatsapp/status", (req, res) => {
     res.json(getWhatsAppStatus());
   });
 

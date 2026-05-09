@@ -1074,7 +1074,7 @@ const DashboardComponent: React.FC = () => {
                                                       </h4>
                                                       <p className="text-xs text-slate-500 font-medium mt-0.5 flex gap-2">
                                                           <span>{new Date(sale.created_at).toLocaleString()}</span>
-                                                          <span className="text-[10px] text-slate-400">#{sale.order_readable_id || navId?.slice(0,8) || 'N/A'}</span>
+                                                          <span className="text-[10px] text-slate-400 font-mono">#{sale.readable_id ? sale.readable_id : (navId || 'N/A')}</span>
                                                       </p>
                                                   </div>
                                               </div>
@@ -1512,7 +1512,7 @@ const DashboardComponent: React.FC = () => {
                              <h3 className="text-xl font-black text-slate-800">Detalles de Venta y Facturación</h3>
                              <p className="text-sm font-medium text-slate-500">
                                  {selectedTransaction.order_type === 'PART_ONLY' ? 'Preventa / Mostrador' : 'Venta de Inventario'}
-                                 {selectedTransaction.order_readable_id ? ` • #${selectedTransaction.order_readable_id}` : ''}
+                                 {selectedTransaction.readable_id ? ` • #${selectedTransaction.readable_id}` : ''}
                              </p>
                          </div>
                      </div>
@@ -1601,9 +1601,6 @@ const DashboardComponent: React.FC = () => {
                                          <div className="flex justify-between items-start mb-2">
                                              <div>
                                                  <p className="font-bold text-slate-800 text-sm">{exp.description || 'Artículo'}</p>
-                                                 {(exp.partId || exp.item_id) && (
-                                                     <p className="text-xs text-slate-400 font-mono mt-0.5">SKU/ID: {exp.partId || exp.item_id}</p>
-                                                 )}
                                              </div>
                                              <div className="text-right">
                                                  <p className="font-black text-slate-700">${charged.toLocaleString()}</p>

@@ -61,6 +61,33 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'floating_expenses' AND column_name = 'approval_status') THEN
         ALTER TABLE public.floating_expenses ADD COLUMN approval_status text DEFAULT 'PENDING';
     END IF;
+
+    -- inventory_parts
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'inventory_parts' AND column_name = 'readable_id') THEN
+        ALTER TABLE public.inventory_parts ADD COLUMN readable_id bigint;
+    END IF;
+
+    -- CREATE SEQUENCES AND UPDATE NULLS FOR READABLE_ID
+    CREATE SEQUENCE IF NOT EXISTS transactions_readable_id_seq START 5000;
+    CREATE SEQUENCE IF NOT EXISTS floating_expenses_readable_id_seq START 8000;
+    CREATE SEQUENCE IF NOT EXISTS pos_sales_readable_id_seq START 2000;
+    CREATE SEQUENCE IF NOT EXISTS inventory_parts_readable_id_seq START 10000;
+
+    UPDATE public.accounting_transactions 
+    SET readable_id = nextval('transactions_readable_id_seq')
+    WHERE readable_id IS NULL;
+
+    UPDATE public.floating_expenses 
+    SET readable_id = nextval('floating_expenses_readable_id_seq')
+    WHERE readable_id IS NULL;
+
+    UPDATE public.pos_sales 
+    SET readable_id = nextval('pos_sales_readable_id_seq')
+    WHERE readable_id IS NULL;
+
+    UPDATE public.inventory_parts 
+    SET readable_id = nextval('inventory_parts_readable_id_seq')
+    WHERE readable_id IS NULL;
 END $$;
 
 -- 2. ACTUALIZAR get_payments_flat (UNIFICADO V19)
