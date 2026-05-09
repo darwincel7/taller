@@ -23,6 +23,10 @@ export const OmnicanalInbox: React.FC = () => {
   const [inputText, setInputText] = useState('');
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
+  const [filterChannel, setFilterChannel] = useState<string>('all');
+  const [filterStatus, setFilterStatus] = useState<string>('all');
+  const [filterPriority, setFilterPriority] = useState<string>('all');
+  
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -129,16 +133,41 @@ export const OmnicanalInbox: React.FC = () => {
     else if (file.type.startsWith('audio/')) msgType = 'audio';
     else if (!file.type.startsWith('image/')) msgType = 'document';
 
+    if (activeConv.active_channel === 'tiktok' && msgType !== 'image') {
+      alert('TikTok actualmente solo permite enviar imágenes y texto.');
+      return;
+    }
+
+    // Attempt upload to Supabase Storage
+    let mediaUrl = '';
+    try {
+      const fileExt = file.name.split('.').pop() || 'tmp';
+      const fileName = `${Date.now()}-${Math.random().toString(36).substring(7)}.${fileExt}`;
+      const filePath = `omnicanal/${fileName}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from('crm-media')
+        .upload(filePath, file);
+
+      if (!uploadError) {
+        const { data } = supabase.storage.from('crm-media').getPublicUrl(filePath);
+        mediaUrl = data.publicUrl;
+      }
+    } catch(e) {
+      console.warn("Storage upload failed, falling back to base64 if needed", e);
+    }
+
     // Convert to base64 for quick preview / upload mock
     const reader = new FileReader();
     reader.onload = async (event) => {
         const base64 = event.target?.result as string;
+        const finalUrl = mediaUrl || base64; // Use Supabase URL if successful, otherwise base64
         
         const tempMsg = {
           id: `temp-${Date.now()}`,
           text: '',
           message_type: msgType,
-          media_url: base64,
+          media_url: finalUrl,
           direction: 'outbound',
           status: 'sending',
           created_at: new Date().toISOString(),
@@ -153,14 +182,19 @@ export const OmnicanalInbox: React.FC = () => {
             body: JSON.stringify({ 
               conversationId: activeConv.id, 
               text: '',
-              mediaUrl: base64,
+              mediaUrl: finalUrl,
               mediaType: msgType
             })
           });
+          
+          const contentType = res.headers.get("content-type");
+          if (!contentType || !contentType.includes("application/json")) {
+            throw new Error("Invalid response from server");
+          }
           const data = await res.json();
           if (!data.success) throw new Error(data.error);
           
-          setMessages(prev => prev.map(m => m.id === tempMsg.id ? { ...m, status: 'sent' } : m));
+          setMessages(prev => prev.map(m => m.id === tempMsg.id ? { ...m, status: 'sent', id: data.messageId || m.id } : m));
         } catch (error) {
           console.error('Error sending media:', error);
           setMessages(prev => prev.map(m => m.id === tempMsg.id ? { ...m, status: 'failed' } : m));
@@ -296,7 +330,11 @@ export const OmnicanalInbox: React.FC = () => {
     const searchMatch = (c.crm_contacts?.display_name || '').toLowerCase().includes(searchQuery.toLowerCase()) || 
                         (c.crm_contacts?.full_name || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
                         (c.crm_contacts?.primary_phone || '').includes(searchQuery);
-    return searchMatch;
+    const channelMatch = filterChannel === 'all' || c.active_channel === filterChannel;
+    const statusMatch = filterStatus === 'all' || c.status === filterStatus;
+    const priorityMatch = filterPriority === 'all' || c.priority === filterPriority;
+
+    return searchMatch && channelMatch && statusMatch && priorityMatch;
   });
 
   return (
@@ -304,19 +342,42 @@ export const OmnicanalInbox: React.FC = () => {
       {/* Left panel - Inbox List */}
       <div className="w-1/3 border-r border-slate-200 flex flex-col bg-slate-50 min-w-[300px]">
         <div className="p-4 border-b border-slate-200 bg-white">
-          <h2 className="font-bold text-slate-800 text-lg flex items-center gap-2">
+          <h2 className="font-bold text-slate-800 text-lg flex items-center gap-2 mb-3">
             <MessageCircle className="w-5 h-5 text-indigo-500" />
             Bandeja Omnicanal
           </h2>
-          <div className="mt-3 relative">
-            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-            <input 
-              type="text" 
-              placeholder="Buscar cliente..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full bg-slate-100 border-none rounded-xl pl-9 pr-4 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
-            />
+          <div className="space-y-2">
+            <div className="relative">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input 
+                type="text" 
+                placeholder="Buscar cliente..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full bg-slate-100 border-none rounded-xl pl-9 pr-4 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+              />
+            </div>
+            <div className="flex gap-2">
+              <select value={filterChannel} onChange={e => setFilterChannel(e.target.value)} className="w-1/3 text-xs bg-slate-100 border-none rounded-lg p-1.5 focus:ring-1 focus:ring-indigo-500">
+                <option value="all">Canal: Todos</option>
+                <option value="whatsapp">WhatsApp</option>
+                <option value="instagram">Instagram</option>
+                <option value="facebook">Facebook</option>
+                <option value="tiktok">TikTok</option>
+              </select>
+              <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} className="w-1/3 text-xs bg-slate-100 border-none rounded-lg p-1.5 focus:ring-1 focus:ring-indigo-500">
+                <option value="all">Estado: Todos</option>
+                <option value="open">Abierto</option>
+                <option value="in_progress">En progreso</option>
+                <option value="closed">Cerrado</option>
+              </select>
+              <select value={filterPriority} onChange={e => setFilterPriority(e.target.value)} className="w-1/3 text-xs bg-slate-100 border-none rounded-lg p-1.5 focus:ring-1 focus:ring-indigo-500">
+                <option value="all">Pri: Todas</option>
+                <option value="normal">Normal</option>
+                <option value="high">Alta</option>
+                <option value="urgent">Urgente</option>
+              </select>
+            </div>
           </div>
         </div>
         <div className="flex-1 overflow-y-auto">
@@ -381,8 +442,28 @@ export const OmnicanalInbox: React.FC = () => {
                      <p className="text-xs text-slate-500">{activeConv.crm_contacts.primary_phone}</p>
                   )}
                </div>
-               <div className="ml-auto">
-                 {/* actions dropdown o tools if needed */}
+               <div className="ml-auto flex items-center gap-2">
+                 <select className="text-xs border-slate-200 rounded-lg p-1.5 focus:ring-1 focus:ring-indigo-500">
+                   <option value="">Transferir a...</option>
+                   <option value="agent_1">Vendedora 1</option>
+                   <option value="agent_2">Taller</option>
+                 </select>
+                 <button className="text-xs bg-amber-50 text-amber-700 border border-amber-200 px-3 py-1.5 rounded-lg hover:bg-amber-100 transition" onClick={() => {
+                   const note = prompt("Escribe una nota interna para este cliente:");
+                   if (note) {
+                     // Lógica de nota interna (mock o real mediante update msg)
+                     setMessages(prev => [...prev, {
+                       id: `note-${Date.now()}`,
+                       text: `📝 Nota interna: ${note}`,
+                       message_type: 'text',
+                       direction: 'system',
+                       created_at: new Date().toISOString(),
+                       channel: 'system'
+                     }]);
+                   }
+                 }}>
+                   Añadir Nota
+                 </button>
                </div>
             </div>
 
@@ -431,6 +512,17 @@ export const OmnicanalInbox: React.FC = () => {
             </div>
 
             <div className="p-4 bg-white border-t border-slate-200">
+               <div className="flex gap-2 overflow-x-auto pb-2 mb-2 w-full no-scrollbar">
+                 {['¿Cuál es el precio? 💰', 'Financiamiento disponible 🏦', 'Ubicación de tienda 📍', 'Garantía del equipo 🛡️', 'Estado de reparación 🔧'].map((reply, i) => (
+                    <button 
+                      key={i} 
+                      onClick={() => setInputText(reply)}
+                      className="whitespace-nowrap px-3 py-1 bg-slate-100 hover:bg-indigo-50 border border-slate-200 hover:border-indigo-200 text-slate-600 hover:text-indigo-700 text-[11px] rounded-full transition"
+                    >
+                      {reply}
+                    </button>
+                 ))}
+               </div>
                <div className="flex items-center gap-2 mb-2 px-1">
                  <input type="file" id="omnicanal-img-upload" className="hidden" accept="image/*,video/*" onChange={handleImageSelect} />
                  <input type="file" id="omnicanal-doc-upload" className="hidden" accept=".pdf,.doc,.docx,.xls,.xlsx" onChange={handleImageSelect} />
@@ -562,6 +654,34 @@ export const OmnicanalInbox: React.FC = () => {
               <button className="w-full py-2 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 transition rounded-xl text-sm font-bold border border-indigo-200 mt-6 shadow-sm">
                 Crear Orden desde Chat
               </button>
+
+              {/* CRM Info section */}
+              <div className="mt-8 border-t border-slate-200 pt-4">
+                 <h3 className="font-bold text-slate-800 text-sm mb-4 uppercase tracking-wider">Historial del Cliente</h3>
+                 
+                 <div className="mb-4">
+                   <h4 className="text-xs font-bold text-slate-500 mb-2">Últimas Órdenes</h4>
+                   <div className="bg-white border border-slate-200 rounded-lg p-3 shadow-sm text-xs space-y-2">
+                      <div className="flex justify-between items-center text-slate-700">
+                        <span>#10405 - <span className="text-emerald-600 font-medium">Completada</span></span>
+                        <span className="text-slate-400">Hace 2 días</span>
+                      </div>
+                      <div className="flex justify-between items-center text-slate-700">
+                        <span>#10390 - <span className="text-emerald-600 font-medium">Completada</span></span>
+                        <span className="text-slate-400">Hace 1 mes</span>
+                      </div>
+                   </div>
+                 </div>
+
+                 <div>
+                   <h4 className="text-xs font-bold text-slate-500 mb-2">Casos Taller (Reparaciones)</h4>
+                   <div className="bg-white border border-slate-200 rounded-lg p-3 shadow-sm text-xs space-y-2">
+                      <div className="flex justify-between items-center text-slate-700">
+                        <span>Pantalla iPhone 13 - <span className="text-blue-600 font-medium">En Taller</span></span>
+                      </div>
+                   </div>
+                 </div>
+              </div>
             </div>
           </div>
         ) : (

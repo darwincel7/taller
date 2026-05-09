@@ -90,6 +90,11 @@ create table if not exists crm_messages (
  status text default 'received',
  sender_role text,
  sent_by uuid,
+ error_message text,
+ provider_response jsonb,
+ delivered_at timestamptz,
+ read_at timestamptz,
+ updated_at timestamptz default now(),
  raw jsonb,
  created_at timestamptz default now(),
  unique(channel, external_message_id)
@@ -165,8 +170,37 @@ create table if not exists crm_ai_insights (
  next_best_action text,
  suggested_response text,
  confidence numeric,
+ updated_at timestamptz default now(),
  created_at timestamptz default now()
 );
+
+create table if not exists crm_processing_jobs (
+ id uuid primary key default gen_random_uuid(),
+ job_type text not null,
+ reference_id uuid,
+ status text default 'pending' check (status in ('pending','processing','completed','failed')),
+ attempts int default 0,
+ payload jsonb default '{}',
+ error_message text,
+ created_at timestamptz default now(),
+ updated_at timestamptz default now(),
+ completed_at timestamptz
+);
+
+create index if not exists idx_crm_processing_jobs_status_type
+on crm_processing_jobs(status, job_type, created_at);
+
+create unique index if not exists idx_crm_processing_jobs_pending_unique
+on crm_processing_jobs(job_type, reference_id, status)
+where status in ('pending','processing');
+
+create unique index if not exists idx_crm_ai_insights_conversation_unique
+on crm_ai_insights(conversation_id)
+where conversation_id is not null;
+
+create unique index if not exists idx_crm_channel_accounts_unique
+on crm_channel_accounts(channel, external_account_id)
+where external_account_id is not null;
 
 create table if not exists crm_detected_contact_data (
  id uuid primary key default gen_random_uuid(),

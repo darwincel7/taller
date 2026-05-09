@@ -1,5 +1,6 @@
 import express from 'express';
 import { saveRawEvent, processIncomingMessage } from './pipeline';
+import { encryptToken, decryptToken } from './utils';
 
 const router = express.Router();
 
@@ -27,13 +28,14 @@ router.get('/oauth/callback', async (req, res) => {
     const redirectUri = `${req.protocol}://${req.get('host')}/api/tiktok/oauth/callback`;
 
     // 1. Exchange code for token
-    const tokenRes = await axios.post(`https://open.tiktokapis.com/v2/oauth/token/`, {
-       client_key: appId,
-       client_secret: appSecret,
-       code: code,
-       grant_type: 'authorization_code',
-       redirect_uri: redirectUri
-    }, {
+    const params = new URLSearchParams();
+    params.append('client_key', appId || '');
+    params.append('client_secret', appSecret || '');
+    params.append('code', code);
+    params.append('grant_type', 'authorization_code');
+    params.append('redirect_uri', redirectUri);
+
+    const tokenRes = await axios.post(`https://open.tiktokapis.com/v2/oauth/token/`, params, {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
     });
     
@@ -54,7 +56,7 @@ router.get('/oauth/callback', async (req, res) => {
         channel: 'tiktok',
         account_name: userInfo?.display_name || 'TikTok User',
         external_account_id: openId,
-        access_token_encrypted: accessToken, 
+        access_token_encrypted: encryptToken(accessToken), 
         status: 'active'
     }, { onConflict: 'channel, external_account_id' });
 

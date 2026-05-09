@@ -46,6 +46,7 @@ router.get('/conversations/:id/messages', async (req, res) => {
 
 router.post('/send', async (req, res) => {
   const { conversationId, text, mediaUrl, mediaType } = req.body;
+  let adapterMediaUrl = mediaUrl;
   const supabase = getSupabase();
   if (!supabase) return res.status(500).json({ error: 'DB no conectada' });
 
@@ -69,11 +70,11 @@ router.post('/send', async (req, res) => {
     if (idError || !identity) throw new Error('Identity not found for channel');
 
     let externalMessageId = `crm-send-${Date.now()}`;
-    let finalMediaUrlForDb = mediaUrl; // defaults to whatever was passed
+    let finalMediaUrlForDb = adapterMediaUrl; // defaults to whatever was passed
 
-    if (mediaUrl && mediaUrl.startsWith('data:')) {
+    if (adapterMediaUrl && adapterMediaUrl.startsWith('data:')) {
       // Decode and upload to supabase
-       const arr = mediaUrl.split(',');
+       const arr = adapterMediaUrl.split(',');
        const mimeMatch = arr[0].match(/:(.*?);/);
        const mimeType = mimeMatch ? mimeMatch[1] : 'application/octet-stream';
        const base64Data = arr[1];
@@ -105,6 +106,21 @@ router.post('/send', async (req, res) => {
        } else {
           console.error("Storage upload error:", uploadError);
        }
+    } else if (adapterMediaUrl && adapterMediaUrl.startsWith('http')) {
+       finalMediaUrlForDb = adapterMediaUrl;
+       try {
+         // Optionally insert in crm_media_assets if not already there, but lets assume frontend did it.
+         // We need to fetch the http URL and convert it to base64 for Baileys/Meta adapters for now.
+         const fetchRes = await fetch(adapterMediaUrl);
+         if (fetchRes.ok) {
+           const arrayBuffer = await fetchRes.arrayBuffer();
+           const buffer = Buffer.from(arrayBuffer);
+           const mimeType = fetchRes.headers.get('content-type') || 'application/octet-stream';
+           adapterMediaUrl = `data:${mimeType};base64,${buffer.toString('base64')}`;
+         }
+       } catch (e) {
+         console.error("Error downloading media for adapter:", e);
+       }
     }
 
     if (conv.active_channel === 'whatsapp') {
@@ -114,12 +130,12 @@ router.post('/send', async (req, res) => {
        let imageObj = undefined;
        let mediaObj = undefined;
 
-       if (mediaUrl) {
+       if (adapterMediaUrl) {
          if (mediaType === 'image') {
-            imageObj = mediaUrl; // Keep passing original base64 to Baileys as it probably supports data:image
+            imageObj = adapterMediaUrl; // Keep passing original base64 to Baileys as it probably supports data:image
          } else {
             mediaObj = {
-               base64: mediaUrl.split(',')[1] || mediaUrl,
+               base64: adapterMediaUrl.split(',')[1] || adapterMediaUrl,
                mimetype: mediaType === 'audio' ? 'audio/webm' : 'application/pdf',
                fileName: 'media_file'
             };

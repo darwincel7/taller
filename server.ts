@@ -5,6 +5,7 @@ import dotenv from "dotenv";
 import crypto from "crypto";
 import fs from "fs";
 import { createProxyMiddleware } from "http-proxy-middleware";
+import rateLimit from "express-rate-limit";
 import { connectToWhatsApp, getWhatsAppStatus, logoutWhatsApp, sendWhatsAppMessage, reconnectWhatsApp, resetWhatsAppConnection, disconnectWhatsApp, listWhatsAppConversations, listWhatsAppMessages, markConversationAsRead, linkConversationToOrder, getDiagnostics } from "./server/whatsapp.ts";
 import { GoogleGenAI, Type } from "@google/genai";
 
@@ -74,8 +75,33 @@ async function startServer() {
     }
   }));
 
-  app.use(express.json({ limit: '50mb' }));
+  app.use(express.json({
+    limit: '50mb',
+    verify: (req: any, res, buf) => {
+      req.rawBody = buf;
+    }
+  }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
+  const apiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 500, // Limit each IP to 500 requests per `window` (here, per 15 minutes)
+    standardHeaders: true, 
+    legacyHeaders: false, 
+  });
+  
+  const webhookLimiter = rateLimit({
+    windowMs: 1 * 60 * 1000, // 1 minute
+    max: 100, // Limit to 100 req per minute
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+
+  app.use('/api', apiLimiter);
+  app.use('/api/meta', webhookLimiter);
+  app.use('/api/tiktok', webhookLimiter);
+  app.use('/api/omnicanal/send', webhookLimiter);
+  app.use('/api/gemini/generateContent', webhookLimiter);
 
   // Initialize WhatsApp connection on server start
   connectToWhatsApp();
@@ -87,30 +113,7 @@ async function startServer() {
 
   // QZ Tray Certificate Route
   app.get("/api/cert-qz", (req, res) => {
-    const certificate = `-----BEGIN CERTIFICATE-----
-MIIECzCCAvOgAwIBAgIGAZ01FxEIMA0GCSqGSIb3DQEBCwUAMIGiMQswCQYDVQQG
-EwJVUzELMAkGA1UECAwCTlkxEjAQBgNVBAcMCUNhbmFzdG90YTEbMBkGA1UECgwS
-UVogSW5kdXN0cmllcywgTExDMRswGQYDVQQLDBJRWiBJbmR1c3RyaWVzLCBMTEMx
-HDAaBgkqhkiG9w0BCQEWDXN1cHBvcnRAcXouaW8xGjAYBgNVBAMMEVFaIFRyYXkg
-RGVtbyBDZXJ0MB4XDTI2MDMyNzE1MzYzN1oXDTQ2MDMyNzE1MzYzN1owgaIxCzAJ
-BgNVBAYTAlVTMQswCQYDVQQIDAJOWTESMBAGA1UEBwwJQ2FuYXN0b3RhMRswGQYD
-VQQKDBJRWiBJbmR1c3RyaWVzLCBMTEMxGzAZBgNVBAsMElFaIEluZHVzdHJpZXMs
-IExMQzEcMBoGCSqGSIb3DQEJARYNc3VwcG9ydEBxei5pbzEaMBgGA1UEAwwRUVog
-VHJheSBEZW1vIENlcnQwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDU
-/WnZHOtkH0+2BtVp3yTU2Aiu7JfXGGxpz2Nrn7g8Z6tZzBTMGGxVA1cC3JsRLy/M
-LRUKAoaAajA5TIgv5hdvGf9G8oAC/wv9krLN+T9Y844ZeKdsccS1+guvx48y68T8
-aAfffXDXMOuXUn8czm9BL6kaHKUrgPdaC63ePSlOUK/3gOq4z5lT6TkjvkMI7WYk
-xZGCCp5F/wfKteDo8t0qsEy7Rq+b9u5Y0F0FeU+P7HxSMiYlbhf76fBVQzhqkSo1
-RVKWCVwKOlmAwCKfq5synteiioL4dYoKhZ1r+0j7yNfAw8NpecHrmvFoIkaGXSDX
-5hC2RYZWkyGFmIEfNaV/AgMBAAGjRTBDMBIGA1UdEwEB/wQIMAYBAf8CAQEwDgYD
-VR0PAQH/BAQDAgEGMB0GA1UdDgQWBBSM/rw6PoNf30ueCGp8n8uuYlUxozANBgkq
-hkiG9w0BAQsFAAOCAQEAE3EE7fb2XLZgn/Ycg3eJ6SbQh/GBJd0DFeX5Sw5hONFl
-RymEuDkyRvFuAjP/4+xdt7zaZ3G/SjIoud5XPQb3dhVfQD77MlWCqCpbgRa63D1V
-oSw3BGHDF7hb4TXyRjrA8Ayc9XEqSPdU3YDvqJgMu3SaMymmJdQAtibRWPSvM8Ad
-OWJ6fLp+wIxXUFgSe1yfNNBzeY0oUR2aQ5Dm4zHy9LjJFPfM4yJJhBZk9SKz1gwN
-+b6CPv07iLryxv9SB+t5aGFIJByFLq/XJVY6V7D0ze9DI4hHtg3feoLPeeaY9/1U
-+SWHrXkSVURoudanjtqhWTx4TUBz0OrDX/Y/blAoYA==
------END CERTIFICATE-----`;
+    const certificate = process.env.QZ_CERTIFICATE || '';
     res.set('Content-Type', 'text/plain');
     res.send(certificate);
   });
@@ -123,34 +126,7 @@ OWJ6fLp+wIxXUFgSe1yfNNBzeY0oUR2aQ5Dm4zHy9LjJFPfM4yJJhBZk9SKz1gwN
     }
 
     try {
-      const privateKey = `-----BEGIN PRIVATE KEY-----
-MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQDU/WnZHOtkH0+2
-BtVp3yTU2Aiu7JfXGGxpz2Nrn7g8Z6tZzBTMGGxVA1cC3JsRLy/MLRUKAoaAajA5
-TIgv5hdvGf9G8oAC/wv9krLN+T9Y844ZeKdsccS1+guvx48y68T8aAfffXDXMOuX
-Un8czm9BL6kaHKUrgPdaC63ePSlOUK/3gOq4z5lT6TkjvkMI7WYkxZGCCp5F/wfK
-teDo8t0qsEy7Rq+b9u5Y0F0FeU+P7HxSMiYlbhf76fBVQzhqkSo1RVKWCVwKOlmA
-wCKfq5synteiioL4dYoKhZ1r+0j7yNfAw8NpecHrmvFoIkaGXSDX5hC2RYZWkyGF
-mIEfNaV/AgMBAAECggEAAK0NOPMujBLNXfaHlt5ub36ACI4XrUcWkP9ngV/wZcCu
-eop7RmqNbXelPw0UMOnFbRB3kKCRbLbpkET96akBSgj7Fm6OmXPVxehBSQYRfWbI
-fKw1W9LAnRM+FkC745178pEh9UOgqA4vsTtBzAWbtMlB8CNHIuw13MNMuffXubfm
-W5t2jHEwaTWivEdyAByBOwyLD6AZG2OXa7sYi9jBXFerP6lAdR5mh3pi82VFyJFi
-91khxPF5cp3abJ02LjeEf74VQdkngVshB+NNLWpX39NMMkDmG6AW2IHjJakODNvn
-0jSKDceVKhUoupv8J2S4+uMCKg4f2RVxgrnjcbwEgQKBgQDrwSvdYxkW7lh8s5sO
-IbItf9j8Kd9po9e5jTccntzXSE5DrTT33Rq2VGgyEknt7nJjf4l/tcMQZiWiN/lq
-5HQPHJEYydCWD9idOF0luR+3ZnttEBJ38CeVMlX1fUV4qZ9QuseUUYah+mnRSGrJ
-sIAnizLv+3VMdMTb4bcfqObqowKBgQDnR8iNc5L/cdDNxhGhwa+5MYKaD1uI9Px2
-dXmAqvITTWxifq8cNmtr2+UtrfyzDs5c13YLREqMZWV8TveYEsr+d/zXa7cbgPxW
-G6uF3UpNb553bqjUO8ERpg2epJ2N9yPEbO0YjBbi0Ms0Geo9mbUhKkCaf2GTeNTs
-0O16iqmDdQKBgHkQC2x2VQ33ey0eNgN9vjerLUvgXL+syTyZjbF+yr0qfjY2nbqi
-qfLzSUZdKeWqysbZWUxhlDe5nJ2+zK/dfNO9wazPBfPpUzz5EqwqcmUFlWAeHr3E
-by8oWAfmOmSKBiu4noBFlTNcmjZET8IehtDHpHKj2EpYtDaNpDH31AytAoGAYfGq
-Ywzw0bD3hk09Jk2KB1mKP4gFcaieSeRSAkViov4Eymlv6vi44UKMeZ3XCFVa20J7
-wSW4lGBUbCJdBE/hG4bg0rHRJ5qmQikRqG0gjE6aw2VfphFwH/M8jVSVTIu+3+5p
-Mh4Rixh1Falr4452gIcOON99CSEAuxF3oI+cXgkCgYA5UqG6N/DpeSmqtjOhaorb
-wd5JyarzJT0Z4dc5SMZOgSupmy3wRuqSWbNrX+QVky5hUTRamMvyNtEZfEN1AJs1
-1/GXM1HoKVbuyrwLhaJoj9JuoywNAg3uPSUAp2ChnY9kbIoWv1m8646IdWzXRBuk
-WulWnM5/R4sQkOsivcABDQ==
------END PRIVATE KEY-----`;
+      const privateKey = process.env.QZ_PRIVATE_KEY || '';
 
       const sign = crypto.createSign('SHA256');
       sign.update(requestToSign);

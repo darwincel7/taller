@@ -152,7 +152,7 @@ export async function processIncomingMessage(msg: NormalizedIncomingMessage) {
     }
 
     // 4. Guarda mensaje
-    const { error: msgError } = await supabase
+    const { data: savedMsg, error: msgError } = await supabase
       .from('crm_messages')
       .insert({
         conversation_id: conversationId,
@@ -168,7 +168,9 @@ export async function processIncomingMessage(msg: NormalizedIncomingMessage) {
         media_mime: msg.mediaMime,
         raw: msg.raw,
         created_at: msg.createdAt
-      });
+      })
+      .select('id')
+      .single();
 
     if (msgError) {
       if (msgError.code === '23505') {
@@ -180,7 +182,7 @@ export async function processIncomingMessage(msg: NormalizedIncomingMessage) {
 
     // 5. Detecta telefonos en texto
     if (msg.text) {
-      await detectPhoneNumbers(msg.text, contactId, conversationId, msg.externalMessageId); // msg.id is missing but we can use external_message_id
+      await detectPhoneNumbers(msg.text, contactId, conversationId, savedMsg?.id);
     }
 
     // 6. Actualiza resumen IA mediante jobs

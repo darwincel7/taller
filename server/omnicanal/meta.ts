@@ -1,6 +1,7 @@
 import express from 'express';
 import crypto from 'crypto';
 import { saveRawEvent, processIncomingMessage } from './pipeline';
+import { encryptToken, decryptToken } from './utils';
 
 const router = express.Router();
 
@@ -45,11 +46,7 @@ router.get('/webhook', (req, res) => {
   return res.sendStatus(403);
 });
 
-router.post('/webhook', express.json({
-  verify: (req: any, res, buf, encoding) => {
-     req.rawBody = buf;
-  }
-}), async (req: any, res) => {
+router.post('/webhook', async (req: any, res) => {
   try {
     const signature = req.headers['x-hub-signature-256'];
     const appSecret = process.env.META_APP_SECRET;
@@ -65,7 +62,8 @@ router.post('/webhook', express.json({
     }
 
     const body = req.body;
-    await saveRawEvent('facebook', 'webhook', body);
+    const channelRaw = body.object === 'instagram' ? 'instagram' : 'facebook';
+    await saveRawEvent(channelRaw, 'webhook', body);
 
     if (body.object === 'page' || body.object === 'instagram') {
       const promises: Promise<any>[] = [];
@@ -140,7 +138,10 @@ router.get('/oauth/callback', async (req, res) => {
 
     // 3. Get user profile and pages
     const pagesRes = await axios.get(`https://graph.facebook.com/v19.0/me/accounts`, {
-       params: { access_token: accessToken }
+       params: { 
+         access_token: accessToken,
+         fields: 'id,name,access_token,instagram_business_account'
+       }
     });
 
     const pages = pagesRes.data.data;
@@ -152,9 +153,20 @@ router.get('/oauth/callback', async (req, res) => {
           account_name: page.name,
           external_account_id: page.id,
           page_id: page.id,
-          access_token_encrypted: page.access_token, // Ideally encrypted here
+          access_token_encrypted: encryptToken(page.access_token), // Encrypted
           status: 'active'
        }, { onConflict: 'channel, external_account_id' });
+
+       if (page.instagram_business_account) {
+         await supabase.from('crm_channel_accounts').upsert({
+            channel: 'instagram',
+            account_name: `${page.name} / Instagram`,
+            external_account_id: page.instagram_business_account.id,
+            page_id: page.id,
+            access_token_encrypted: encryptToken(page.access_token),
+            status: 'active'
+         }, { onConflict: 'channel, external_account_id' });
+       }
     }
 
     // Redirect to frontend or success page
@@ -202,7 +214,7 @@ export async function sendMetaMessage(pageId: string, recipientId: string, text:
     throw new Error(`Meta account not linked or missing access token for Page ${pageId}`);
   }
 
-  const token = account.access_token_encrypted;
+  const token = decryptToken(account.access_token_encrypted);
 
   // 2. Prepare payload
   const endpoint = `https://graph.facebook.com/v19.0/${pageId}/messages`;
