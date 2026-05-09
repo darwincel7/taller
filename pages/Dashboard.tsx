@@ -149,10 +149,12 @@ const DashboardComponent: React.FC = () => {
       const category = isInventory ? `Inventario (${branch})` : `Taller (${branch})`;
       
       if (!grouped[category]) {
-        grouped[category] = { items: [], total: 0 };
+        grouped[category] = { items: [], total: 0, totalGanancia: 0, totalVentas: 0 };
       }
       grouped[category].items.push(sale);
-      grouped[category].total += Number(sale.gross_amount) || sale.amount || 0;
+      grouped[category].total += Number(sale.net_profit) || 0;
+      grouped[category].totalVentas += sale.is_refund ? -Math.abs(Number(sale.gross_amount) || 0) : (Number(sale.gross_amount) || 0);
+      grouped[category].totalGanancia += Number(sale.net_profit) || 0;
     });
     return grouped;
   }, [salesDetails]);
@@ -1056,9 +1058,6 @@ const DashboardComponent: React.FC = () => {
                                                   if (isWorkshop && navId) {
                                                       setSelectedSalesPeriod(null);
                                                       navigate(`/orders/${navId}`);
-                                                  } else if (!isWorkshop && navId && navId !== 'PRODUCT_SALE' && navId !== 'GASTO_LOCAL' && navId !== 'MANUAL_TX') {
-                                                      setSelectedSalesPeriod(null);
-                                                      navigate(`/orders/${navId}`);
                                                   } else {
                                                       setSelectedTransaction(sale);
                                                   }
@@ -1088,7 +1087,7 @@ const DashboardComponent: React.FC = () => {
                                                           <span className="text-[10px] text-slate-400">Costo: ${(Number(sale.cost_amount) || 0).toLocaleString()}</span>
                                                           <span className={`text-[10px] font-bold ${isRefund ? 'text-red-500' : 'text-emerald-500'}`}>Ganancia: ${(Number(sale.net_profit) || 0).toLocaleString()}</span>
                                                           <span className="text-[9px] font-bold text-slate-400 uppercase mt-1">
-                                                             {sale.payment_method || sale.method || 'N/A'} {isRefund ? '(DEVOLUCIÓN)' : ''}
+                                                             {sale.payment_method || sale.method || 'N/A'} {isRefund ? '(DEVOLUCIÓN)' : ''} | SUC: {sale.branch || 'T4'} | TIPO: {sale.source_type || 'N/A'} {sale.is_credit ? '(CRÉDITO)' : ''} {sale.is_cambiazo ? '(CAMBIAZO)' : ''}
                                                           </span>
                                                       </div>
                                                   </div>
@@ -1109,7 +1108,7 @@ const DashboardComponent: React.FC = () => {
                                               <div>
                                                   <h4 className="text-sm font-black text-slate-400 uppercase tracking-widest flex items-center justify-between mb-4">
                                                       <span className="flex items-center gap-2"><Package className="w-5 h-5 text-teal-500" /> Inventario</span>
-                                                      <span className="text-sm font-bold text-slate-700 bg-teal-50 text-teal-700 px-3 py-1 rounded-full border border-teal-100">${(invData?.total || 0).toLocaleString()}</span>
+                                                      <span className="text-sm font-bold text-slate-700 bg-teal-50 text-teal-700 px-3 py-1 rounded-full border border-teal-100">${(invData?.totalVentas || 0).toLocaleString()} (V) <span className="text-emerald-600">| ${(invData?.totalGanancia || 0).toLocaleString()} (G)</span></span>
                                                   </h4>
                                                   <div className="space-y-3">
                                                       {invData?.items?.length > 0 ? (
@@ -1126,7 +1125,7 @@ const DashboardComponent: React.FC = () => {
                                               <div>
                                                   <h4 className="text-sm font-black text-slate-400 uppercase tracking-widest flex items-center justify-between mb-4">
                                                       <span className="flex items-center gap-2"><Wrench className="w-5 h-5 text-orange-500" /> Taller</span>
-                                                      <span className="text-sm font-bold text-slate-700 bg-orange-50 text-orange-700 px-3 py-1 rounded-full border border-orange-100">${(talData?.total || 0).toLocaleString()}</span>
+                                                      <span className="text-sm font-bold text-slate-700 bg-orange-50 text-orange-700 px-3 py-1 rounded-full border border-orange-100">${(talData?.totalVentas || 0).toLocaleString()} (V) <span className="text-emerald-600">| ${(talData?.totalGanancia || 0).toLocaleString()} (G)</span></span>
                                                   </h4>
                                                   <div className="space-y-3">
                                                       {talData?.items?.length > 0 ? (

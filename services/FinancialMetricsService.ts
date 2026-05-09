@@ -2,6 +2,14 @@ import { supabase } from './supabase';
 import { FinancialKPIs } from '../types';
 
 export const financialMetricsService = {
+  getCashDirection(cm: any) {
+    const mov = cm.movement_type;
+    if (!mov) return 'NEUTRAL';
+    if (['SALE_IN', 'CREDIT_IN', 'INITIAL_CASH', 'TRANSFER_IN', 'IN'].includes(mov)) return 'IN';
+    if (['REFUND_OUT', 'EXPENSE_OUT', 'CASH_OUT', 'OUT'].includes(mov)) return 'OUT';
+    return 'NEUTRAL';
+  },
+
   /**
    * Generates the core financial KPIs for a given date range.
    * If no range is given, defaults to current month vs previous month.
@@ -38,11 +46,12 @@ export const financialMetricsService = {
         rawData.cashMovements.forEach((cm: any) => {
             const amount = Number(cm.amount) || 0;
             // Only non-credit inbound is cash positive
-            if (cm.type === 'IN') {
+            const direction = this.getCashDirection(cm);
+            if (direction === 'IN') {
                 if (!['CREDIT', 'EXCHANGE', 'CAMBIAZO'].includes(cm.method)) {
                     flujoEfectivo += amount;
                 }
-            } else if (cm.type === 'OUT') {
+            } else if (direction === 'OUT') {
                 flujoEfectivo -= Math.abs(amount);
             }
         });
@@ -54,7 +63,10 @@ export const financialMetricsService = {
 
       if (amount < 0) {
         // Gasto / Compra / Egreso
-        gastosOperativos += Math.abs(amount);
+        const isAlreadyInUnified = t.order_id != null || t.source === 'STORE';
+        if (!isAlreadyInUnified) {
+            gastosOperativos += Math.abs(amount);
+        }
       } else {
         // Ingreso extra (no POS, no Taller)
         const desc = t.description?.toLowerCase() || '';
@@ -143,7 +155,7 @@ export const financialMetricsService = {
     if (!supabase) throw new Error('Supabase client not initialized');
 
     // 1. Fetch cash movements
-    const { data: rawCashMovements } = await supabase.from('cash_movements').select('*').in('status', ['COMPLETED', 'PAID', 'active']);
+    const { data: rawCashMovements } = await supabase.from('cash_movements').select('*');
     const cashMovements = rawCashMovements || [];
     
     // 2. Fetch accounting transactions
@@ -238,11 +250,12 @@ export const financialMetricsService = {
       }
       
       const amount = Number(cm.amount) || 0;
-      if (cm.type === 'IN') {
+      const direction = this.getCashDirection(cm);
+      if (direction === 'IN') {
           if (!['CREDIT', 'EXCHANGE', 'CAMBIAZO'].includes(cm.method)) {
               monthlyData[monthKey].income += amount;
           }
-      } else if (cm.type === 'OUT') {
+      } else if (direction === 'OUT') {
           monthlyData[monthKey].expenses += Math.abs(amount);
       }
     });

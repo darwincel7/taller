@@ -1,4 +1,8 @@
-CREATE OR REPLACE VIEW public.v_sales_unified AS
+BEGIN;
+
+DROP VIEW IF EXISTS public.v_sales_unified CASCADE;
+
+CREATE VIEW public.v_sales_unified AS
 -- A. Ventas desde el POS Rápido
 SELECT 
     ps.id::text as source_id,
@@ -55,7 +59,7 @@ SELECT
                 WHERE e->>'amount' IS NOT NULL
             ), 0)
             + 
-            COALESCE((SELECT SUM(ABS(amount)) FROM public.accounting_transactions WHERE order_id = o.id), 0)
+            COALESCE((SELECT SUM(ABS(amount)) FROM public.accounting_transactions WHERE order_id = o.id AND amount < 0), 0)
         ) 
         * 
         (
@@ -85,7 +89,7 @@ SELECT
                 WHERE e->>'amount' IS NOT NULL
             ), 0)
             + 
-            COALESCE((SELECT SUM(ABS(amount)) FROM public.accounting_transactions WHERE order_id = o.id), 0)
+            COALESCE((SELECT SUM(ABS(amount)) FROM public.accounting_transactions WHERE order_id = o.id AND amount < 0), 0)
         ) 
         * 
         (
@@ -122,3 +126,5 @@ JOIN
 
 GRANT SELECT ON public.v_sales_unified TO authenticated;
 GRANT SELECT ON public.v_sales_unified TO service_role;
+
+COMMIT;
