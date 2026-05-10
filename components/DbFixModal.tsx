@@ -120,15 +120,15 @@ BEGIN
     RETURN QUERY
     -- A. Pagos de Órdenes (Talleres)
     SELECT
-        op.id,
-        op.order_id,
+        op.id::text,
+        op.order_id::text,
         op.amount,
         op.method,
         op.cashier_id,
         op.cashier_name,
         op.is_refund,
         op.created_at,
-        op.closing_id,
+        op.closing_id::text,
         COALESCE(o."currentBranch", 'T4') as branch,
         o.readable_id::bigint as order_readable_id,
         o."deviceModel"::text as order_model
@@ -148,8 +148,8 @@ BEGIN
 
     -- B. Movimientos de Caja Transaccionales (POS V2 - NUEVO)
     SELECT
-        cm.id,
-        cm.source_id as order_id,
+        cm.id::text,
+        cm.source_id::text as order_id,
         cm.amount,
         cm.method,
         cm.cashier_id,
@@ -178,7 +178,7 @@ BEGIN
     
     -- C. Transacciones de Contabilidad (Gastos, Ventas Legacy)
     SELECT
-        at.id,
+        at.id::text,
         CASE 
             WHEN at.source = 'STORE' AND at.amount > 0 THEN 'PRODUCT_SALE'
             WHEN at.source = 'MANUAL' THEN 'MANUAL_TX'
@@ -190,7 +190,7 @@ BEGIN
         'Cajero' as cashier_name,
         (at.amount < 0) as is_refund,
         (extract(epoch from at.created_at) * 1000)::bigint as created_at,
-        at.closing_id,
+        at.closing_id::text,
         COALESCE(at.branch, 'T4') as branch,
         at.readable_id::bigint as order_readable_id,
         CASE 
@@ -216,7 +216,7 @@ BEGIN
     
     -- D. Gastos Flotantes (Negativos)
     SELECT
-        fe.id,
+        fe.id::text,
         'GASTO_FLOTANTE' as order_id,
         -ABS(fe.amount) as amount,
         'CASH' as method,
@@ -224,7 +224,7 @@ BEGIN
         'Gasto Flotante' as cashier_name,
         true as is_refund,
         (extract(epoch from fe.created_at) * 1000)::bigint as created_at,
-        fe.closing_id,
+        fe.closing_id::text,
         COALESCE(fe.branch_id, 'T4') as branch,
         fe.readable_id::bigint as order_readable_id,
         'Gasto Flotante'::text as order_model
@@ -444,7 +444,18 @@ SELECT
     EXISTS(SELECT 1 FROM public.cash_movements WHERE source_id = ps.id::text AND method = 'CREDIT') as is_credit,
     EXISTS(SELECT 1 FROM public.cash_movements WHERE source_id = ps.id::text AND method IN ('EXCHANGE', 'CAMBIAZO')) as is_cambiazo,
     ps.status,
-    ps.readable_id::text as readable_id
+    ps.readable_id::text as readable_id,
+    (
+        SELECT jsonb_agg(
+            jsonb_build_object(
+                'description', pi.item_name || ' x' || pi.quantity,
+                'price', pi.unit_price,
+                'cost', pi.unit_price,
+                'partCost', pi.unit_cost
+            )
+        )
+        FROM public.pos_sale_items pi WHERE pi.sale_id = ps.id
+    ) as order_expenses
 FROM 
     public.pos_sales ps
 LEFT JOIN
@@ -536,7 +547,11 @@ SELECT
     op.method = 'CREDIT' as is_credit,
     op.method IN ('EXCHANGE', 'CAMBIAZO') as is_cambiazo,
     'completed' as status,
-    o.readable_id::text as readable_id
+    o.readable_id::text as readable_id,
+    CASE 
+        WHEN jsonb_typeof(o.expenses) = 'array' THEN o.expenses 
+        ELSE '[]'::jsonb 
+    END as order_expenses
 FROM 
     public.order_payments op
 JOIN 
@@ -551,7 +566,7 @@ COMMIT;
 export const DbFixModal = ({ onClose }: { onClose: () => void }) => {
   const handleCopy = () => {
     navigator.clipboard.writeText(FULL_SQL);
-    alert("SQL V19 Copiado.\n\nEjecuta esto en Supabase SQL Editor para arreglar la conciliación de caja, id's y el costo de ventas_unified.");
+    alert("SQL V20 Copiado.\n\nEjecuta esto en Supabase SQL Editor para arreglar la conciliación de caja, id's y el costo de ventas_unified.");
   };
 
   return (
@@ -560,7 +575,7 @@ export const DbFixModal = ({ onClose }: { onClose: () => void }) => {
         <div className="flex items-center gap-3 text-blue-600 mb-4 border-b border-blue-100 dark:border-blue-900 pb-2">
           <Database className="w-8 h-8" />
           <div>
-            <h3 className="text-xl font-bold text-slate-800 dark:text-white">Reparación de Base de Datos (V19)</h3>
+            <h3 className="text-xl font-bold text-slate-800 dark:text-white">Reparación de Base de Datos (V20)</h3>
             <p className="text-sm text-slate-500 dark:text-slate-400">
                 Añade soporte para gastos en la conciliación de caja, id's limpios y corrección de costos de órdenes (v_sales_unified).
             </p>
@@ -572,7 +587,7 @@ export const DbFixModal = ({ onClose }: { onClose: () => void }) => {
         <div className="flex gap-3">
           <button onClick={onClose} className="px-6 py-3 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-bold rounded-xl hover:bg-slate-200">Cerrar</button>
           <button onClick={handleCopy} className="flex-1 py-3 bg-blue-600 text-white font-bold rounded-xl shadow-lg hover:bg-blue-700 flex items-center justify-center gap-2">
-            <Copy className="w-5 h-5"/> Copiar SQL V19
+            <Copy className="w-5 h-5"/> Copiar SQL V20
           </button>
         </div>
       </div>

@@ -27,10 +27,11 @@ export const InventoryProvider: React.FC<{ children: ReactNode }> = ({ children 
     // Hide archived items by default
     const { data } = await supabase.from('inventory_parts')
       .select('*')
-      .is('deleted_at', null)
-      .neq('status', 'archived')
       .order('name');
-    if (data) setInventory(data as InventoryPart[]);
+    
+    if (data) {
+        setInventory(data.filter((item: any) => !item.deleted_at && item.status !== 'archived') as InventoryPart[]);
+    }
   };
 
   const fetchWiki = async () => {

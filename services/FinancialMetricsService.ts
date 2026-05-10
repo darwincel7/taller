@@ -25,12 +25,15 @@ export const financialMetricsService = {
     let deduccionesVenta = 0;
     
     // 1. Process Sales from v_sales_unified
-    // This is the new source of truth for metrics
     if (rawData.unifiedSales) {
         rawData.unifiedSales.forEach((s: any) => {
             const amount = Number(s.gross_amount) || 0;
             const cost = Number(s.cost_amount) || 0;
+            const cashEffect = Number(s.cash_effect_amount) || 0;
             
+            // Add real cash to flujoEfectivo
+            flujoEfectivo += cashEffect;
+
             if (s.is_refund) {
                 deduccionesVenta += Math.abs(amount);
                 ventasNetas -= Math.abs(amount);
@@ -41,29 +44,20 @@ export const financialMetricsService = {
         });
     }
 
-    // 2. Process cash_movements for Real Cash Flow
-    if (rawData.cashMovements) {
-        rawData.cashMovements.forEach((cm: any) => {
-            const amount = Number(cm.amount) || 0;
-            // Only non-credit inbound is cash positive
-            const direction = this.getCashDirection(cm);
-            if (direction === 'IN') {
-                if (!['CREDIT', 'EXCHANGE', 'CAMBIAZO'].includes(cm.method)) {
-                    flujoEfectivo += amount;
-                }
-            } else if (direction === 'OUT') {
-                flujoEfectivo -= Math.abs(amount);
-            }
-        });
-    }
+    // 2. Process cash_movements for Real Cash Flow is DEPRECATED
+    // We now have all the real cash movements from sales inside unifiedSales 
 
     // 3. Process accounting transactions for Expenses and extra Income (exclude those already in sales)
     rawData.transactions.forEach((t: any) => {
-      const amount = Number(t.amount);
+      const amount = Number(t.amount) || 0;
+
+      // Every transaction affects real cash
+      flujoEfectivo += amount;
 
       if (amount < 0) {
         // Gasto / Compra / Egreso
-        const isAlreadyInUnified = t.order_id != null || t.source === 'STORE';
+        // Only ignore it if it's explicitly linked to an order
+        const isAlreadyInUnified = t.order_id != null;
         if (!isAlreadyInUnified) {
             gastosOperativos += Math.abs(amount);
         }
@@ -72,7 +66,7 @@ export const financialMetricsService = {
         const desc = t.description?.toLowerCase() || '';
         const isAlreadyInUnified = 
           t.order_id != null || 
-          t.source === 'STORE' ||
+          t.source === 'STORE' || // Legacy POS sales were positive STORE source
           desc.includes('pago orden') || 
           desc.includes('venta producto') || 
           desc.includes('abono a crédito');
@@ -165,11 +159,10 @@ export const financialMetricsService = {
     const { data: credits } = await supabase.from('client_credits').select('*');
 
     // 4. Fetch Inventory
-    const { data: inventory } = await supabase
+    const { data: rawInventory } = await supabase
       .from('inventory_parts')
-      .select('id, stock, price, cost, status, deleted_at')
-      .is('deleted_at', null)
-      .neq('status', 'archived');
+      .select('id, stock, price, cost, status, deleted_at');
+    const inventory = (rawInventory || []).filter(i => !i.deleted_at && i.status !== 'archived');
 
     // 5. Fetch Unified Sales View
     const { data: unifiedSales, error: salesError } = await supabase
@@ -237,9 +230,9 @@ export const financialMetricsService = {
     const rawData = await this.fetchRawFinancialData(effectiveStartDate, endDate);
     const monthlyData: { [key: string]: { income: number, expenses: number, purchases: number } } = {};
 
-    rawData.cashMovements.forEach((cm: any) => {
+    rawData.unifiedSales.forEach((s: any) => {
       let d = new Date();
-      const val = cm.created_at || cm.date;
+      const val = s.created_at || s.createdAt;
       if (val) {
           d = typeof val === 'string' && val.includes('T') ? new Date(val) : new Date(Number(val));
       }
@@ -249,42 +242,34 @@ export const financialMetricsService = {
         monthlyData[monthKey] = { income: 0, expenses: 0, purchases: 0 };
       }
       
-      const amount = Number(cm.amount) || 0;
-      const direction = this.getCashDirection(cm);
-      if (direction === 'IN') {
-          if (!['CREDIT', 'EXCHANGE', 'CAMBIAZO'].includes(cm.method)) {
-              monthlyData[monthKey].income += amount;
-          }
-      } else if (direction === 'OUT') {
-          monthlyData[monthKey].expenses += Math.abs(amount);
+      const cashEffect = Number(s.cash_effect_amount) || 0;
+      if (cashEffect > 0) {
+          monthlyData[monthKey].income += cashEffect;
+      } else if (cashEffect < 0) {
+          monthlyData[monthKey].expenses += Math.abs(cashEffect);
       }
     });
 
     rawData.transactions.forEach((t: any) => {
-      const isPosDuplicate = 
-          t.order_id != null || 
-          (t.description?.toLowerCase() || '').includes('pago orden') || 
-          (t.description?.toLowerCase() || '').includes('venta producto') || 
-          (t.description?.toLowerCase() || '').includes('abono a crédito');
+      const dateParts = t.transaction_date.split('-');
+      if (!dateParts || dateParts.length < 2) return;
+      const monthKey = `${dateParts[0]}-${dateParts[1]}`;
       
-      if (!isPosDuplicate) {
-        const dateParts = t.transaction_date.split('-');
-        const monthKey = `${dateParts[0]}-${dateParts[1]}`;
-        
-        if (!monthlyData[monthKey]) {
-          monthlyData[monthKey] = { income: 0, expenses: 0, purchases: 0 };
-        }
+      if (!monthlyData[monthKey]) {
+        monthlyData[monthKey] = { income: 0, expenses: 0, purchases: 0 };
+      }
 
-        const amount = Number(t.amount);
-        const isPurchase = t.accounting_categories?.name?.toLowerCase() === 'compras';
+      const amount = Number(t.amount) || 0;
+      const categoryName = t.accounting_categories?.name?.toLowerCase();
+      const isPurchase = categoryName === 'compras' || categoryName === 'inventario' || categoryName === 'compra de inventario tienda';
 
-        if (amount > 0) {
-          monthlyData[monthKey].income += amount;
-        } else if (isPurchase) {
-          monthlyData[monthKey].purchases += Math.abs(amount);
-        } else {
-          monthlyData[monthKey].expenses += Math.abs(amount);
-        }
+      // All transactions represent real cash movement
+      if (amount > 0) {
+        monthlyData[monthKey].income += amount;
+      } else if (isPurchase) {
+        monthlyData[monthKey].purchases += Math.abs(amount);
+      } else {
+        monthlyData[monthKey].expenses += Math.abs(amount);
       }
     });
 
@@ -321,8 +306,9 @@ export const financialMetricsService = {
           (t.description?.toLowerCase() || '').includes('abono a crédito');
         
         if (!isPosDuplicate) {
-          const categoryName = t.accounting_categories?.name || 'Sin Categoría';
-          if (categoryName.toLowerCase() !== 'compras') {
+          const categoryName = t.accounting_categories?.name || 'Varios';
+          const catLower = categoryName.toLowerCase();
+          if (catLower !== 'compras' && catLower !== 'inventario' && catLower !== 'compra de inventario tienda') {
             distribution[categoryName] = (distribution[categoryName] || 0) + Math.abs(amount);
           }
         }
