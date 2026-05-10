@@ -3,7 +3,7 @@ import React from 'react';
 import { Database, Copy, X } from 'lucide-react';
 
 const FULL_SQL = `-- ==============================================================================
--- SCRIPT CONSOLIDADO DE ACTUALIZACIÓN V19 (Idempotente + Transaccional)
+-- SCRIPT CONSOLIDADO DE ACTUALIZACIÓN V21 (Idempotente + Transaccional)
 -- Ejecutar en el SQL Editor de Supabase
 -- ==============================================================================
 
@@ -14,7 +14,7 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'cash_movements' AND column_name = 'closing_id') THEN
         ALTER TABLE public.cash_movements ADD COLUMN closing_id text;
     ELSE
-        ALTER TABLE public.cash_movements ALTER COLUMN closing_id TYPE text;
+        ALTER TABLE public.cash_movements ALTER COLUMN closing_id TYPE text USING closing_id::text;
     END IF;
 
     -- cash_closings
@@ -113,7 +113,10 @@ RETURNS TABLE(
     closing_id text,
     branch text,
     order_readable_id bigint,
-    order_model text
+    order_model text,
+    source_table text,
+    source_type text,
+    is_legacy boolean
 )
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -133,7 +136,10 @@ BEGIN
         op.closing_id::text,
         COALESCE(o."currentBranch", 'T4') as branch,
         o.readable_id::bigint as order_readable_id,
-        o."deviceModel"::text as order_model
+        o."deviceModel"::text as order_model,
+        'order_payments'::text as source_table,
+        'WORKSHOP'::text as source_type,
+        false as is_legacy
     FROM
         public.order_payments op
     LEFT JOIN
@@ -165,7 +171,10 @@ BEGIN
             WHEN cm.movement_type = 'SALE_IN' THEN 'Venta POS'
             WHEN cm.movement_type = 'CAMBIAZO_OUT' THEN 'Cambiazo POS'
             ELSE cm.reason
-        END::text as order_model
+        END::text as order_model,
+        'cash_movements'::text as source_table,
+        cm.movement_type::text as source_type,
+        false as is_legacy
     FROM
         public.cash_movements cm
     WHERE
@@ -199,13 +208,20 @@ BEGIN
             WHEN at.source = 'STORE' AND at.amount > 0 THEN 'Venta Directa'
             WHEN at.source = 'MANUAL' THEN 'Transacción Manual'
             ELSE 'Gasto Local' 
-        END::text as order_model
+        END::text as order_model,
+        'accounting_transactions'::text as source_table,
+        'ACCOUNTING_LEGACY'::text as source_type,
+        true as is_legacy
     FROM
         public.accounting_transactions at
     WHERE
         at.source IN ('STORE', 'ORDER', 'FLOATING', 'MANUAL')
         AND at.status = 'COMPLETED'
         AND (at.approval_status IS NULL OR at.approval_status != 'REJECTED')
+        AND NOT EXISTS (
+            SELECT 1 FROM public.cash_movements cm
+            WHERE cm.source_id = at.id::text OR cm.reason = at.description
+        )
         AND (at.description IS NULL OR at.description NOT LIKE 'Venta POS Directa%') -- Priorizar cash_movements v2
         AND (p_closing_id IS NULL OR at.closing_id = p_closing_id)
         AND (NOT p_pending_only OR at.closing_id IS NULL)
@@ -229,7 +245,10 @@ BEGIN
         fe.closing_id::text,
         COALESCE(fe.branch_id, 'T4') as branch,
         fe.readable_id::bigint as order_readable_id,
-        'Gasto Flotante'::text as order_model
+        'Gasto Flotante'::text as order_model,
+        'floating_expenses'::text as source_table,
+        'FLOATING_EXPENSE'::text as source_type,
+        false as is_legacy
     FROM
         public.floating_expenses fe
     WHERE
@@ -584,7 +603,7 @@ COMMIT;
 export const DbFixModal = ({ onClose }: { onClose: () => void }) => {
   const handleCopy = () => {
     navigator.clipboard.writeText(FULL_SQL);
-    alert("SQL V20 Copiado.\n\nEjecuta esto en Supabase SQL Editor para arreglar la conciliación de caja, id's y el costo de ventas_unified.");
+    alert("SQL V21 Copiado.\n\nEjecuta esto en Supabase SQL Editor para arreglar la conciliación de caja, id's y el costo de ventas_unified.");
   };
 
   return (
@@ -593,9 +612,9 @@ export const DbFixModal = ({ onClose }: { onClose: () => void }) => {
         <div className="flex items-center gap-3 text-blue-600 mb-4 border-b border-blue-100 dark:border-blue-900 pb-2">
           <Database className="w-8 h-8" />
           <div>
-            <h3 className="text-xl font-bold text-slate-800 dark:text-white">Reparación de Base de Datos (V20)</h3>
+            <h3 className="text-xl font-bold text-slate-800 dark:text-white">Reparación de Base de Datos (V21)</h3>
             <p className="text-sm text-slate-500 dark:text-slate-400">
-                Añade soporte para gastos en la conciliación de caja, id's limpios y corrección de costos de órdenes (v_sales_unified).
+                Añade soporte para gastos en la conciliación de caja, id's limpios, limpieza de turnos (evita duplicados) y corrección de costos.
             </p>
           </div>
         </div>
@@ -605,7 +624,7 @@ export const DbFixModal = ({ onClose }: { onClose: () => void }) => {
         <div className="flex gap-3">
           <button onClick={onClose} className="px-6 py-3 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-bold rounded-xl hover:bg-slate-200">Cerrar</button>
           <button onClick={handleCopy} className="flex-1 py-3 bg-blue-600 text-white font-bold rounded-xl shadow-lg hover:bg-blue-700 flex items-center justify-center gap-2">
-            <Copy className="w-5 h-5"/> Copiar SQL V20
+            <Copy className="w-5 h-5"/> Copiar SQL V21
           </button>
         </div>
       </div>

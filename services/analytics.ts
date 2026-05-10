@@ -24,6 +24,9 @@ export interface FlatPayment {
     order_expenses?: any;
     closing_id?: string | null; // Added closing_id
     invoice_number?: string | null;
+    source_table?: string;
+    source_type?: string;
+    is_legacy?: boolean;
 }
 
 /**
@@ -78,7 +81,10 @@ export const fetchGlobalPayments = async (
             order_readable_id: p.order_readable_id || 0,
             order_model: p.order_model || '',
             order_customer: '',
-            notes: ''
+            notes: '',
+            source_table: p.source_table,
+            source_type: p.source_type,
+            is_legacy: p.is_legacy
         }));
     } catch (e) {
         console.warn("Exception fetching payments:", e);

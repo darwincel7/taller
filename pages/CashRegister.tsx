@@ -41,6 +41,65 @@ const CashRegisterComponent: React.FC = () => {
   
   // DATA STATE: Payments from Server (Bypass Orders Context)
   const [rawGlobalPayments, setRawGlobalPayments] = useState<FlatPayment[]>([]);
+  const [legacyPayments, setLegacyPayments] = useState<FlatPayment[]>([]);
+  const [isConsolidatingLegacy, setIsConsolidatingLegacy] = useState(false);
+
+  const handleConsolidateLegacy = async () => {
+    if (!currentUser || legacyPayments.length === 0) return;
+    setConfirmationDialog({
+      title: 'Consolidar Limpieza Histórica',
+      message: `¿Estás seguro de limpiar ${legacyPayments.length} movimientos antiguos? No sumarán a tu caja actual y quedarán auditados.`,
+      confirmLabel: 'Consolidar como Histórico',
+      type: 'warning',
+      onConfirm: async () => {
+          setIsConsolidatingLegacy(true);
+          try {
+              const legacyIds = legacyPayments.map(p => getPaymentId(p));
+              const totalAmount = legacyPayments.reduce((acc, curr) => acc + (curr.amount || 0), 0);
+              const closingId = `close-legacy-${Date.now()}`;
+              
+              const { error: closingError } = await supabase.from('cash_closings').insert({
+                  id: closingId,
+                  cashierId: currentUser.id,
+                  adminId: currentUser.id,
+                  systemTotal: totalAmount,
+                  actualTotal: totalAmount,
+                  difference: 0,
+                  timestamp: Date.now(),
+                  notes: "Limpieza historica de movimientos previos al nuevo sistema de caja"
+              });
+
+              if (closingError) throw closingError;
+
+              const promises = [];
+              const batchSize = 100;
+              for (let i = 0; i < legacyIds.length; i += batchSize) {
+                  const batch = legacyIds.slice(i, i + batchSize);
+                  promises.push(supabase.from('order_payments').update({ closing_id: closingId }).in('id', batch));
+                  promises.push(supabase.from('accounting_transactions').update({ closing_id: closingId }).in('id', batch));
+                  promises.push(supabase.from('floating_expenses').update({ closing_id: closingId }).in('id', batch));
+                  promises.push(supabase.from('cash_movements').update({ closing_id: closingId }).in('id', batch));
+              }
+
+              await Promise.all(promises);
+
+              await auditService.recordLog(
+                  { id: currentUser.id, name: currentUser.name },
+                  ActionType.SETTINGS_UPDATED,
+                  `Consolidación histórica de ${legacyPayments.length} registros ($${totalAmount}).`
+              );
+
+              showNotification('success', 'Limpieza histórica completada.');
+              loadPaymentsFromServer();
+          } catch (e: any) {
+              console.error(e);
+              showNotification('error', `Error en limpieza: ${e.message}`);
+          } finally {
+              setIsConsolidatingLegacy(false);
+          }
+      }
+    });
+  };
   
   // Debt States
   const [debtLogs, setDebtLogs] = useState<DebtLog[]>([]);
@@ -276,10 +335,8 @@ const CashRegisterComponent: React.FC = () => {
       const end = endOfBusinessDay.getTime();
 
       // 1. Fetch RPC data (Standard Order Payments, Store Sales, Expenses, Floating)
-      // Limitar a los últimos 5 días para agarrar los de "días atrás" sin traer los 800 históricos
-      const lookback = 5 * 24 * 60 * 60 * 1000; // 5 días atrás
-      const fixedStart = Date.now() - lookback;
-      const payments = await fetchGlobalPayments(fixedStart, null, null, null, true);
+      const currentShift = await fetchGlobalPayments(start, end, null, null, true);
+      const legacy = await fetchGlobalPayments(null, start - 1, null, null, true);
 
       // 2. SAFETY NET: Fetch IDs of closed payments directly from table
       // Check the last 30 days to avoid fetching the entire history, but catch recently missed ones
@@ -305,7 +362,7 @@ const CashRegisterComponent: React.FC = () => {
       ]);
       
       // 3. Merge knowledge: If ID is in closedSet, mark it as closed locally
-      const processedPayments = payments.map(p => {
+      const processItems = (items: FlatPayment[]) => items.map(p => {
           const pId = getPaymentId(p);
           if (closedSet.has(pId)) {
               return { ...p, closing_id: 'confirmed-closed' };
@@ -313,7 +370,8 @@ const CashRegisterComponent: React.FC = () => {
           return p;
       });
 
-      setRawGlobalPayments(processedPayments);
+      setRawGlobalPayments(processItems(currentShift));
+      setLegacyPayments(processItems(legacy));
       
       setIsSyncing(false);
   };
@@ -1042,6 +1100,29 @@ const CashRegisterComponent: React.FC = () => {
                         </div>
                     </div>
                 )}
+
+                {canAdminister && legacyPayments.length > 0 && (
+                    <div className="bg-slate-800 text-white p-5 rounded-3xl shadow-sm border border-slate-700 flex flex-col md:flex-row gap-4 items-center justify-between">
+                        <div>
+                            <h3 className="text-lg font-black flex items-center gap-2">
+                                <History className="w-5 h-5 text-amber-500" />
+                                Pendientes Históricos ({legacyPayments.length})
+                            </h3>
+                            <p className="text-sm text-slate-300 mt-1 max-w-2xl">
+                                Movimientos antiguos sin cierre encontrados en la base de datos.
+                                Consolidarlos no afectará el turno actual y limpiará el sistema viejo.
+                            </p>
+                        </div>
+                        <button 
+                            onClick={handleConsolidateLegacy} 
+                            disabled={isConsolidatingLegacy}
+                            className="text-sm font-bold bg-amber-500 text-slate-900 hover:bg-amber-400 px-6 py-3 rounded-xl transition-all shadow-sm shrink-0 disabled:opacity-50"
+                        >
+                            {isConsolidatingLegacy ? 'Consolidando...' : 'Consolidar limpieza histórica'}
+                        </button>
+                    </div>
+                )}
+
                 <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 animate-in fade-in">
                 
                 {/* LIST OF MOVEMENTS FOR SELECTION */}

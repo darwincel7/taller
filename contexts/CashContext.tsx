@@ -66,13 +66,24 @@ export const CashProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
               .update({ closing_id: closingId })
               .in('id', paymentIds);
           
-          // Also update floating_expenses
+          // Update floating_expenses
           const { error: floatError } = await supabase
               .from('floating_expenses')
               .update({ closing_id: closingId })
               .in('id', paymentIds);
+              
+          // Update cash_movements
+          const { error: cashMovementError } = await supabase
+              .from('cash_movements')
+              .update({ closing_id: closingId })
+              .in('id', paymentIds);
           
-          if (updateError && accError && floatError) {
+          if (updateError && accError && floatError && cashMovementError) {
+              await auditService.recordLog(
+                  { id: adminId, name: 'Admin' },
+                  ActionType.CASH_PAYMENT_EDITED,
+                  `Fallo total del fallback de cierre para: ${paymentIds.join(', ')}`
+              );
               throw new Error(`Fallo total al actualizar pagos: ${updateError.message}`);
           }
       }
