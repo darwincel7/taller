@@ -7,7 +7,6 @@ import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'framer-motion';
 import { AddStoreProductModal } from './AddStoreProductModal';
 import { AddStoreItemModal } from './AddStoreItemModal';
-import { AIReceiptScanner } from './AIReceiptScanner';
 import { StoreStockAlertsTab } from './StoreStockAlertsTab';
 import { StoreItemDetailsInline } from './StoreItemDetailsInline';
 
@@ -264,13 +263,13 @@ export const StoreCatalogTab = () => {
               <button 
                 key={item.id} 
                 onClick={() => setActiveItemId(item.id)}
-                className="flex-1 md:flex-none px-3 py-2 bg-white border border-amber-200 rounded-xl text-[10px] font-black text-amber-600 hover:bg-amber-50 transition-all shadow-sm truncate max-w-[150px]"
+                className="flex-1 md:flex-none px-3 py-2 bg-white border border-amber-200 rounded-xl text-xs font-black text-amber-600 hover:bg-amber-50 transition-all shadow-sm truncate max-w-[150px]"
               >
                 {item.name.split(' (')[0]}
               </button>
             ))}
             {pendingAcceptanceItems.length > 3 && (
-              <span className="text-[10px] font-bold text-amber-500 self-center">+{pendingAcceptanceItems.length - 3} más</span>
+              <span className="text-xs font-bold text-amber-500 self-center">+{pendingAcceptanceItems.length - 3} más</span>
             )}
           </div>
         </div>
@@ -336,21 +335,6 @@ export const StoreCatalogTab = () => {
              <button 
                onClick={() => {
     if (!canManageInv) {
-        toast.error('Acceso denegado: No tienes permisos para usar el escáner.', {
-            style: { background: '#ef4444', color: 'white', border: 'none' },
-            icon: <AlertTriangle className="w-5 h-5 text-white" />
-        });
-        return;
-    }
-    setIsScannerOpen(!isScannerOpen);
-}}
-               className="bg-slate-800 hover:bg-slate-900 text-white px-5 py-3 rounded-xl shadow-lg flex items-center gap-2 font-bold transition-all whitespace-nowrap"
-             >
-               <BrainCircuit className="w-5 h-5 text-indigo-400" /> Escáner AI
-             </button>
-             <button 
-               onClick={() => {
-    if (!canManageInv) {
         toast.error('Acceso denegado: No tienes permisos para añadir artículos.', {
             style: { background: '#ef4444', color: 'white', border: 'none' },
             icon: <AlertTriangle className="w-5 h-5 text-white" />
@@ -378,12 +362,6 @@ export const StoreCatalogTab = () => {
           />
       </div>
 
-      {isScannerOpen && (
-         <div className="mb-4">
-             <AIReceiptScanner onClose={() => setIsScannerOpen(false)} />
-         </div>
-      )}
-
       <div className="flex flex-col lg:flex-row lg:gap-8 gap-6 items-start relative">
         {/* Main List - Minimalist Table */}
         <div className={`transition-all duration-300 lg:w-[72%] w-full space-y-2 relative z-10`}>
@@ -392,9 +370,9 @@ export const StoreCatalogTab = () => {
                 <table className="w-full text-left border-collapse table-fixed">
                    <thead>
                       <tr className="border-b border-slate-100">
-                         <th className="px-4 py-3 text-[10px] font-black text-slate-400 uppercase tracking-wider w-[15%] text-center">SKU</th>
-                         <th className="px-4 py-3 text-[10px] font-black text-slate-400 uppercase tracking-wider w-[65%]">Artículo</th>
-                         <th className="px-4 py-3 text-[10px] font-black text-slate-400 uppercase tracking-wider w-[20%] text-center">Stock</th>
+                         <th className="px-4 py-3 text-xs font-black text-slate-400 uppercase tracking-wider w-[15%] text-center">SKU</th>
+                         <th className="px-4 py-3 text-xs font-black text-slate-400 uppercase tracking-wider w-[65%]">Artículo</th>
+                         <th className="px-4 py-3 text-xs font-black text-slate-400 uppercase tracking-wider w-[20%] text-center">Stock</th>
                       </tr>
                    </thead>
                    <tbody className="divide-y divide-slate-100 relative">
@@ -436,30 +414,30 @@ export const StoreCatalogTab = () => {
                                   <td className="px-3 py-2 align-middle border-b border-transparent">
                                      <div className="flex items-start gap-2.5">
                                          {thumbnailUrl ? (
-                                            <div className="w-7 h-7 rounded-lg bg-slate-100 overflow-hidden shrink-0 border border-slate-200 mt-0.5">
+                                            <div className="w-12 h-12 rounded-xl bg-slate-100 overflow-hidden shrink-0 border border-slate-200 mt-0.5 shadow-sm">
                                                <img src={thumbnailUrl} alt="thumbnail" className="w-full h-full object-cover" />
                                             </div>
                                          ) : (
-                                            <div className="w-7 h-7 rounded-lg bg-slate-50 border border-dashed border-slate-300 flex items-center justify-center shrink-0 mt-0.5">
-                                               <Package className="w-3.5 h-3.5 text-slate-300" />
+                                            <div className="w-12 h-12 rounded-xl bg-slate-50 border border-dashed border-slate-300 flex items-center justify-center shrink-0 mt-0.5">
+                                               <Package className="w-5 h-5 text-slate-300" />
                                             </div>
                                          )}
                                          <div className="flex flex-col justify-center max-w-full min-w-0">
                                             <div className="flex items-center gap-1 mb-0.5 opacity-80">
                                                 <Wrench className="w-2.5 h-2.5 text-indigo-400" />
-                                                <span className="text-[8px] font-bold text-slate-500 uppercase tracking-widest truncate">{category?.name || 'Artículo'}</span>
+                                                <span className="text-xs font-bold text-slate-500 uppercase tracking-widest truncate">{category?.name || 'Artículo'}</span>
                                             </div>
-                                            <span className="font-bold text-[10px] text-slate-700 leading-tight line-clamp-2 pr-2">{product.name}</span>
+                                            <span className="font-bold text-xs text-slate-700 leading-tight line-clamp-2 pr-2">{product.name}</span>
                                          </div>
                                      </div>
                                   </td>
                                   <td className="px-2 py-2 align-middle text-center border-b border-transparent relative">
                                      {availableCount > 0 ? (
-                                        <div className="inline-flex items-center justify-center bg-emerald-50 text-emerald-600 border border-emerald-200 font-black text-[10px] px-2 py-0.5 rounded-lg">
+                                        <div className="inline-flex items-center justify-center bg-emerald-50 text-emerald-600 border border-emerald-200 font-black text-xs px-2 py-0.5 rounded-lg">
                                            {availableCount}
                                         </div>
                                      ) : (
-                                        <div className="inline-flex items-center justify-center bg-rose-50 text-rose-500 border border-rose-200 font-black text-[10px] px-2 py-0.5 rounded-lg gap-1">
+                                        <div className="inline-flex items-center justify-center bg-rose-50 text-rose-500 border border-rose-200 font-black text-xs px-2 py-0.5 rounded-lg gap-1">
                                            {availableCount} <AlertTriangle className="w-3 h-3" />
                                         </div>
                                      )}
@@ -496,7 +474,7 @@ export const StoreCatalogTab = () => {
                                                     className={`flex bg-white rounded-xl shadow-sm border transition-all cursor-pointer hover:bg-slate-50 ${isItemActive ? 'border-indigo-500 bg-indigo-50/20 shadow-indigo-500/10' : 'border-slate-200'} ${!isAvailable ? 'opacity-60 grayscale hover:grayscale-0' : ''}`}
                                                   >
                                                     <div className="p-3 flex items-start gap-3 flex-1 min-w-0">
-                                                       <div className="w-16 h-16 bg-slate-100 rounded-xl flex items-center justify-center shrink-0 overflow-hidden border border-slate-200/60 shadow-sm relative group/img">
+                                                       <div className="w-24 h-24 bg-slate-100 rounded-xl flex items-center justify-center shrink-0 overflow-hidden border border-slate-200/60 shadow-sm relative group/img">
                                                          {itemCat.imageUrl ? (
                                                            <img src={itemCat.imageUrl} alt="img" className="w-full h-full object-cover transition-transform duration-500 group-hover/img:scale-110" />
                                                          ) : (
@@ -519,7 +497,7 @@ export const StoreCatalogTab = () => {
                                                          
                                                          <div className="flex justify-between items-center w-full">
                                                            {itemCat.imei && (
-                                                             <span className="text-[10px] font-semibold text-slate-500 font-mono truncate bg-slate-50 border border-slate-200 px-2 py-0.5 rounded-md" title={itemCat.imei}>IMEI: {itemCat.imei}</span>
+                                                             <span className="text-xs font-semibold text-slate-500 font-mono truncate bg-slate-50 border border-slate-200 px-2 py-0.5 rounded-md" title={itemCat.imei}>IMEI: {itemCat.imei}</span>
                                                            )}
                                                            {!itemCat.imei && <div />}
                                                            <span className="text-[9px] font-bold text-slate-400">ID: #{item.readable_id || item.id.slice(-4)}</span>

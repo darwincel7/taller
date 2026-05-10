@@ -42,70 +42,66 @@ export const StoreInventory = () => {
       <div className="flex flex-col md:flex-row md:items-end justify-between mb-8 gap-4">
         <div>
           <h1 className="text-4xl md:text-5xl font-black text-slate-900 tracking-tight flex items-center gap-4">
-            <div className="w-16 h-16 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-3xl flex items-center justify-center text-white shadow-xl shadow-indigo-200">
-              <Package className="w-8 h-8" />
-            </div>
-            Catálogo y Compras
+            Catálogo
           </h1>
-          <p className="text-slate-500 mt-2 text-lg font-medium ml-20">Inventario comercial, compras y administración</p>
         </div>
       </div>
 
-      {(canViewCost || canManageInv) && <StoreDashboard />}
+      {(canViewCost || canManageInv) && <div className="mb-8"><StoreDashboard /></div>}
 
       <div className="flex flex-wrap gap-2 mb-8 bg-slate-100 p-2 rounded-2xl w-fit">
-        <button 
-          onClick={() => handleTabClick('CATALOG')} 
-          className={`px-6 py-3 rounded-xl font-bold transition-all flex items-center gap-2 ${activeTab === 'CATALOG' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:bg-slate-200'}`}
-        >
-          <Package className="w-5 h-5" /> Artículos y Unidades
-        </button>
-        {canManageInv && (
-          <button 
-            onClick={() => handleTabClick('TRANSFERS')} 
-            className={`px-6 py-3 rounded-xl font-bold transition-all flex items-center gap-2 ${activeTab === 'TRANSFERS' ? 'bg-white text-purple-600 shadow-sm' : 'text-slate-500 hover:bg-slate-200'}`}
-          >
-            <ArrowRightLeft className="w-5 h-5" /> Traspasos
-          </button>
-        )}
-        {canViewCost && (
-          <button 
-            onClick={() => handleTabClick('PURCHASES')} 
-            className={`px-6 py-3 rounded-xl font-bold transition-all flex items-center gap-2 ${activeTab === 'PURCHASES' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:bg-slate-200'}`}
-          >
-            <ShoppingCart className="w-5 h-5" /> Gasto de Compras
-          </button>
-        )}
-        {canViewCost && (
-          <button 
-            onClick={() => handleTabClick('AUDIT')} 
-            className={`px-6 py-3 rounded-xl font-bold transition-all flex items-center gap-2 ${activeTab === 'AUDIT' ? 'bg-white text-amber-600 shadow-sm' : 'text-slate-500 hover:bg-slate-200'}`}
-          >
-            <ClipboardList className="w-5 h-5" /> Historial
-          </button>
-        )}
-        <button 
-            onClick={() => handleTabClick('PHYSICAL_AUDIT')} 
-            className={`px-6 py-3 rounded-xl font-bold transition-all flex items-center gap-2 ${activeTab === 'PHYSICAL_AUDIT' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500 hover:bg-slate-200'}`}
-          >
-            <ClipboardList className="w-5 h-5" /> Conteo Físico
-          </button>
-        {canManageInv && (
-          <button 
-            onClick={() => handleTabClick('SETTINGS')} 
-            className={`px-6 py-3 rounded-xl font-bold transition-all flex items-center gap-2 ${activeTab === 'SETTINGS' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:bg-slate-200'}`}
-          >
-            <Settings className="w-5 h-5" /> Configuración
-          </button>
-        )}
-      </div>
+            <button 
+              onClick={() => handleTabClick('CATALOG')} 
+              className={`px-5 py-2.5 rounded-xl font-bold transition-all flex items-center gap-2 ${activeTab === 'CATALOG' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:bg-slate-200'}`}
+            >
+              <Package className="w-5 h-5 shrink-0" /> Artículos y Unidades
+            </button>
+            {canManageInv && (
+              <button 
+                onClick={() => handleTabClick('TRANSFERS')} 
+                className={`px-5 py-2.5 rounded-xl font-bold transition-all flex items-center gap-2 ${activeTab === 'TRANSFERS' ? 'bg-white text-purple-600 shadow-sm' : 'text-slate-500 hover:bg-slate-200'}`}
+              >
+                <ArrowRightLeft className="w-5 h-5 shrink-0" /> Traspasos
+              </button>
+            )}
+            {canViewCost && (
+              <button 
+                onClick={() => handleTabClick('PURCHASES')} 
+                className={`px-5 py-2.5 rounded-xl font-bold transition-all flex items-center gap-2 ${activeTab === 'PURCHASES' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:bg-slate-200'}`}
+              >
+                <ShoppingCart className="w-5 h-5 shrink-0" /> Gasto de Compras
+              </button>
+            )}
+            {canViewCost && (
+              <button 
+                onClick={() => handleTabClick('AUDIT')} 
+                className={`px-5 py-2.5 rounded-xl font-bold transition-all flex items-center gap-2 ${activeTab === 'AUDIT' ? 'bg-white text-amber-600 shadow-sm' : 'text-slate-500 hover:bg-slate-200'}`}
+              >
+                <ClipboardList className="w-5 h-5 shrink-0" /> Historial
+              </button>
+            )}
+            <button 
+              onClick={() => handleTabClick('PHYSICAL_AUDIT')} 
+              className={`px-5 py-2.5 rounded-xl font-bold transition-all flex items-center gap-2 ${activeTab === 'PHYSICAL_AUDIT' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500 hover:bg-slate-200'}`}
+            >
+              <ClipboardList className="w-5 h-5 shrink-0" /> Conteo Físico
+            </button>
+            {canManageInv && (
+              <button 
+                onClick={() => handleTabClick('SETTINGS')} 
+                className={`px-5 py-2.5 rounded-xl font-bold transition-all flex items-center gap-2 ${activeTab === 'SETTINGS' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:bg-slate-200'}`}
+              >
+                <Settings className="w-5 h-5 shrink-0" /> Configuración
+              </button>
+            )}
+          </div>
 
-      {activeTab === 'CATALOG' && <StoreCatalogTab />}
-      {activeTab === 'TRANSFERS' && <StoreTransfersTab />}
-      {activeTab === 'PURCHASES' && <StorePurchasesTab />}
-      {activeTab === 'AUDIT' && <StoreAuditTab />}
-      {activeTab === 'PHYSICAL_AUDIT' && <StorePhysicalAuditTab />}
-      {activeTab === 'SETTINGS' && <StoreSettingsTab />}
+          {activeTab === 'CATALOG' && <StoreCatalogTab />}
+          {activeTab === 'TRANSFERS' && <StoreTransfersTab />}
+          {activeTab === 'PURCHASES' && <StorePurchasesTab />}
+          {activeTab === 'AUDIT' && <StoreAuditTab />}
+          {activeTab === 'PHYSICAL_AUDIT' && <StorePhysicalAuditTab />}
+          {activeTab === 'SETTINGS' && <StoreSettingsTab />}
     </div>
   );
 };

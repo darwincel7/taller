@@ -141,7 +141,7 @@ const DashboardComponent: React.FC = () => {
 
   const salesByBranch = useMemo(() => {
     if (!salesDetails || salesDetails.length === 0) return {};
-    const grouped: Record<string, { items: any[], total: number }> = {};
+    const grouped: Record<string, { items: any[], total: number, totalVentas: number, totalGanancia: number }> = {};
     salesDetails.forEach((sale: any) => {
       // Group by Area (Taller vs Inventario) and Branch
       const branch = sale.branch || 'OTRO';

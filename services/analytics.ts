@@ -42,7 +42,7 @@ export const fetchGlobalPayments = async (
 
     try {
         // Llamar a la RPC unificada V19 que maneja orders, pos, gastos y movimientos de caja
-        const { data, error } = await supabase.rpc('get_payments_flat', {
+        const { data, error } = await supabase.rpc('get_payments_unified', {
             p_start: startTs,
             p_end: endTs,
             p_cashier_id: cashierId,
@@ -52,7 +52,7 @@ export const fetchGlobalPayments = async (
         });
 
         if (error) {
-            console.warn("RPC get_payments_flat error (Falling back in JS):", error);
+            console.warn("RPC get_payments_unified error (Falling back in JS):", error);
             // Fallback: If RPC fails, return empty or implement a simplified fallback if critical
             // But since we are pushing this RPC as the definitive solution, we expect it to exist.
             return [];

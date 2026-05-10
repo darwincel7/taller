@@ -33,7 +33,8 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({ isOpen, onClos
     description: '',
     invoice_number: '',
     category: '',
-    source: 'STORE' as 'MANUAL' | 'STORE'
+    source: 'STORE' as 'MANUAL' | 'STORE',
+    method: 'CASH' as 'CASH' | 'TRANSFER' | 'CARD'
   });
 
   // Reset all states when modal opens
@@ -53,7 +54,8 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({ isOpen, onClos
         description: '',
         invoice_number: '',
         category: '',
-        source: 'STORE'
+        source: 'STORE',
+        method: 'CASH'
       });
       
       accountingService.getCategories().then(cats => {
@@ -145,6 +147,7 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({ isOpen, onClos
         invoice_number: formData.invoice_number || undefined,
         category_id: formData.category,
         source: formData.source,
+        method: formData.method,
         status: TransactionStatus.COMPLETED,
         search_text: ocrText,
         created_by: currentUser?.id
@@ -312,6 +315,21 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({ isOpen, onClos
                       />
                     </div>
                   </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">Método de Pago</label>
+                    <select
+                      required
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition bg-white"
+                      value={formData.method}
+                      onChange={e => setFormData({...formData, method: e.target.value as any})}
+                    >
+                      <option value="CASH">Efectivo de Caja</option>
+                      <option value="TRANSFER">Transferencia / Banco</option>
+                      <option value="CARD">Tarjeta</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">Fecha</label>
                     <input 

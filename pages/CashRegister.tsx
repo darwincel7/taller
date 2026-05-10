@@ -272,10 +272,12 @@ const CashRegisterComponent: React.FC = () => {
 
       // 1. Fetch RPC data (Standard Order Payments, Store Sales, Expenses, Floating)
       // We pass pendingOnly = true to fetch ALL pending payments regardless of start/end date
-      const payments = await fetchGlobalPayments(start, end, null, null, true);
+      // Explicitly pass null for start/end to ignore date bounds for pending transactions
+      const payments = await fetchGlobalPayments(null, null, null, null, true);
 
       // 2. SAFETY NET: Fetch IDs of closed payments directly from table
-      // This ensures that even if RPC returns stale data or missing closing_id, we filter them out.
+      // Since we bypassed date bounds for pending, we should also bypass them for our safety net checks
+      // Or at least fetch the closed payments within a reasonable timeframe if they accidentally stayed in the set
       const [
         { data: closedPayments },
         { data: closedExpenses },
@@ -378,8 +380,29 @@ const CashRegisterComponent: React.FC = () => {
   }, [activeTab]);
 
   const cashierUsers = useMemo(() => {
-      return users.filter(u => u.permissions?.canDeliverOrder);
-  }, [users]);
+      const usersWithPendingPayments = new Set(
+          rawGlobalPayments
+              .filter(p => !(p as any).closing_id)
+              .map(p => (p as any).cashier_id)
+      );
+
+      const knownUsers = users.filter(u => u.permissions?.canDeliverOrder || usersWithPendingPayments.has(u.id));
+      
+      // Add unknown users who have pending payments
+      Array.from(usersWithPendingPayments).forEach(id => {
+          if (!knownUsers.some(u => u.id === id)) {
+              // Find their name from rawGlobalPayments
+              const payment = rawGlobalPayments.find(p => (p as any).cashier_id === id);
+              knownUsers.push({
+                  id,
+                  name: ((payment as any)?.cashier_name || 'Desconocido') + (id === 'system' ? ' (Sistema)' : ''),
+                  permissions: { canDeliverOrder: true }
+              } as any);
+          }
+      });
+
+      return knownUsers;
+  }, [users, rawGlobalPayments]);
 
   const toggleUser = (userId: string) => {
       if (selectedUsers.includes(userId)) {
@@ -406,14 +429,15 @@ const CashRegisterComponent: React.FC = () => {
 
   // LISTA COMPLETA PARA "TURNO ACTUAL" (Incluye Abiertos y Cerrados)
   const allDailyPayments = useMemo(() => {
+      const isAllSelected = selectedUsers.length > 0 && selectedUsers.length === cashierUsers.length;
       return rawGlobalPayments
-          .filter(p => selectedUsers.includes((p as any).cashier_id) && !(p as any).closing_id)
+          .filter(p => (isAllSelected || selectedUsers.includes((p as any).cashier_id)) && !(p as any).closing_id)
           .sort((a, b) => {
               const timeA = (a as any).created_at || a.date || 0;
               const timeB = (b as any).created_at || b.date || 0;
               return timeB - timeA;
           });
-  }, [rawGlobalPayments, selectedUsers]);
+  }, [rawGlobalPayments, selectedUsers, cashierUsers.length]);
 
   // LISTA FILTRADA PARA "CIERRE" (Solo Abiertos)
   const reconcilablePayments = useMemo(() => {
@@ -433,7 +457,7 @@ const CashRegisterComponent: React.FC = () => {
           
           const amt = p.amount;
           const isExpense = ['EXPENSE', 'GASTO_LOCAL', 'GASTO_FLOTANTE'].includes(p.order_id) || p.order_model === 'Gasto Orden';
-          const isRefund = (amt < 0 && !isExpense) || p.is_refund;
+          const isRefund = !isExpense && ((amt < 0) || p.is_refund);
           
           groups[branch].total += amt;
           groups[branch].count += 1;

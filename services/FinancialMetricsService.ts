@@ -148,34 +148,84 @@ export const financialMetricsService = {
   async fetchRawFinancialData(startDate?: string, endDate?: string) {
     if (!supabase) throw new Error('Supabase client not initialized');
 
+    let cashQuery = supabase.from('cash_movements').select('*');
+    let accQuery = supabase.from('accounting_transactions').select('*, accounting_categories(name)').eq('status', 'COMPLETED');
+    let salesQuery = supabase.from('v_sales_unified').select('*');
+
+    if (startDate) {
+        cashQuery = cashQuery.gte('created_at', startDate);
+        accQuery = accQuery.gte('transaction_date', startDate.split('T')[0]);
+        salesQuery = salesQuery.gte('created_at', startDate);
+    }
+    
+    if (endDate) {
+        cashQuery = cashQuery.lte('created_at', endDate);
+        accQuery = accQuery.lte('transaction_date', endDate.split('T')[0]);
+        salesQuery = salesQuery.lte('created_at', endDate);
+    }
+
+    cashQuery = cashQuery.limit(5000);
+    salesQuery = salesQuery.limit(5000);
+
     // 1. Fetch cash movements
-    const { data: rawCashMovements } = await supabase.from('cash_movements').select('*');
+    const { data: rawCashMovements } = await cashQuery;
     const cashMovements = rawCashMovements || [];
     
-    // 2. Fetch accounting transactions
-    const { data: transactions } = await supabase.from('accounting_transactions').select('*, accounting_categories(name)').eq('status', 'COMPLETED');
+    // 2. Fetch accounting transactions with pagination
+    let transactions: any[] = [];
+    let hasMore = true;
+    let page = 0;
+    while (hasMore) {
+        const { data: pageData, error: pageError } = await accQuery.range(page * 1000, (page + 1) * 1000 - 1);
+        if (pageError) {
+             console.warn("Error fetching accounting_transactions page:", pageError);
+             break;
+        }
+        if (pageData && pageData.length > 0) {
+            transactions = [...transactions, ...pageData];
+            if (pageData.length < 1000) {
+                hasMore = false; // Last page
+            } else {
+                page++;
+            }
+        } else {
+            hasMore = false;
+        }
+    }
     
     // 3. Fetch Credits (CxC)
-    const { data: credits } = await supabase.from('client_credits').select('*');
+    const { data: credits } = await supabase.from('client_credits').select('*').limit(5000);
 
     // 4. Fetch Inventory
     const { data: rawInventory } = await supabase
       .from('inventory_parts')
-      .select('id, stock, price, cost, status, deleted_at');
+      .select('id, stock, price, cost, status, deleted_at')
+      .limit(10000);
     const inventory = (rawInventory || []).filter(i => !i.deleted_at && i.status !== 'archived');
 
-    // 5. Fetch Unified Sales View
-    const { data: unifiedSales, error: salesError } = await supabase
-      .from('v_sales_unified')
-      .select('*')
-      .gte('created_at', startDate || '2000-01-01')
-      .lte('created_at', endDate || new Date().toISOString());
-
-    if (salesError) {
-        console.warn("Error fetching v_sales_unified:", salesError);
+    // 5. Fetch Unified Sales View with pagination
+    let unifiedSales: any[] = [];
+    hasMore = true;
+    page = 0;
+    while (hasMore) {
+        const { data: pageData, error: salesError } = await salesQuery.range(page * 1000, (page + 1) * 1000 - 1);
+        if (salesError) {
+             console.warn("Error fetching v_sales_unified page:", salesError);
+             break;
+        }
+        if (pageData && pageData.length > 0) {
+            unifiedSales = [...unifiedSales, ...pageData];
+            if (pageData.length < 1000) {
+                hasMore = false;
+            } else {
+                page++;
+            }
+        } else {
+            hasMore = false;
+        }
     }
 
-    // Filter by date if needed
+    // Filter by date if needed (Keep existing JS filtering as fallback/precision)
     let filteredCashMovements = cashMovements || [];
     let filteredTransactions = transactions || [];
     

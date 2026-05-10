@@ -12,7 +12,7 @@ DO $$
 BEGIN
     -- cash_movements (NUEVO: Soporte para cierre)
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'cash_movements' AND column_name = 'closing_id') THEN
-        ALTER TABLE public.cash_movements ADD COLUMN closing_id uuid;
+        ALTER TABLE public.cash_movements ADD COLUMN closing_id text;
     END IF;
 
     -- cash_closings
@@ -90,8 +90,8 @@ BEGIN
     WHERE readable_id IS NULL;
 END $$;
 
--- 2. ACTUALIZAR get_payments_flat (UNIFICADO V19)
-CREATE OR REPLACE FUNCTION public.get_payments_flat(
+-- 2. ACTUALIZAR get_payments_unified (UNIFICADO V19)
+CREATE OR REPLACE FUNCTION public.get_payments_unified(
     p_start bigint DEFAULT NULL,
     p_end bigint DEFAULT NULL,
     p_cashier_id text DEFAULT NULL,
@@ -100,7 +100,7 @@ CREATE OR REPLACE FUNCTION public.get_payments_flat(
     p_closing_id text DEFAULT NULL
 )
 RETURNS TABLE(
-    id uuid,
+    id text,
     order_id text,
     amount numeric,
     method text,
@@ -282,7 +282,7 @@ BEGIN
     UPDATE public.floating_expenses SET closing_id = p_closing_id WHERE id::text = ANY(p_payment_ids);
     GET DIAGNOSTICS v_updated_floating_count = ROW_COUNT;
 
-    UPDATE public.cash_movements SET closing_id = p_closing_id::uuid WHERE id::text = ANY(p_payment_ids);
+    UPDATE public.cash_movements SET closing_id = p_closing_id WHERE id::text = ANY(p_payment_ids);
     GET DIAGNOSTICS v_updated_ledger_count = ROW_COUNT;
 
     RETURN json_build_object(
@@ -410,8 +410,8 @@ END;
 $$;
 
 -- 5. PERMISOS
-GRANT EXECUTE ON FUNCTION public.get_payments_flat(bigint, bigint, text, text, boolean, text) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.get_payments_flat(bigint, bigint, text, text, boolean, text) TO service_role;
+GRANT EXECUTE ON FUNCTION public.get_payments_unified(bigint, bigint, text, text, boolean, text) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_payments_unified(bigint, bigint, text, text, boolean, text) TO service_role;
 GRANT EXECUTE ON FUNCTION public.perform_robust_closing(text, text, text, numeric, numeric, numeric, bigint, text, text[]) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.perform_robust_closing(text, text, text, numeric, numeric, numeric, bigint, text, text[]) TO service_role;
 GRANT EXECUTE ON FUNCTION public.get_closing_details(text) TO authenticated;
@@ -448,7 +448,7 @@ SELECT
     (
         SELECT jsonb_agg(
             jsonb_build_object(
-                'description', pi.item_name || ' x' || pi.quantity,
+                'description', pi.name || ' x' || pi.quantity,
                 'price', pi.unit_price,
                 'cost', pi.unit_price,
                 'partCost', pi.unit_cost

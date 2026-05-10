@@ -2,14 +2,16 @@ import React, { useState, useMemo } from 'react';
 import { useInventory } from '../../contexts/InventoryContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { parseInventoryCategory, TransactionStatus, ExpenseDestination } from '../../types';
-import { ShoppingCart, Plus, CheckCircle, Clock, FileText, Download, UploadCloud } from 'lucide-react';
+import { ShoppingCart, Plus, CheckCircle, Clock, FileText, Download, UploadCloud, BrainCircuit } from 'lucide-react';
 import { accountingService } from '../../services/accountingService';
 import { toast } from 'sonner';
+import { AIReceiptScanner } from './AIReceiptScanner';
 
 export const StorePurchasesTab = () => {
   const { inventory, addInventoryPart, updateInventoryPart } = useInventory();
   const { currentUser } = useAuth();
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [formData, setFormData] = useState({
     title: '',
     amount: 0,
@@ -112,13 +114,27 @@ export const StorePurchasesTab = () => {
           </h2>
           <p className="text-slate-500 font-medium">Registra compras a proveedores para luego asignar unidades y artículos a ellas.</p>
         </div>
-        <button 
-          onClick={() => { setFormData({ title: '', amount: 0, providerId: '', isCredit: false, creditPaid: false, receiptUrl: '' }); setIsModalOpen(true); }}
-          className="bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-4 rounded-2xl shadow-xl shadow-emerald-200 flex items-center gap-3 font-bold transition-transform hover:-translate-y-1"
-        >
-          <Plus className="w-5 h-5" /> Nueva Compra
-        </button>
+        <div className="flex items-center gap-3">
+          <button 
+            onClick={() => setIsScannerOpen(!isScannerOpen)}
+            className="bg-slate-800 hover:bg-slate-900 text-white px-5 py-4 rounded-2xl shadow-xl shadow-slate-200 flex items-center gap-3 font-bold transition-transform hover:-translate-y-1 whitespace-nowrap"
+          >
+            <BrainCircuit className="w-5 h-5 text-indigo-400" /> Escáner AI
+          </button>
+          <button 
+            onClick={() => { setFormData({ title: '', amount: 0, providerId: '', isCredit: false, creditPaid: false, receiptUrl: '' }); setIsModalOpen(true); }}
+            className="bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-4 rounded-2xl shadow-xl shadow-emerald-200 flex items-center gap-3 font-bold transition-transform hover:-translate-y-1"
+          >
+            <Plus className="w-5 h-5" /> Nueva Compra
+          </button>
+        </div>
       </div>
+
+      {isScannerOpen && (
+         <div className="mb-4">
+             <AIReceiptScanner onClose={() => setIsScannerOpen(false)} />
+         </div>
+      )}
 
       <div className="grid gap-4">
         {purchases.map(purchase => {

@@ -112,20 +112,14 @@ async function startServer() {
     windowMs: 15 * 60 * 1000, 
     max: 1000, 
     standardHeaders: true, 
-    legacyHeaders: false,
-    keyGenerator: (req) => {
-      return (req.headers['x-forwarded-for'] as string || req.ip || 'anonymous').split(',')[0].trim();
-    }
+    legacyHeaders: false
   });
   
   const webhookLimiter = rateLimit({
     windowMs: 1 * 60 * 1000, 
     max: 200, 
     standardHeaders: true,
-    legacyHeaders: false,
-    keyGenerator: (req) => {
-      return (req.headers['x-forwarded-for'] as string || req.ip || 'webhook').split(',')[0].trim();
-    }
+    legacyHeaders: false
   });
 
   app.use('/api', apiLimiter);

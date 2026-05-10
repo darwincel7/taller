@@ -269,7 +269,6 @@ export const OrderFinancials: React.FC<OrderFinancialsProps> = ({
 
               if (consumeErr) {
                   showNotification('error', `Error al descontar inventario: ${consumeErr.message}`);
-                  setIsProcessing(false);
                   return;
               }
               
