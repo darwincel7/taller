@@ -164,12 +164,24 @@ export const financialMetricsService = {
         salesQuery = salesQuery.lte('created_at', endDate);
     }
 
-    cashQuery = cashQuery.limit(5000);
-    salesQuery = salesQuery.limit(5000);
-
-    // 1. Fetch cash movements
-    const { data: rawCashMovements } = await cashQuery;
-    const cashMovements = rawCashMovements || [];
+    // 1. Fetch cash movements with pagination
+    let cashMovements: any[] = [];
+    let hasMoreCash = true;
+    let pageCash = 0;
+    while (hasMoreCash) {
+        const { data: pageData, error: pageError } = await cashQuery.range(pageCash * 1000, (pageCash + 1) * 1000 - 1);
+        if (pageError) {
+             console.warn("Error fetching cash_movements page:", pageError);
+             break;
+        }
+        if (pageData && pageData.length > 0) {
+            cashMovements = [...cashMovements, ...pageData];
+            if (pageData.length < 1000) hasMoreCash = false;
+            else pageCash++;
+        } else {
+            hasMoreCash = false;
+        }
+    }
     
     // 2. Fetch accounting transactions with pagination
     let transactions: any[] = [];

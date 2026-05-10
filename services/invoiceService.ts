@@ -704,7 +704,7 @@ export const getCashCountRawCommands = (payments: Payment[], cashierName: string
   const removeAccents = (str: string) => str ? str.normalize("NFD").replace(/[\u0300-\u036f]/g, "") : "";
   
   const getDisplayId = (p: Payment) => {
-    if (['EXPENSE', 'GASTO_LOCAL', 'GASTO_FLOTANTE'].includes(p.orderId)) {
+    if (['EXPENSE', 'GASTO_LOCAL', 'GASTO_FLOTANTE', 'MANUAL_TX'].includes(p.orderId)) {
       return `G-${(p as any).orderReadableId || p.orderId.slice(-4)}`;
     }
     if (['PRODUCT_SALE', 'VENTA_PRODUCTO'].includes(p.orderId)) {
@@ -787,7 +787,7 @@ export const printCashCount = async (payments: Payment[], cashierName: string, t
   const expenses = payments.filter(p => p.amount < 0);
 
   const getDisplayId = (p: Payment) => {
-    if (['EXPENSE', 'GASTO_LOCAL', 'GASTO_FLOTANTE'].includes(p.orderId)) {
+    if (['EXPENSE', 'GASTO_LOCAL', 'GASTO_FLOTANTE', 'MANUAL_TX'].includes(p.orderId)) {
       return `G-${(p as any).orderReadableId || p.orderId.slice(-4)}`;
     }
     if (['PRODUCT_SALE', 'VENTA_PRODUCTO'].includes(p.orderId)) {

@@ -13,6 +13,8 @@ BEGIN
     -- cash_movements (NUEVO: Soporte para cierre)
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'cash_movements' AND column_name = 'closing_id') THEN
         ALTER TABLE public.cash_movements ADD COLUMN closing_id text;
+    ELSE
+        ALTER TABLE public.cash_movements ALTER COLUMN closing_id TYPE text;
     END IF;
 
     -- cash_closings
@@ -123,7 +125,7 @@ BEGIN
         op.id::text,
         op.order_id::text,
         op.amount,
-        op.method,
+        UPPER(op.method) as method,
         op.cashier_id,
         op.cashier_name,
         op.is_refund,
@@ -151,7 +153,7 @@ BEGIN
         cm.id::text,
         cm.source_id::text as order_id,
         cm.amount,
-        cm.method,
+        UPPER(cm.method) as method,
         cm.cashier_id,
         'Cajero POS' as cashier_name,
         (cm.amount < 0) as is_refund,
@@ -559,6 +561,22 @@ JOIN
 
 GRANT SELECT ON public.v_sales_unified TO authenticated;
 GRANT SELECT ON public.v_sales_unified TO service_role;
+
+
+-- X. Corregir delete_cash_closing (Liberar cash_movements)
+CREATE OR REPLACE FUNCTION public.delete_cash_closing(p_closing_id text)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $$
+BEGIN
+ UPDATE public.order_payments SET closing_id = NULL WHERE closing_id = p_closing_id;
+ UPDATE public.accounting_transactions SET closing_id = NULL WHERE closing_id = p_closing_id;
+ UPDATE public.floating_expenses SET closing_id = NULL WHERE closing_id = p_closing_id;
+ UPDATE public.cash_movements SET closing_id = NULL WHERE closing_id::text = p_closing_id;
+ DELETE FROM public.cash_closings WHERE id = p_closing_id;
+END;
+$$;
+GRANT EXECUTE ON FUNCTION public.delete_cash_closing(text) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.delete_cash_closing(text) TO service_role;
+
 
 COMMIT;
 `;

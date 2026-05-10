@@ -430,7 +430,8 @@ export const NewExpenseModal: React.FC<NewExpenseModalProps> = ({ isOpen, onClos
                         description: '',
                         invoice_number: '',
                         category: categories[0]?.id || '',
-                        source: 'STORE'
+                        source: 'STORE',
+                        method: 'CASH'
                       });
                       setFile(null);
                       setOcrText('');

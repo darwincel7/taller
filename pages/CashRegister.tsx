@@ -266,32 +266,42 @@ const CashRegisterComponent: React.FC = () => {
       if (!supabase) return;
       setIsSyncing(true);
       
-      // Default: Last 48 hours to catch everything recent
-      const end = Date.now();
-      const start = end - (48 * 60 * 60 * 1000); 
+      const startOfBusinessDay = new Date();
+      startOfBusinessDay.setHours(0, 0, 0, 0);
+      
+      const endOfBusinessDay = new Date();
+      endOfBusinessDay.setHours(23, 59, 59, 999);
+      
+      const start = startOfBusinessDay.getTime();
+      const end = endOfBusinessDay.getTime();
 
       // 1. Fetch RPC data (Standard Order Payments, Store Sales, Expenses, Floating)
-      // We pass pendingOnly = true to fetch ALL pending payments regardless of start/end date
-      // Explicitly pass null for start/end to ignore date bounds for pending transactions
-      const payments = await fetchGlobalPayments(null, null, null, null, true);
+      // Limitar a los últimos 5 días para agarrar los de "días atrás" sin traer los 800 históricos
+      const lookback = 5 * 24 * 60 * 60 * 1000; // 5 días atrás
+      const fixedStart = Date.now() - lookback;
+      const payments = await fetchGlobalPayments(fixedStart, null, null, null, true);
 
       // 2. SAFETY NET: Fetch IDs of closed payments directly from table
-      // Since we bypassed date bounds for pending, we should also bypass them for our safety net checks
-      // Or at least fetch the closed payments within a reasonable timeframe if they accidentally stayed in the set
+      // Check the last 30 days to avoid fetching the entire history, but catch recently missed ones
+      const thirtyDaysAgo = Date.now() - (30 * 24 * 60 * 60 * 1000);
+      const thirtyDaysISO = new Date(thirtyDaysAgo).toISOString();
       const [
         { data: closedPayments },
         { data: closedExpenses },
-        { data: closedFloating }
+        { data: closedFloating },
+        { data: closedCashMovements }
       ] = await Promise.all([
-        supabase.from('order_payments').select('id').not('closing_id', 'is', null).gte('created_at', start),
-        supabase.from('accounting_transactions').select('id').not('closing_id', 'is', null).gte('created_at', new Date(start).toISOString()),
-        supabase.from('floating_expenses').select('id').not('closing_id', 'is', null).gte('created_at', new Date(start).toISOString())
+        supabase.from('order_payments').select('id').not('closing_id', 'is', null).gte('created_at', thirtyDaysAgo),
+        supabase.from('accounting_transactions').select('id').not('closing_id', 'is', null).gte('created_at', thirtyDaysISO),
+        supabase.from('floating_expenses').select('id').not('closing_id', 'is', null).gte('created_at', thirtyDaysISO),
+        supabase.from('cash_movements').select('id').not('closing_id', 'is', null).gte('created_at', thirtyDaysISO)
       ]);
 
       const closedSet = new Set([
         ...(closedPayments?.map((x: any) => x.id) || []),
         ...(closedExpenses?.map((x: any) => x.id) || []),
-        ...(closedFloating?.map((x: any) => x.id) || [])
+        ...(closedFloating?.map((x: any) => x.id) || []),
+        ...(closedCashMovements?.map((x: any) => x.id) || [])
       ]);
       
       // 3. Merge knowledge: If ID is in closedSet, mark it as closed locally
@@ -456,7 +466,7 @@ const CashRegisterComponent: React.FC = () => {
           if (!groups[branch]) groups[branch] = { cash: 0, transfer: 0, card: 0, credit: 0, cambiazo: 0, refunds: 0, expenses: 0, total: 0, count: 0, partsCost: 0 };
           
           const amt = p.amount;
-          const isExpense = ['EXPENSE', 'GASTO_LOCAL', 'GASTO_FLOTANTE'].includes(p.order_id) || p.order_model === 'Gasto Orden';
+          const isExpense = ['EXPENSE', 'GASTO_LOCAL', 'GASTO_FLOTANTE', 'MANUAL_TX'].includes(p.order_id) || p.order_model === 'Gasto Orden' || p.order_model === 'Gasto Local' || p.order_model === 'Transacción Manual' || (p.amount < 0 && (p.order_model === 'Gasto Flotante' || p.order_model?.toLowerCase().includes('gasto')));
           const isRefund = !isExpense && ((amt < 0) || p.is_refund);
           
           groups[branch].total += amt;
@@ -640,7 +650,7 @@ const CashRegisterComponent: React.FC = () => {
                   const errMsg = error.message || '';
                   console.warn(`Error en fase ${errorSource}:`, error);
 
-                  if (errMsg.includes('cash_closings') || error.code === '42P01') {
+                  if (errMsg.includes('cash_closings') || error.code === '42P01' || errMsg.includes('uuid')) {
                      setShowDbFixModal(true); 
                   } else {
                      // Mostrar error detallado con la fuente
@@ -1075,7 +1085,7 @@ const CashRegisterComponent: React.FC = () => {
                                         const displayId = contextOrder?.readable_id 
                                             ? contextOrder.readable_id 
                                             : (['PRODUCT_SALE', 'VENTA_PRODUCTO'].includes(p.order_id) ? `V-${p.order_readable_id || p.id?.slice(-4)}` 
-                                            : (['EXPENSE', 'GASTO_LOCAL', 'GASTO_FLOTANTE'].includes(p.order_id) ? `G-${p.order_readable_id || p.id?.slice(-4)}` 
+                                            : (['EXPENSE', 'GASTO_LOCAL', 'GASTO_FLOTANTE', 'MANUAL_TX'].includes(p.order_id) ? `G-${p.order_readable_id || p.id?.slice(-4)}` 
                                             : p.order_readable_id || p.order_id?.slice(-4)));
                                         
                                         const dateObj = new Date(Number(p.date));
@@ -1384,7 +1394,7 @@ const CashRegisterComponent: React.FC = () => {
                         </h3>
                         <span className="text-xs bg-emerald-100 text-emerald-800 px-2 py-1 rounded-full font-bold">
                             {historicalTransactions.filter(p => {
-                                const isExpense = ['EXPENSE', 'GASTO_LOCAL', 'GASTO_FLOTANTE'].includes(p.order_id) || p.order_model === 'Gasto Orden';
+                                const isExpense = ['EXPENSE', 'GASTO_LOCAL', 'GASTO_FLOTANTE', 'MANUAL_TX'].includes(p.order_id) || p.order_model === 'Gasto Orden' || p.order_model === 'Gasto Local' || p.order_model === 'Transacción Manual' || (p.amount < 0 && (p.order_model === 'Gasto Flotante' || p.order_model?.toLowerCase().includes('gasto')));
                                 if (transactionsType === 'INCOME' && isExpense) return false;
                                 if (transactionsType === 'EXPENSE' && !isExpense) return false;
                                 return true;
@@ -1404,7 +1414,7 @@ const CashRegisterComponent: React.FC = () => {
                             </div>
                         ) : (() => {
                             const filteredTransactions = historicalTransactions.filter(p => {
-                                const isExpense = ['EXPENSE', 'GASTO_LOCAL', 'GASTO_FLOTANTE'].includes(p.order_id) || p.order_model === 'Gasto Orden';
+                                const isExpense = ['EXPENSE', 'GASTO_LOCAL', 'GASTO_FLOTANTE', 'MANUAL_TX'].includes(p.order_id) || p.order_model === 'Gasto Orden' || p.order_model === 'Gasto Local' || p.order_model === 'Transacción Manual' || (p.amount < 0 && (p.order_model === 'Gasto Flotante' || p.order_model?.toLowerCase().includes('gasto')));
                                 if (transactionsType === 'INCOME' && isExpense) return false;
                                 if (transactionsType === 'EXPENSE' && !isExpense) return false;
 
@@ -1467,10 +1477,10 @@ const CashRegisterComponent: React.FC = () => {
                                     const displayId = contextOrder?.readable_id 
                                         ? contextOrder.readable_id 
                                         : (['PRODUCT_SALE', 'VENTA_PRODUCTO'].includes(p.order_id) ? `V-${p.order_readable_id || p.id?.slice(-4)}` 
-                                        : (['EXPENSE', 'GASTO_LOCAL', 'GASTO_FLOTANTE'].includes(p.order_id) ? `G-${p.order_readable_id || p.id?.slice(-4)}` 
+                                        : (['EXPENSE', 'GASTO_LOCAL', 'GASTO_FLOTANTE', 'MANUAL_TX'].includes(p.order_id) ? `G-${p.order_readable_id || p.id?.slice(-4)}` 
                                         : p.order_readable_id || p.order_id?.slice(-4)));
                                     
-                                    const isExpense = ['EXPENSE', 'GASTO_LOCAL', 'GASTO_FLOTANTE'].includes(p.order_id) || p.order_model === 'Gasto Orden';
+                                    const isExpense = ['EXPENSE', 'GASTO_LOCAL', 'GASTO_FLOTANTE', 'MANUAL_TX'].includes(p.order_id) || p.order_model === 'Gasto Orden' || p.order_model === 'Gasto Local' || p.order_model === 'Transacción Manual' || (p.amount < 0 && (p.order_model === 'Gasto Flotante' || p.order_model?.toLowerCase().includes('gasto')));
                                     const isRefund = p.amount < 0 && !isExpense;
                                     const amountColor = isExpense ? 'text-red-600' : isRefund ? 'text-orange-600' : 'text-emerald-600';
                                     const amountPrefix = isExpense || isRefund ? '-' : '+';
@@ -2326,7 +2336,7 @@ const CashRegisterComponent: React.FC = () => {
                                                 const displayId = contextOrder?.readable_id 
                                                     ? contextOrder.readable_id 
                                                     : (['PRODUCT_SALE', 'VENTA_PRODUCTO'].includes(p.order_id) ? `V-${p.order_readable_id || p.id?.slice(-4)}` 
-                                                    : (['EXPENSE', 'GASTO_LOCAL', 'GASTO_FLOTANTE'].includes(p.order_id) ? `G-${p.order_readable_id || p.id?.slice(-4)}` 
+                                                    : (['EXPENSE', 'GASTO_LOCAL', 'GASTO_FLOTANTE', 'MANUAL_TX'].includes(p.order_id) ? `G-${p.order_readable_id || p.id?.slice(-4)}` 
                                                     : p.order_readable_id || p.order_id?.slice(-4)));
                                                 const displayModel = contextOrder?.deviceModel || p.order_model || '';
                                                 
@@ -2437,7 +2447,7 @@ const CashRegisterComponent: React.FC = () => {
                                     {orders.find(o => o.id === selectedPaymentDetails.order_id)?.readable_id 
                                         ? `#${orders.find(o => o.id === selectedPaymentDetails.order_id)?.readable_id}`
                                         : (['PRODUCT_SALE', 'VENTA_PRODUCTO'].includes(selectedPaymentDetails.order_id) ? `V-${selectedPaymentDetails.order_readable_id || selectedPaymentDetails.id?.slice(-4)}` 
-                                        : (['EXPENSE', 'GASTO_LOCAL', 'GASTO_FLOTANTE'].includes(selectedPaymentDetails.order_id) ? `G-${selectedPaymentDetails.order_readable_id || selectedPaymentDetails.id?.slice(-4)}` 
+                                        : (['EXPENSE', 'GASTO_LOCAL', 'GASTO_FLOTANTE', 'MANUAL_TX'].includes(selectedPaymentDetails.order_id) ? `G-${selectedPaymentDetails.order_readable_id || selectedPaymentDetails.id?.slice(-4)}` 
                                         : `#${selectedPaymentDetails.order_readable_id || selectedPaymentDetails.order_id?.slice(-4)}`))}
                                 </p>
                             </div>
