@@ -752,13 +752,15 @@ export const BillingPOS: React.FC = () => {
       const payload: any = {
         customer_id: ((selectedCustomer as any)?.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test((selectedCustomer as any).id)) ? (selectedCustomer as any).id : null,
         raw_customer_id: (selectedCustomer as any)?.id || null,
-        customer_name: (selectedCustomer as any)?.name || null,
-        customer_phone: (selectedCustomer as any)?.phone || null,
+        customer_name: (selectedCustomer as any)?.name || currentCreditInfo?.name || null,
+        customer_phone: (selectedCustomer as any)?.phone || currentCreditInfo?.phone || null,
         seller_id: currentUser?.id,
+        seller_name: currentUser?.name || 'Vendedor POS',
         branch: currentUser?.branch || 'T4',
         total: cartTotal,
         discount: 0,
         idempotency_key: idempotencyKey,
+        credit_due_date: creditDueDate,
         items: cart.map(item => ({
           type: item.type,
           id: item.id,
@@ -834,6 +836,9 @@ export const BillingPOS: React.FC = () => {
       showNotification('success', 'Venta procesada correctamente (Transacción Segura)');
       await fetchInventory();
       queryClient.invalidateQueries({ queryKey: ['orders'] });
+      queryClient.invalidateQueries({ queryKey: ['client_credits'] });
+      queryClient.invalidateQueries({ queryKey: ['cash_movements'] });
+      queryClient.invalidateQueries({ queryKey: ['cashings'] });
 
     } catch (error: any) {
       console.error("Transactional POS Error:", error);

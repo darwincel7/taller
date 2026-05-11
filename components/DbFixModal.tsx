@@ -132,7 +132,6 @@ ALTER TABLE public.pos_sale_items ADD COLUMN IF NOT EXISTS metadata jsonb DEFAUL
 ALTER TABLE public.pos_sales ADD COLUMN IF NOT EXISTS payment_status text DEFAULT 'paid';
 ALTER TABLE public.pos_sales ADD COLUMN IF NOT EXISTS status text DEFAULT 'completed';
 ALTER TABLE public.pos_sales ADD COLUMN IF NOT EXISTS metadata jsonb DEFAULT '{}'::jsonb;
-ALTER TABLE public.pos_sales ALTER COLUMN seller_id TYPE text USING seller_id::text;
 
 ALTER TABLE public.cash_movements ALTER COLUMN closing_id TYPE text USING closing_id::text;
 ALTER TABLE public.cash_movements ALTER COLUMN cashier_id TYPE text USING cashier_id::text;
@@ -470,11 +469,12 @@ BEGIN
             );
         ELSIF (v_payment_json->>'method') = 'CREDIT' THEN
             INSERT INTO client_credits (
-                contact_id, client_name, client_phone, amount, source_type, source_id, branch_id, status, type, notes
+                contact_id, client_name, client_phone, due_date, amount, source_type, source_id, branch_id, status, type, notes
             ) VALUES (
                 (CASE WHEN p_payload->>'raw_customer_id' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN (p_payload->>'raw_customer_id')::uuid ELSE NULL END),
                 COALESCE(p_payload->>'customer_name', 'Cliente POS'),
                 COALESCE(p_payload->>'customer_phone', '00000000'),
+                (CASE WHEN p_payload->>'credit_due_date' IS NOT NULL AND p_payload->>'credit_due_date' != '' THEN (p_payload->>'credit_due_date')::timestamptz ELSE NULL END),
                 (v_payment_json->>'amount')::numeric,
                 'POS',
                 v_sale_id::text,
@@ -511,6 +511,37 @@ BEGIN
                 'CAMBIAZO_IN', (v_item_json->>'value')::numeric, 'EXCHANGE', p_payload->>'branch', 
                 p_payload->>'seller_id', 'POS', v_sale_id::text, 'Equipo recibido por canje', 
                 jsonb_build_object('item_id', v_item_id)
+            );
+
+            INSERT INTO orders (
+                "customerId", customer, "deviceModel", status, "orderType",
+                "totalAmount", "finalPrice", payments, "currentBranch", "cashierId"
+            ) VALUES (
+                (CASE WHEN p_payload->>'raw_customer_id' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN (p_payload->>'raw_customer_id')::uuid ELSE NULL END),
+                jsonb_build_object('name', COALESCE(p_payload->>'customer_name', 'Cliente POS'), 'phone', COALESCE(p_payload->>'customer_phone', '00000000')),
+                v_item_json->>'name',
+                'Entregado',
+                'RECIBIDOS',
+                (v_item_json->>'value')::numeric,
+                (v_item_json->>'value')::numeric,
+                '[]'::jsonb,
+                p_payload->>'branch',
+                p_payload->>'seller_id'
+            );
+
+            INSERT INTO accounting_transactions (
+                amount, transaction_date, description, category_id, vendor, status, source, expense_destination, created_by, branch
+            ) VALUES (
+                -((v_item_json->>'value')::numeric),
+                CURRENT_DATE,
+                'Cambio equipo: ' || (v_item_json->>'name'),
+                '47c20ad7-8947-46ce-8f27-7cfd7b13c2eb',
+                COALESCE(p_payload->>'customer_name', 'Cliente POS'),
+                'COMPLETED',
+                'INVENTORY',
+                'STORE',
+                p_payload->>'seller_id',
+                p_payload->>'branch'
             );
         END LOOP;
     END IF;
