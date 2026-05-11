@@ -5,32 +5,6 @@ const SQL_MIGRATION = `
 BEGIN;
 
 -- 1. Create base tables just in case they are missing
-CREATE TABLE IF NOT EXISTS inventory_parts (
-    id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
-    name text NOT NULL,
-    stock numeric DEFAULT 0,
-    cost numeric DEFAULT 0,
-    price numeric DEFAULT 0,
-    category jsonb,
-    sku text,
-    image_url text,
-    created_at timestamptz DEFAULT now(),
-    updated_at timestamptz DEFAULT now(),
-    status text DEFAULT 'active',
-    deleted_at timestamptz,
-    deleted_by text,
-    created_by text
-);
-
-CREATE TABLE IF NOT EXISTS crm_contacts (
-    id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
-    name text,
-    phone text,
-    email text,
-    type text,
-    created_at timestamptz DEFAULT now()
-);
-
 CREATE TABLE IF NOT EXISTS inventory_movements (
     id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
     item_id uuid REFERENCES inventory_parts(id) ON DELETE CASCADE,
@@ -106,10 +80,7 @@ CREATE TABLE IF NOT EXISTS client_credits (
     created_at timestamptz DEFAULT now()
 );
 
--- 2. Drop dependent views
-DROP VIEW IF EXISTS public.v_sales_unified CASCADE;
-
--- 3. Apply V25 Migrations (Adding missing columns if they already exist but lack them)
+-- 2. Apply V25 Migrations (Adding missing columns if they already exist but lack them)
 ALTER TABLE public.inventory_parts ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFAULT now();
 ALTER TABLE public.inventory_parts ADD COLUMN IF NOT EXISTS created_at timestamptz DEFAULT now();
 ALTER TABLE public.inventory_parts ADD COLUMN IF NOT EXISTS status text DEFAULT 'active';
@@ -145,140 +116,6 @@ ALTER TABLE public.client_credits ADD COLUMN IF NOT EXISTS branch_id text;
 ALTER TABLE public.client_credits ADD COLUMN IF NOT EXISTS status text DEFAULT 'pending';
 ALTER TABLE public.client_credits ADD COLUMN IF NOT EXISTS type text;
 ALTER TABLE public.client_credits ADD COLUMN IF NOT EXISTS notes text;
-ALTER TABLE public.client_credits ADD COLUMN IF NOT EXISTS client_name text;
-ALTER TABLE public.client_credits ADD COLUMN IF NOT EXISTS client_phone text;
-ALTER TABLE public.client_credits ADD COLUMN IF NOT EXISTS due_date timestamptz;
-ALTER TABLE public.client_credits ADD COLUMN IF NOT EXISTS cashier_name text;
-ALTER TABLE public.client_credits ALTER COLUMN client_name DROP NOT NULL;
-ALTER TABLE public.client_credits ALTER COLUMN client_phone DROP NOT NULL;
-ALTER TABLE public.client_credits ALTER COLUMN due_date DROP NOT NULL;
-ALTER TABLE public.client_credits ALTER COLUMN cashier_name DROP NOT NULL;
-ALTER TABLE public.client_credits ALTER COLUMN cashier_id DROP NOT NULL;
-ALTER TABLE public.client_credits DROP CONSTRAINT IF EXISTS client_credits_status_check;
-
--- 4. Recreate dependent view
-CREATE VIEW public.v_sales_unified AS
--- A. Ventas desde el POS Rápido
-SELECT 
-    ps.id::text as source_id,
-    ps.id::text as source_item_id,
-    'POS' as source_type,
-    NULL as order_id,
-    ps.id::text as navigation_id,
-    ps.created_at,
-    COALESCE(ps.branch_id, 'T4') as branch,
-    ps.seller_id::text as user_id,
-    COALESCE(c.full_name, 'Venta al Publico') as customer_name,
-    'Venta POS' as description,
-    ps.total as gross_amount,
-    COALESCE((SELECT sum(total_cost) FROM public.pos_sale_items WHERE sale_id = ps.id), 0) as cost_amount,
-    ps.total - COALESCE((SELECT sum(total_cost) FROM public.pos_sale_items WHERE sale_id = ps.id), 0) as net_profit,
-    COALESCE((SELECT cm.method FROM public.cash_movements cm WHERE cm.source_id = ps.id::text AND cm.method != 'OUT' LIMIT 1), 'CASH') as payment_method,
-    COALESCE((SELECT sum(amount) FROM public.cash_movements cm WHERE cm.source_id = ps.id::text AND cm.method NOT IN ('CREDIT', 'EXCHANGE', 'CAMBIAZO')), 0) as cash_effect_amount,
-    COALESCE(ps.total < 0 OR ps.status = 'refunded', false) as is_refund,
-    EXISTS(SELECT 1 FROM public.cash_movements WHERE source_id = ps.id::text AND method = 'CREDIT') as is_credit,
-    EXISTS(SELECT 1 FROM public.cash_movements WHERE source_id = ps.id::text AND method IN ('EXCHANGE', 'CAMBIAZO')) as is_cambiazo,
-    ps.status,
-    ps.readable_id::text as readable_id
-FROM 
-    public.pos_sales ps
-LEFT JOIN
-    public.crm_contacts c ON ps.customer_id = c.id
-WHERE 
-    ps.status = 'completed'
-
-UNION ALL
-
--- B. Pagos de Órdenes de Taller (Workshop Revenue y Refunds)
-SELECT 
-    op.id::text as source_id,
-    op.id::text as source_item_id,
-    CASE WHEN op.is_refund THEN 'WORKSHOP_REFUND' ELSE 'WORKSHOP' END as source_type,
-    o.id::text as order_id,
-    o.id::text as navigation_id,
-    to_timestamp(op.created_at / 1000.0) as created_at,
-    COALESCE(o."currentBranch", 'T4') as branch,
-    op.cashier_id as user_id,
-    COALESCE(o.customer->>'name', 'Cliente Taller') as customer_name,
-    (CASE WHEN op.is_refund THEN 'Reembolso: ' ELSE 'Pago Taller: ' END) || COALESCE(o."deviceModel", 'Equipo') as description,
-    op.amount as gross_amount,
-    
-    CASE WHEN op.is_refund THEN 0 
-    ELSE
-    ROUND(
-        (
-            COALESCE(o."partsCost", 0) 
-            + 
-            COALESCE((
-                SELECT sum((e->>'amount')::numeric) 
-                FROM jsonb_array_elements(CASE WHEN jsonb_typeof(o.expenses) = 'array' THEN o.expenses ELSE '[]'::jsonb END) e 
-                WHERE e->>'amount' IS NOT NULL
-            ), 0)
-        ) 
-        * 
-        (
-            abs(op.amount) 
-            / NULLIF(
-                COALESCE(
-                    NULLIF(o."totalAmount", 0), 
-                    NULLIF(o."finalPrice", 0), 
-                    NULLIF(o."estimatedCost", 0), 
-                    (SELECT sum(amount) FROM public.order_payments WHERE order_id = o.id AND NOT is_refund) 
-                ), 0
-            )
-        )
-    , 2)
-    END as cost_amount,
-
-    op.amount - 
-    (CASE WHEN op.is_refund THEN 0 
-    ELSE
-    ROUND(
-        (
-            COALESCE(o."partsCost", 0) 
-            + 
-            COALESCE((
-                SELECT sum((e->>'amount')::numeric) 
-                FROM jsonb_array_elements(CASE WHEN jsonb_typeof(o.expenses) = 'array' THEN o.expenses ELSE '[]'::jsonb END) e 
-                WHERE e->>'amount' IS NOT NULL
-            ), 0)
-        ) 
-        * 
-        (
-            abs(op.amount) 
-            / NULLIF(
-                COALESCE(
-                    NULLIF(o."totalAmount", 0), 
-                    NULLIF(o."finalPrice", 0), 
-                    NULLIF(o."estimatedCost", 0), 
-                    (SELECT sum(amount) FROM public.order_payments WHERE order_id = o.id AND NOT is_refund)
-                ), 0
-            )
-        )
-    , 2)
-    END) as net_profit,
-
-    op.method as payment_method,
-    
-    CASE 
-        WHEN op.method = 'CREDIT' THEN 0
-        WHEN op.method IN ('EXCHANGE', 'CAMBIAZO') THEN 0
-        WHEN op.is_refund THEN -abs(op.amount)
-        ELSE op.amount
-    END as cash_effect_amount,
-    
-    op.is_refund,
-    op.method = 'CREDIT' as is_credit,
-    op.method IN ('EXCHANGE', 'CAMBIAZO') as is_cambiazo,
-    'completed' as status,
-    o.readable_id::text as readable_id
-FROM 
-    public.order_payments op
-JOIN 
-    public.orders o ON op.order_id = o.id;
-
-GRANT SELECT ON public.v_sales_unified TO authenticated;
-GRANT SELECT ON public.v_sales_unified TO service_role;
 COMMIT;
 
 BEGIN;
@@ -374,14 +211,14 @@ BEGIN
         total, discount, idempotency_key, metadata,
         subtotal, status, payment_status
     ) VALUES (
-        (CASE WHEN v_customer_id IS NOT NULL AND v_customer_id != '' AND v_customer_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN v_customer_id::uuid ELSE NULL END),
+        (CASE WHEN v_customer_id IS NOT NULL AND v_customer_id != '' AND v_customer_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$$' THEN v_customer_id::uuid ELSE NULL END),
         p_payload->>'seller_id',
         p_payload->>'branch',
         (p_payload->>'total')::numeric,
         (p_payload->>'discount')::numeric,
         p_payload->>'idempotency_key',
         CASE 
-            WHEN p_payload->>'raw_customer_id' IS NOT NULL AND NOT (p_payload->>'raw_customer_id' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') 
+            WHEN p_payload->>'raw_customer_id' IS NOT NULL AND NOT (p_payload->>'raw_customer_id' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$$') 
             THEN COALESCE(p_payload->'metadata', '{}'::jsonb) || jsonb_build_object('raw_customer_id', p_payload->>'raw_customer_id', 'customer_name', p_payload->>'customer_name', 'customer_phone', p_payload->>'customer_phone')
             ELSE p_payload->'metadata' 
         END,
@@ -394,7 +231,7 @@ BEGIN
     LOOP
         v_real_item_cost := COALESCE((v_item_json->>'cost')::numeric, 0);
         
-        IF (v_item_json->>'type') = 'PRODUCT' AND (v_item_json->>'id') ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' AND NOT (v_item_json->>'id' LIKE 'PROD-%') THEN
+        IF (v_item_json->>'type') = 'PRODUCT' AND (v_item_json->>'id') ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$$' AND NOT (v_item_json->>'id' LIKE 'PROD-%') THEN
             v_item_id := (v_item_json->>'id')::uuid;
             
             SELECT cost, stock INTO v_real_item_cost, v_actual_stock FROM inventory_parts WHERE id = v_item_id FOR UPDATE;
@@ -470,16 +307,14 @@ BEGIN
             );
         ELSIF (v_payment_json->>'method') = 'CREDIT' THEN
             INSERT INTO client_credits (
-                contact_id, client_name, client_phone, amount, source_type, source_id, branch_id, status, type, notes
+                contact_id, amount, source_type, source_id, branch_id, status, type, notes
             ) VALUES (
-                (CASE WHEN p_payload->>'raw_customer_id' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN (p_payload->>'raw_customer_id')::uuid ELSE NULL END),
-                COALESCE(p_payload->>'customer_name', 'Cliente POS'),
-                COALESCE(p_payload->>'customer_phone', '00000000'),
+                (CASE WHEN p_payload->>'raw_customer_id' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$$' THEN (p_payload->>'raw_customer_id')::uuid ELSE NULL END),
                 (v_payment_json->>'amount')::numeric,
                 'POS',
                 v_sale_id::text,
                 p_payload->>'branch',
-                'PENDING',
+                'pending',
                 'SALE_DEBT',
                 'Crédito Venta POS. Cliente: ' || COALESCE(p_payload->>'customer_name', 'Desconocido')
             );
@@ -533,10 +368,6 @@ END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 COMMIT;
-
-BEGIN;
-UPDATE public.client_credits SET status = 'PENDING' WHERE status = 'pending';
-COMMIT;
 `;
 
 export const DbFixModal = ({ onClose }: { onClose: () => void }) => {
@@ -565,9 +396,9 @@ export const DbFixModal = ({ onClose }: { onClose: () => void }) => {
           <div className="bg-amber-50 border border-amber-200 text-amber-800 dark:bg-amber-900/20 dark:border-amber-800/30 dark:text-amber-300 p-4 rounded-xl mb-6 text-sm">
             <h3 className="font-bold flex items-center gap-2 mb-2">
               <AlertTriangle className="w-4 h-4"/> 
-              Importante (V27) - Correcciones Créditos y Vistas
+              Importante (V26) - Base de Datos Corregida
             </h3>
-            <p className="mb-2">El error <b>null value in column "client_name"</b> ocurría porque la tabla client_credits original exigía campos que la nueva versión no incluía (como client_name). Este script relaja esas restricciones y actualiza el código para evitar choques con el esquema existente. También restaura las vistas dependientes que estaban causando errores "relation does not exist".</p>
+            <p className="mb-2">El error <b>42P01: la relación public.* no existe</b> sucede si no se corrieron los scripts originales para crear las tablas del POS (inventory_movements, pos_sales, etc). Este nuevo script <b>las crea primero</b> y luego actualiza los <b>RPCs</b>.</p>
           </div>
 
           <div className="relative group">

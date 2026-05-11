@@ -738,8 +738,18 @@ export const BillingPOS: React.FC = () => {
     try {
       // 1. Prepare Transaction Payload
       const idempotencyKey = `pos-${currentUser?.id}-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+
+      const cambiazoPaymentAmount = paymentMethods.find(pm => pm.method === 'CAMBIAZO')?.amount || 0;
+      if (cambiazoPaymentAmount > 0 && !cambiazoDetails.deviceModel) {
+        showNotification('error', 'El modelo del equipo es obligatorio para procesar el Cambiazo.');
+        setIsProcessing(false);
+        printWindows.forEach(w => w?.close());
+        productPrintWindow?.close();
+        setIsCambiazoModalMinimized(false);
+        return;
+      }
       
-      const payload = {
+      const payload: any = {
         customer_id: ((selectedCustomer as any)?.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test((selectedCustomer as any).id)) ? (selectedCustomer as any).id : null,
         raw_customer_id: (selectedCustomer as any)?.id || null,
         customer_name: (selectedCustomer as any)?.name || null,
@@ -774,6 +784,14 @@ export const BillingPOS: React.FC = () => {
           customer: selectedCustomer
         }
       };
+
+      if (cambiazoPaymentAmount > 0) {
+        payload.received_items = [{
+          name: cambiazoDetails.deviceModel,
+          value: cambiazoPaymentAmount,
+          details: cambiazoDetails
+        }];
+      }
 
       // 2. Call Transactional RPC
       const { data: rpcResult, error: rpcError } = await supabase.rpc('pos_checkout_transaction', {

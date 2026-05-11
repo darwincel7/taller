@@ -238,9 +238,10 @@ const CashRegisterComponent: React.FC = () => {
     return clientCredits.filter(c => {
         const term = creditSearch.toLowerCase();
         return (
-            c.client_name.toLowerCase().includes(term) ||
+            (c.client_name && c.client_name.toLowerCase().includes(term)) ||
             (c.order_id && c.order_id.toLowerCase().includes(term)) ||
-            (c.cashier_name && c.cashier_name.toLowerCase().includes(term))
+            (c.cashier_name && c.cashier_name.toLowerCase().includes(term)) ||
+            (c.source_id && c.source_id.toLowerCase().includes(term))
         );
     });
   }, [clientCredits, creditSearch]);
@@ -1959,7 +1960,7 @@ const CashRegisterComponent: React.FC = () => {
                         </div>
                     ) : (
                         filteredCredits.map(credit => {
-                            const isOverdue = credit.status === 'PENDING' && new Date(credit.due_date) < new Date();
+                            const isOverdue = credit.status === 'PENDING' && credit.due_date && new Date(credit.due_date) < new Date();
                             return (
                                 <div 
                                     key={credit.id} 
@@ -1971,9 +1972,9 @@ const CashRegisterComponent: React.FC = () => {
                                     
                                     <div className="flex justify-between items-start mb-6 mt-2">
                                         <div>
-                                            <h3 className="font-black text-slate-800 text-lg leading-tight mb-1">{credit.client_name}</h3>
+                                            <h3 className="font-black text-slate-800 text-lg leading-tight mb-1">{credit.client_name || 'Cliente POS'}</h3>
                                             <p className="text-xs font-bold text-slate-500 flex items-center gap-1.5">
-                                                <Phone className="w-3.5 h-3.5 text-slate-400"/> {credit.client_phone}
+                                                <Phone className="w-3.5 h-3.5 text-slate-400"/> {credit.client_phone || 'Sin número'}
                                             </p>
                                         </div>
                                         <div className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest shadow-sm border ${credit.status === 'PAID' ? 'bg-green-50 text-green-700 border-green-100' : (isOverdue ? 'bg-red-50 text-red-700 border-red-100 animate-pulse' : 'bg-amber-50 text-amber-700 border-amber-100')}`}>
@@ -1994,7 +1995,7 @@ const CashRegisterComponent: React.FC = () => {
                                                 <Calendar className="w-3 h-3" /> Fecha Límite
                                             </span>
                                             <span className={`text-xs font-black ${isOverdue ? 'text-red-600' : 'text-slate-700'}`}>
-                                                {new Date(credit.due_date).toLocaleDateString()}
+                                                {credit.due_date ? new Date(credit.due_date).toLocaleDateString() : 'Sin definir'}
                                             </span>
                                         </div>
                                     </div>
