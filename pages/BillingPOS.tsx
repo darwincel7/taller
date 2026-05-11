@@ -23,6 +23,7 @@ interface CartItem {
   title: string;
   subtitle: string;
   amount: number;
+  quantity?: number;
   partCost?: number;
   originalPrice?: number; // Added to track discounts
   maxAmount?: number; // For orders, you can't pay more than the balance
@@ -85,7 +86,7 @@ export const BillingPOS: React.FC = () => {
   const [isCambiazoModalMinimized, setIsCambiazoModalMinimized] = useState(false);
   const [showCamera, setShowCamera] = useState(false);
 
-  const [savedQuotes, setSavedQuotes] = useState<{id: string, date: number, customer: any, cart: any[], salespersonId?: string, salespersonName?: string}[]>(() => {
+  const [savedQuotes, setSavedQuotes] = useState<{id: string, date: number, customer: any, cart: any[], salespersonId?: string, salespersonName?: string, paymentMethods?: any[], creditClientInfo?: any}[]>(() => {
     try {
       const q = localStorage.getItem('pos_saved_quotes');
       return q ? JSON.parse(q) : [];
@@ -113,7 +114,9 @@ export const BillingPOS: React.FC = () => {
         customer: selectedCustomer,
         cart: cart,
         salespersonId: salesp?.id,
-        salespersonName: salesp?.name
+        salespersonName: salesp?.name,
+        paymentMethods: paymentMethods,
+        creditClientInfo: creditClientInfo
       } : q);
       showNotification('success', 'Cotización Actualizada');
     } else {
@@ -123,7 +126,9 @@ export const BillingPOS: React.FC = () => {
           customer: selectedCustomer,
           cart: cart,
           salespersonId: salesp?.id,
-          salespersonName: salesp?.name
+          salespersonName: salesp?.name,
+          paymentMethods: paymentMethods,
+          creditClientInfo: creditClientInfo
       };
       updated = [newQuote, ...savedQuotes];
       showNotification('success', 'Cotización Guardada');
@@ -141,6 +146,8 @@ export const BillingPOS: React.FC = () => {
         setCart(q.cart);
         if (q.customer) setSelectedCustomer(q.customer);
         if (q.salespersonId) setSelectedSalespersonId(q.salespersonId);
+        if (q.paymentMethods && q.paymentMethods.length > 0) setPaymentMethods(q.paymentMethods);
+        if (q.creditClientInfo) setCreditClientInfo(q.creditClientInfo);
         setCurrentQuoteId(quoteId);
         // Do not delete the quote
         setShowQuotesModal(false);
@@ -495,7 +502,19 @@ export const BillingPOS: React.FC = () => {
 
   const addToCartInventory = (part: any) => {
     if (cart.some(item => item.id === part.id)) {
-      showNotification('error', 'Este artículo ya está en el carrito');
+      setCart(prev => prev.map(item => {
+        if (item.id === part.id) {
+          const newQty = (item.quantity || 1) + 1;
+          return {
+            ...item,
+            quantity: newQty,
+            amount: (item.originalPrice || 0) * newQty
+          };
+        }
+        return item;
+      }));
+      setSearchTerm('');
+      setPendingInventory([]);
       return;
     }
     
@@ -525,7 +544,8 @@ export const BillingPOS: React.FC = () => {
       originalPrice: part.price || 0,
       type: 'PRODUCT',
       amountIn: part.price || 0,
-      imageUrl: part.imageUrl
+      imageUrl: part.imageUrl,
+      quantity: 1
     }, ...prev]);
     
     setSearchTerm('');
@@ -658,6 +678,8 @@ export const BillingPOS: React.FC = () => {
       return;
     }
     
+    
+    const hasCreditPayment = paymentMethods.some(pm => pm.method === 'CREDIT' && pm.amount > 0);
     const isRefund = cartTotal < 0;
     if (paymentTotal <= 0 && !isRefund && cartTotal !== 0) {
       showNotification('error', 'Ingrese un monto de pago válido.');
@@ -679,7 +701,7 @@ export const BillingPOS: React.FC = () => {
 
     // Check for credit info
     const hasCredit = paymentMethods.some(pm => pm.method === 'CREDIT' && pm.amount > 0);
-    const currentCreditInfo = overrideCreditInfo || creditClientInfo;
+    const currentCreditInfo = overrideCreditInfo || creditClientInfo || (selectedCustomer ? { name: selectedCustomer.name, phone: selectedCustomer.phone } : null);
     if (hasCredit && !currentCreditInfo) {
       setPromptModal({
         title: 'Información de Crédito',
@@ -718,7 +740,10 @@ export const BillingPOS: React.FC = () => {
       const idempotencyKey = `pos-${currentUser?.id}-${Date.now()}-${Math.random().toString(36).substring(7)}`;
       
       const payload = {
-        customer_id: (selectedCustomer as any)?.id || null,
+        customer_id: ((selectedCustomer as any)?.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test((selectedCustomer as any).id)) ? (selectedCustomer as any).id : null,
+        raw_customer_id: (selectedCustomer as any)?.id || null,
+        customer_name: (selectedCustomer as any)?.name || null,
+        customer_phone: (selectedCustomer as any)?.phone || null,
         seller_id: currentUser?.id,
         branch: currentUser?.branch || 'T4',
         total: cartTotal,
@@ -728,7 +753,7 @@ export const BillingPOS: React.FC = () => {
           type: item.type,
           id: item.id,
           name: item.title,
-          quantity: 1, // POS currently supports q=1 per row
+          quantity: item.quantity || 1,
           price: item.amount,
           cost: item.partCost || 0,
           total_price: item.amount,
@@ -745,7 +770,8 @@ export const BillingPOS: React.FC = () => {
         })),
         credit_info: currentCreditInfo,
         metadata: {
-          source: 'NEW_POS_TRANSACTIONAL_V1'
+          source: 'NEW_POS_TRANSACTIONAL_V1',
+          customer: selectedCustomer
         }
       };
 
@@ -755,7 +781,7 @@ export const BillingPOS: React.FC = () => {
       });
 
       if (rpcError) throw rpcError;
-      if (!rpcResult?.success) throw new Error(rpcResult?.message || 'Error en la transacción');
+      if (!rpcResult?.success) throw new Error(rpcResult?.error || rpcResult?.message || 'Error en la transacción');
 
       // 3. Post-Transaction Tasks (Client Side only)
       // Print Receipts & UI Feedback
@@ -1680,7 +1706,7 @@ export const BillingPOS: React.FC = () => {
                       </div>
                     )}
                     <div>
-                      <p className="font-bold text-slate-900 dark:text-white text-base leading-tight tracking-tight">{item.title}</p>
+                      <p className="font-bold text-slate-900 dark:text-white text-base leading-tight tracking-tight">{item.title} {item.quantity && item.quantity > 1 ? `(x${item.quantity})` : ''}</p>
                       <p className="text-[10px] text-slate-500 dark:text-slate-400 uppercase font-bold mt-1 tracking-wider">{item.subtitle}</p>
                     </div>
                   </div>

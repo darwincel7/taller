@@ -46,48 +46,54 @@ const CashRegisterComponent: React.FC = () => {
 
   const handleConsolidateLegacy = async () => {
     if (!currentUser || legacyPayments.length === 0) return;
+    
+    const cashierNames = Array.from(new Set(
+        legacyPayments.map(p => p.cashier_name || p.cashier_id || 'Desconocido')
+    ));
+    const branches = Array.from(new Set(
+        legacyPayments.map(p => p.order_branch || (p as any).branch || 'T4')
+    ));
+    const totalAmount = legacyPayments.reduce((acc, p) => acc + (Number(p.amount) || 0), 0);
+    
+    const oldest = new Date(Math.min(...legacyPayments.map(p => p.created_at || Date.now())));
+    const newest = new Date(Math.max(...legacyPayments.map(p => p.created_at || 0)));
+
+    const messageStr = `Cantidad de movimientos: ${legacyPayments.length}\nTotal neto: $${totalAmount.toLocaleString()}\nSucursales incluidas: ${branches.join(', ')}\nCajeros incluidos: ${cashierNames.join(', ')}\nFecha mas antigua: ${oldest.toLocaleDateString()}\nFecha mas reciente: ${newest.toLocaleDateString()}\n\nEsto NO afecta el turno actual.`;
+
     setConfirmationDialog({
       title: 'Consolidar Limpieza Histórica',
-      message: `¿Estás seguro de limpiar ${legacyPayments.length} movimientos antiguos? No sumarán a tu caja actual y quedarán auditados.`,
+      message: messageStr,
       confirmLabel: 'Consolidar como Histórico',
       type: 'warning',
       onConfirm: async () => {
+          setConfirmationDialog(null);
           setIsConsolidatingLegacy(true);
           try {
               const legacyIds = legacyPayments.map(p => getPaymentId(p));
-              const totalAmount = legacyPayments.reduce((acc, curr) => acc + (curr.amount || 0), 0);
               const closingId = `close-legacy-${Date.now()}`;
               
-              const { error: closingError } = await supabase.from('cash_closings').insert({
-                  id: closingId,
-                  cashierId: currentUser.id,
-                  adminId: currentUser.id,
-                  systemTotal: totalAmount,
-                  actualTotal: totalAmount,
-                  difference: 0,
-                  timestamp: Date.now(),
-                  notes: "Limpieza historica de movimientos previos al nuevo sistema de caja"
+              const { data, error } = await supabase.rpc('consolidate_legacy_payments', {
+                  p_closing_id: closingId,
+                  p_admin_id: currentUser.id,
+                  p_total: totalAmount,
+                  p_payment_ids: legacyIds
               });
 
-              if (closingError) throw closingError;
-
-              const promises = [];
-              const batchSize = 100;
-              for (let i = 0; i < legacyIds.length; i += batchSize) {
-                  const batch = legacyIds.slice(i, i + batchSize);
-                  promises.push(supabase.from('order_payments').update({ closing_id: closingId }).in('id', batch));
-                  promises.push(supabase.from('accounting_transactions').update({ closing_id: closingId }).in('id', batch));
-                  promises.push(supabase.from('floating_expenses').update({ closing_id: closingId }).in('id', batch));
-                  promises.push(supabase.from('cash_movements').update({ closing_id: closingId }).in('id', batch));
-              }
-
-              await Promise.all(promises);
+              if (error) throw error;
+              if (data && data.success === false) throw new Error(data.error || 'Error consolidando historicos');
 
               await auditService.recordLog(
                   { id: currentUser.id, name: currentUser.name },
                   ActionType.SETTINGS_UPDATED,
                   `Consolidación histórica de ${legacyPayments.length} registros ($${totalAmount}).`
               );
+
+              const sBusinessDay = new Date();
+              sBusinessDay.setHours(0, 0, 0, 0);
+              const remainingLegacy = await fetchGlobalPayments(null, sBusinessDay.getTime() - 1, null, null, true);
+              if (remainingLegacy.length > 0) {
+                  console.warn('Aun quedan historicos pendientes:', remainingLegacy.length);
+              }
 
               showNotification('success', 'Limpieza histórica completada.');
               loadPaymentsFromServer();
@@ -335,8 +341,18 @@ const CashRegisterComponent: React.FC = () => {
       const end = endOfBusinessDay.getTime();
 
       // 1. Fetch RPC data (Standard Order Payments, Store Sales, Expenses, Floating)
-      const currentShift = await fetchGlobalPayments(start, end, null, null, true);
-      const legacy = await fetchGlobalPayments(null, start - 1, null, null, true);
+      const isSupervisor = currentUser?.role === 'Admin' || currentUser?.role === 'Monitor';
+      const selectedCashierFilter = isSupervisor ? null : currentUser?.id || null;
+      const selectedBranchFilter = closingBranch || null;
+      
+      const currentShift = await fetchGlobalPayments(start, end, null, selectedBranchFilter, true);
+      const legacy = await fetchGlobalPayments(
+          null,
+          start - 1,
+          selectedCashierFilter,
+          selectedBranchFilter,
+          true
+      );
 
       // 2. SAFETY NET: Fetch IDs of closed payments directly from table
       // Check the last 30 days to avoid fetching the entire history, but catch recently missed ones
@@ -699,7 +715,18 @@ const CashRegisterComponent: React.FC = () => {
                       setIsSuccessAnim(false);
                   }, 3000);
 
-                  showNotification('success', 'Cierre de caja completado con éxito');
+                  // Post-close validation
+                  const sBusinessDay = new Date();
+                  sBusinessDay.setHours(0, 0, 0, 0);
+                  const eBusinessDay = new Date();
+                  eBusinessDay.setHours(23, 59, 59, 999);
+                  const stillOpen = await fetchGlobalPayments(sBusinessDay.getTime(), eBusinessDay.getTime(), null, closingBranch, true);
+                  const stillSelectedOpen = stillOpen.filter(p => paymentIds.includes(p.payment_id || (p as any).id));
+                  if (stillSelectedOpen.length > 0) {
+                      showNotification('error', `Advertencia: ${stillSelectedOpen.length} movimientos siguen abiertos.`);
+                  } else {
+                      showNotification('success', 'Cierre de caja completado con éxito');
+                  }
                   
                   // IMPRIMIR TICKET AUTOMÁTICAMENTE
                   handlePrintShift(closingBranch);

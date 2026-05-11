@@ -78,13 +78,14 @@ export const CashProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
               .update({ closing_id: closingId })
               .in('id', paymentIds);
           
-          if (updateError && accError && floatError && cashMovementError) {
+          const errors = [updateError, accError, floatError, cashMovementError].filter(Boolean);
+          if (errors.length > 0) {
               await auditService.recordLog(
                   { id: adminId, name: 'Admin' },
                   ActionType.CASH_PAYMENT_EDITED,
-                  `Fallo total del fallback de cierre para: ${paymentIds.join(', ')}`
+                  `Fallo parcial/total del fallback de cierre para: ${paymentIds.join(', ')}`
               );
-              throw new Error(`Fallo total al actualizar pagos: ${updateError.message}`);
+              throw new Error(errors.map((e: any) => e.message).join(' | '));
           }
       }
   };

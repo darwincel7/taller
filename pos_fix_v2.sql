@@ -1,78 +1,13 @@
-import React, { useState } from 'react';
-import { Database, Copy, X } from 'lucide-react';
+BEGIN;
 
-export const DbFixModal = ({ onClose }: { onClose: () => void }) => {
-  const [copied, setCopied] = useState(false);
+DROP VIEW IF EXISTS public.v_sales_unified CASCADE;
 
-  const FULL_SQL = `\nBEGIN;
-
-ALTER TABLE IF EXISTS inventory_movements ALTER COLUMN created_by TYPE text;
-
-DROP FUNCTION IF EXISTS consume_inventory_item(uuid, numeric, text, text, text, uuid, text);
-DROP FUNCTION IF EXISTS consume_inventory_item(uuid, numeric, text, text, text, text, text);
-
-CREATE OR REPLACE FUNCTION consume_inventory_item(
-    p_item_id uuid,
-    p_quantity numeric,
-    p_source_type text,
-    p_source_id text,
-    p_reason text,
-    p_user_id text,
-    p_order_details text DEFAULT NULL
-) 
-RETURNS boolean AS \$\\$
-DECLARE
-    v_current_stock numeric;
-    v_unit_cost numeric;
-    v_unit_price numeric;
-    v_category jsonb;
-BEGIN
-    SELECT stock, cost, price, category INTO v_current_stock, v_unit_cost, v_unit_price, v_category
-    FROM inventory_parts 
-    WHERE id = p_item_id 
-    FOR UPDATE;
-
-    IF NOT FOUND THEN
-        RAISE EXCEPTION 'Item no existe';
-    END IF;
-
-    IF v_current_stock < p_quantity THEN
-        RAISE EXCEPTION 'Stock insuficiente para % (Disponible: %, Requerido: %)', p_item_id, v_current_stock, p_quantity;
-    END IF;
-
-    UPDATE inventory_parts 
-    SET stock = stock - p_quantity
-    WHERE id = p_item_id;
-
-    INSERT INTO inventory_movements (
-        item_id, movement_type, quantity, 
-        before_stock, after_stock, 
-        unit_cost, unit_price,
-        source_type, source_id, reason, created_by
-    ) VALUES (
-        p_item_id, 'SALE', p_quantity,
-        v_current_stock, v_current_stock - p_quantity,
-        v_unit_cost, v_unit_price,
-        p_source_type, p_source_id, p_reason, p_user_id
-    );
-
-    INSERT INTO audit_logs (action, details, user_id, created_at)
-    VALUES (
-        'INVENTORY_EXTRACTION',
-        format('Extracción ATÓMICA: %s x Item %s. %s', p_quantity, p_item_id, coalesce(p_order_details, '')),
-        p_user_id,
-        extract(epoch from now())::bigint * 1000
-    );
-
-    RETURN true;
-END;
-\$\\$ LANGUAGE plpgsql SECURITY DEFINER;
-
+ALTER TABLE IF EXISTS pos_sales ALTER COLUMN seller_id TYPE text;
 
 CREATE OR REPLACE FUNCTION pos_checkout_transaction(
-    p_payload jsonb 
+    p_payload jsonb -- Contiene: customer_id, seller_id, items[], payments[], branch, discount, idempotency_key, metadata
 )
-RETURNS jsonb AS \$\\$
+RETURNS jsonb AS $$
 DECLARE
     v_sale_id uuid;
     v_item_json jsonb;
@@ -82,6 +17,7 @@ DECLARE
     v_real_item_cost numeric;
     v_actual_stock numeric;
 BEGIN
+    -- 1. Verificar idempotencia
     IF EXISTS (SELECT 1 FROM pos_sales WHERE idempotency_key = p_payload->>'idempotency_key') THEN
         RETURN jsonb_build_object(
             'success', true, 
@@ -90,8 +26,10 @@ BEGIN
         );
     END IF;
 
+    -- 2. Resolver Customer
     v_customer_id := p_payload->>'customer_id';
 
+    -- 3. Insertar Venta Principal
     INSERT INTO pos_sales (
         customer_id, seller_id, branch_id, 
         total, discount, idempotency_key, metadata,
@@ -107,20 +45,25 @@ BEGIN
         COALESCE((p_payload->>'total')::numeric + (p_payload->>'discount')::numeric, (p_payload->>'total')::numeric)
     ) RETURNING id INTO v_sale_id;
 
+    -- 4. Procesar Items (Manejo inteligente de tipos)
     FOR v_item_json IN SELECT * FROM jsonb_array_elements(p_payload->'items')
     LOOP
         v_real_item_cost := COALESCE((v_item_json->>'cost')::numeric, 0);
         
-        IF (v_item_json->>'type') = 'PRODUCT' AND (v_item_json->>'id') ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\$' THEN
+        -- Caso A: Producto de Inventario Real
+        IF (v_item_json->>'type') = 'PRODUCT' AND (v_item_json->>'id') ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN
             v_item_id := (v_item_json->>'id')::uuid;
             
+            -- Obtener costo y stock actual
             SELECT cost, stock INTO v_real_item_cost, v_actual_stock FROM inventory_parts WHERE id = v_item_id FOR UPDATE;
             
+            -- Validar Stock
             IF v_actual_stock < (v_item_json->>'quantity')::numeric THEN
                 RAISE EXCEPTION 'Stock insuficiente para %: disponible %, solicitado %', 
                     (v_item_json->>'name'), v_actual_stock, (v_item_json->>'quantity')::numeric;
             END IF;
 
+            -- Descontar Inventario formalmente
             PERFORM consume_inventory_item(
                 v_item_id,
                 (v_item_json->>'quantity')::numeric,
@@ -131,9 +74,11 @@ BEGIN
                 NULL::text
             );
         ELSE
+            -- Caso B: Venta Rápida / Manual / Orden / Crédito
             v_item_id := NULL;
         END IF;
 
+        -- Insertar linea de venta con costo capturado
         INSERT INTO pos_sale_items (
             sale_id, inventory_item_id, name, 
             quantity, unit_price, unit_cost,
@@ -146,6 +91,7 @@ BEGIN
             ((v_item_json->>'quantity')::numeric * (v_item_json->>'price')::numeric) - ((v_item_json->>'quantity')::numeric * v_real_item_cost)
         );
 
+        -- Lógica extra para Órdenes
         IF (v_item_json->>'type') = 'ORDER' THEN
              UPDATE orders 
              SET 
@@ -158,6 +104,7 @@ BEGIN
         END IF;
     END LOOP;
 
+    -- 5. Procesar Pagos y Movimiento de Caja 
     FOR v_payment_json IN SELECT * FROM jsonb_array_elements(p_payload->'payments')
     LOOP
         IF (v_payment_json->>'method') != 'CREDIT' THEN
@@ -197,6 +144,7 @@ BEGIN
         END IF;
     END LOOP;
 
+    -- 6. Procesar Equipos Recibidos (Cambiazo)
     IF p_payload ? 'received_items' THEN
         FOR v_item_json IN SELECT * FROM jsonb_array_elements(p_payload->'received_items')
         LOOP
@@ -209,7 +157,7 @@ BEGIN
             ) RETURNING id INTO v_item_id;
 
             INSERT INTO inventory_movements (
-                item_id, movement_type, quantity, before_stock, after_stock, 
+                item_id, movement_type, quantity, stock_before, stock_after, 
                 unit_cost, reason, created_by, source_type, source_id
             ) VALUES (
                 v_item_id, 'IN', 1, 0, 1, 
@@ -226,6 +174,7 @@ BEGIN
         END LOOP;
     END IF;
 
+    -- 7. Auditoría
     INSERT INTO audit_logs (action, details, user_id, created_at)
     VALUES (
         'POS_SALE_COMPLETED',
@@ -238,54 +187,128 @@ BEGIN
 EXCEPTION WHEN others THEN
     RETURN jsonb_build_object('success', false, 'error', SQLERRM);
 END;
-\$\\$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+
+CREATE VIEW public.v_sales_unified AS
+SELECT 
+    ps.id::text as source_id,
+    ps.id::text as source_item_id,
+    'POS' as source_type,
+    NULL as order_id,
+    ps.id::text as navigation_id,
+    ps.created_at,
+    COALESCE(ps.branch_id, 'T4') as branch,
+    ps.seller_id::text as user_id,
+    COALESCE(c.full_name, 'Venta al Publico') as customer_name,
+    'Venta POS' as description,
+    ps.total as gross_amount,
+    COALESCE((SELECT sum(total_cost) FROM public.pos_sale_items WHERE sale_id = ps.id), 0) as cost_amount,
+    ps.total - COALESCE((SELECT sum(total_cost) FROM public.pos_sale_items WHERE sale_id = ps.id), 0) as net_profit,
+    COALESCE((SELECT cm.method FROM public.cash_movements cm WHERE cm.source_id = ps.id::text AND cm.method != 'OUT' LIMIT 1), 'CASH') as payment_method,
+    COALESCE((SELECT sum(amount) FROM public.cash_movements cm WHERE cm.source_id = ps.id::text AND cm.method NOT IN ('CREDIT', 'EXCHANGE', 'CAMBIAZO')), 0) as cash_effect_amount,
+    COALESCE(ps.total < 0 OR ps.status = 'refunded', false) as is_refund,
+    EXISTS(SELECT 1 FROM public.cash_movements WHERE source_id = ps.id::text AND method = 'CREDIT') as is_credit,
+    EXISTS(SELECT 1 FROM public.cash_movements WHERE source_id = ps.id::text AND method IN ('EXCHANGE', 'CAMBIAZO')) as is_cambiazo,
+    ps.status,
+    ps.readable_id::text as readable_id
+FROM 
+    public.pos_sales ps
+LEFT JOIN
+    public.crm_contacts c ON ps.customer_id = c.id
+WHERE 
+    ps.status = 'completed'
+
+UNION ALL
+
+SELECT 
+    op.id::text as source_id,
+    op.id::text as source_item_id,
+    CASE WHEN op.is_refund THEN 'WORKSHOP_REFUND' ELSE 'WORKSHOP' END as source_type,
+    o.id::text as order_id,
+    o.id::text as navigation_id,
+    to_timestamp(op.created_at / 1000.0) as created_at,
+    COALESCE(o."currentBranch", 'T4') as branch,
+    op.cashier_id as user_id,
+    COALESCE(o.customer->>'name', 'Cliente Taller') as customer_name,
+    (CASE WHEN op.is_refund THEN 'Reembolso: ' ELSE 'Pago Taller: ' END) || COALESCE(o."deviceModel", 'Equipo') as description,
+    op.amount as gross_amount,
+    
+    CASE WHEN op.is_refund THEN 0 
+    ELSE
+    ROUND(
+        (
+            COALESCE(o."partsCost", 0) 
+            + 
+            COALESCE((
+                SELECT sum((e->>'amount')::numeric) 
+                FROM jsonb_array_elements(CASE WHEN jsonb_typeof(o.expenses) = 'array' THEN o.expenses ELSE '[]'::jsonb END) e 
+                WHERE e->>'amount' IS NOT NULL
+            ), 0)
+        ) 
+        * 
+        (
+            abs(op.amount) 
+            / NULLIF(
+                COALESCE(
+                    NULLIF(o."totalAmount", 0), 
+                    NULLIF(o."finalPrice", 0), 
+                    NULLIF(o."estimatedCost", 0), 
+                    (SELECT sum(amount) FROM public.order_payments WHERE order_id = o.id AND NOT is_refund) 
+                ), 0
+            )
+        )
+    , 2)
+    END as cost_amount,
+
+    op.amount - 
+    (CASE WHEN op.is_refund THEN 0 
+    ELSE
+    ROUND(
+        (
+            COALESCE(o."partsCost", 0) 
+            + 
+            COALESCE((
+                SELECT sum((e->>'amount')::numeric) 
+                FROM jsonb_array_elements(CASE WHEN jsonb_typeof(o.expenses) = 'array' THEN o.expenses ELSE '[]'::jsonb END) e 
+                WHERE e->>'amount' IS NOT NULL
+            ), 0)
+        ) 
+        * 
+        (
+            abs(op.amount) 
+            / NULLIF(
+                COALESCE(
+                    NULLIF(o."totalAmount", 0), 
+                    NULLIF(o."finalPrice", 0), 
+                    NULLIF(o."estimatedCost", 0), 
+                    (SELECT sum(amount) FROM public.order_payments WHERE order_id = o.id AND NOT is_refund)
+                ), 0
+            )
+        )
+    , 2)
+    END) as net_profit,
+
+    op.method as payment_method,
+    
+    CASE 
+        WHEN op.method = 'CREDIT' THEN 0
+        WHEN op.method IN ('EXCHANGE', 'CAMBIAZO') THEN 0
+        WHEN op.is_refund THEN -abs(op.amount)
+        ELSE op.amount
+    END as cash_effect_amount,
+    
+    op.is_refund,
+    op.method = 'CREDIT' as is_credit,
+    op.method IN ('EXCHANGE', 'CAMBIAZO') as is_cambiazo,
+    'completed' as status,
+    o.readable_id::text as readable_id
+FROM 
+    public.order_payments op
+JOIN 
+    public.orders o ON op.order_id = o.id;
+
+GRANT SELECT ON public.v_sales_unified TO authenticated;
+GRANT SELECT ON public.v_sales_unified TO service_role;
 
 COMMIT;
-\n`;
-
-  const copySql = () => {
-    navigator.clipboard.writeText(FULL_SQL);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
-  return (
-    <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-      <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden border border-slate-200 dark:border-slate-800">
-        <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center bg-slate-50 dark:bg-slate-900/50">
-          <div className="flex items-center gap-2">
-            <Database className="w-5 h-5 text-blue-500" />
-            <h2 className="font-bold text-slate-800 dark:text-white">Actualización de Base de Datos Necesaria (V29)</h2>
-          </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300">
-            <X className="w-6 h-6" />
-          </button>
-        </div>
-        
-        <div className="p-6 overflow-y-auto flex-1">
-          <div className="bg-blue-50 dark:bg-blue-900/20 text-blue-800 dark:text-blue-300 p-4 rounded-xl mb-6 text-sm">
-            <strong>Instrucciones:</strong> Copia este código SQL y ejecútalo en el <strong>SQL Editor de Supabase</strong> para habilitar y reparar las funciones requeridas para el POS y arreglar 'consume_inventory_item' (sin updated_at).
-          </div>
-
-          <div className="relative group">
-            <button 
-              onClick={copySql}
-              className="absolute top-4 right-4 bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg flex items-center gap-2 transition text-xs font-bold shadow-lg z-10"
-            >
-              {copied ? '¡COPIADO!' : <><Copy className="w-4 h-4"/> COPIAR SQL</>}
-            </button>
-            <pre className="bg-slate-950 text-green-400 p-6 rounded-xl overflow-x-auto text-xs font-mono border border-slate-800 max-h-[400px]">
-              {FULL_SQL}
-            </pre>
-          </div>
-        </div>
-        
-        <div className="p-4 border-t border-slate-200 dark:border-slate-800 flex justify-end bg-slate-50 dark:bg-slate-900/50">
-          <button onClick={onClose} className="px-6 py-2 bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-xl font-bold hover:bg-slate-300 dark:hover:bg-slate-700 transition">
-            Cerrar
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-};
