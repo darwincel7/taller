@@ -253,8 +253,8 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({ onClose, onAdd
   const uploadUrl = `${window.location.origin}/#/mobile-upload/${sessionId}?sbUrl=${encodeURIComponent(finalUrl || '')}&sbKey=${encodeURIComponent(finalKey || '')}`;
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]">
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]" onClick={e => e.stopPropagation()}>
         <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
           <h2 className="text-lg font-black text-slate-800 uppercase tracking-tight flex items-center gap-2">
             <FileText className="w-5 h-5 text-blue-600" />

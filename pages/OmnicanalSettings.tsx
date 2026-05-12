@@ -516,8 +516,8 @@ export const OmnicanalSettings: React.FC = () => {
       </div>
 
       {showRawModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-[99]">
-          <div className="bg-white dark:bg-slate-900 rounded-xl p-6 max-w-2xl w-full max-h-[80vh] flex flex-col shadow-xl">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-[99]" onClick={() => setShowRawModal(false)}>
+          <div className="bg-white dark:bg-slate-900 rounded-xl p-6 max-w-2xl w-full max-h-[80vh] flex flex-col shadow-xl" onClick={(e) => e.stopPropagation()}>
             <div className="flex justify-between items-center mb-4">
               <h3 className="font-bold">Raw JSON</h3>
               <button title="Cerrar" onClick={() => setShowRawModal(null)} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full">

@@ -419,8 +419,8 @@ export const PartsPanel: React.FC = () => {
 
             {/* RESOLVE MODAL */}
             {showResolveModal && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-                    <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden scale-100 animate-in zoom-in-95 duration-200">
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200" onClick={() => setShowResolveModal(false)}>
+                    <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden scale-100 animate-in zoom-in-95 duration-200" onClick={(e) => e.stopPropagation()}>
                         <div className={`p-4 flex items-center justify-between ${resolveStatus === RequestStatus.FOUND ? 'bg-green-600' : 'bg-red-600'}`}>
                             <h3 className="text-white font-black text-lg flex items-center gap-2">
                                 {resolveStatus === RequestStatus.FOUND ? <CheckCircle className="w-6 h-6"/> : <XCircle className="w-6 h-6"/>}
@@ -495,8 +495,8 @@ export const PartsPanel: React.FC = () => {
             )}
             {/* INDEPENDENT PART MODAL */}
             {showIndependentModal && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-                    <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden scale-100 animate-in zoom-in-95 duration-200">
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200" onClick={() => setShowIndependentModal(false)}>
+                    <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden scale-100 animate-in zoom-in-95 duration-200" onClick={(e) => e.stopPropagation()}>
                         <div className="p-4 flex items-center justify-between bg-blue-600">
                             <h3 className="text-white font-black text-lg flex items-center gap-2">
                                 <Package className="w-6 h-6"/>
@@ -545,8 +545,8 @@ export const PartsPanel: React.FC = () => {
             )}
             {/* ORDER DETAILS MODAL */}
             {showOrderDetailsModal && selectedOrderDetails && (
-                <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in">
-                    <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden flex flex-col max-h-[90vh]">
+                <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in" onClick={() => setShowOrderDetailsModal(false)}>
+                    <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden flex flex-col max-h-[90vh]" onClick={(e) => e.stopPropagation()}>
                         <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
                             <h2 className="text-lg font-black text-slate-800 flex items-center gap-2">
                                 <ShoppingBag className="w-5 h-5 text-blue-600" />

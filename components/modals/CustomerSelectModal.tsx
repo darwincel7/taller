@@ -41,8 +41,8 @@ export const CustomerSelectModal: React.FC<CustomerSelectModalProps> = ({ onSele
   }, [searchTerm]);
 
   return (
-    <div className="fixed inset-0 z-[200] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl w-full max-w-lg shadow-2xl flex flex-col max-h-[80vh] animate-in zoom-in-95">
+    <div className="fixed inset-0 z-[200] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl w-full max-w-lg shadow-2xl flex flex-col max-h-[80vh] animate-in zoom-in-95" onClick={e => e.stopPropagation()}>
         <div className="p-4 border-b border-slate-100 flex justify-between items-center">
           <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
             <User className="w-5 h-5 text-blue-600" />

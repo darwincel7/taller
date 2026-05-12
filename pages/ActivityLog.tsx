@@ -510,8 +510,8 @@ export const ActivityLog: React.FC = () => {
       
       {/* Log Details Modal */}
       {selectedLog && (
-          <div className="fixed inset-0 z-[200] bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in">
-              <div className="bg-white rounded-2xl shadow-xl border border-slate-200 w-full max-w-lg overflow-hidden">
+          <div className="fixed inset-0 z-[200] bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in" onClick={() => setSelectedLog(null)}>
+              <div className="bg-white rounded-2xl shadow-xl border border-slate-200 w-full max-w-lg overflow-hidden" onClick={(e) => e.stopPropagation()}>
                   <div className="flex justify-between items-center p-6 border-b border-slate-100 bg-slate-50">
                       <div className="flex items-center gap-3">
                           <div className="w-10 h-10 rounded-xl bg-indigo-100 flex items-center justify-center text-indigo-600">

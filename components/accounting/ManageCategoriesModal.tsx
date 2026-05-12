@@ -58,7 +58,7 @@ export const ManageCategoriesModal: React.FC<ManageCategoriesModalProps> = ({ is
             exit={{ opacity: 0, scale: 0.95, y: 20 }}
             className="fixed inset-0 m-auto max-w-md w-full h-[600px] bg-white rounded-2xl shadow-2xl z-50 overflow-hidden flex flex-col"
           >
-            <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+            <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50" onClick={(e) => e.stopPropagation()}>
               <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
                 <Tag className="w-5 h-5 text-indigo-600" />
                 Categorías Contables

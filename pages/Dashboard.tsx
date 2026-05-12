@@ -920,8 +920,8 @@ const DashboardComponent: React.FC = () => {
       )}
       {/* TECH POINTS MODAL */}
       {selectedTechForPoints && (
-          <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]">
+          <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setSelectedTechForPoints(null)}>
+              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]" onClick={(e) => e.stopPropagation()}>
                   <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50">
                       <div>
                           <h2 className="text-xl font-black text-slate-800 flex items-center gap-2">
@@ -1009,8 +1009,8 @@ const DashboardComponent: React.FC = () => {
       {/* --- MODALS --- */}
       {/* Sales Details Modal */}
       {selectedSalesPeriod && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-6xl overflow-hidden flex flex-col max-h-[85vh] animate-in fade-in zoom-in duration-200">
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm" onClick={() => setSelectedSalesPeriod(null)}>
+              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-6xl overflow-hidden flex flex-col max-h-[85vh] animate-in fade-in zoom-in duration-200" onClick={(e) => e.stopPropagation()}>
                   <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-white sticky top-0 z-10">
                       <div>
                           <h3 className="text-2xl font-black text-slate-800 tracking-tight flex items-center gap-3">
@@ -1154,8 +1154,8 @@ const DashboardComponent: React.FC = () => {
 
       {/* Order Tab Details Modal */}
       {selectedOrderTab && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[85vh] animate-in fade-in zoom-in duration-200">
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm" onClick={() => setSelectedOrderTab(null)}>
+              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[85vh] animate-in fade-in zoom-in duration-200" onClick={(e) => e.stopPropagation()}>
                   <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-white sticky top-0 z-10">
                       <div>
                           <h3 className="text-2xl font-black text-slate-800 tracking-tight flex items-center gap-3">
@@ -1232,8 +1232,8 @@ const DashboardComponent: React.FC = () => {
       )}
       {/* Top Models Orders Modal */}
       {selectedModelForOrders && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[85vh] animate-in fade-in zoom-in duration-200">
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm" onClick={() => setSelectedModelForOrders(null)}>
+              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[85vh] animate-in fade-in zoom-in duration-200" onClick={(e) => e.stopPropagation()}>
                   <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-white sticky top-0 z-10">
                       <div>
                           <h3 className="text-2xl font-black text-slate-800 tracking-tight flex items-center gap-3">
@@ -1304,8 +1304,8 @@ const DashboardComponent: React.FC = () => {
 
       {/* Warranties by Tech Modal */}
       {selectedTechForWarranties && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[85vh] animate-in fade-in zoom-in duration-200">
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm" onClick={() => setSelectedTechForWarranties(null)}>
+              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[85vh] animate-in fade-in zoom-in duration-200" onClick={(e) => e.stopPropagation()}>
                   <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-white sticky top-0 z-10">
                       <div>
                           <h3 className="text-2xl font-black text-slate-800 tracking-tight flex items-center gap-3">
@@ -1375,8 +1375,8 @@ const DashboardComponent: React.FC = () => {
       )}
       {/* Flow Details Modal */}
       {selectedFlowPeriod && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-4xl overflow-hidden flex flex-col max-h-[85vh] animate-in fade-in zoom-in duration-200">
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm" onClick={() => setSelectedFlowPeriod(null)}>
+              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-4xl overflow-hidden flex flex-col max-h-[85vh] animate-in fade-in zoom-in duration-200" onClick={(e) => e.stopPropagation()}>
                   <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-white sticky top-0 z-10">
                       <div>
                           <h3 className="text-2xl font-black text-slate-800 tracking-tight flex items-center gap-3">
@@ -1501,8 +1501,8 @@ const DashboardComponent: React.FC = () => {
       
       {/* TRANSACTION DETAILS MODAL (FOR STATIC / LEGACY PORT SALES) */}
       {selectedTransaction && (
-         <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-             <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[85vh] animate-in fade-in zoom-in duration-200">
+         <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm" onClick={() => setSelectedTransaction(null)}>
+             <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[85vh] animate-in fade-in zoom-in duration-200" onClick={(e) => e.stopPropagation()}>
                  <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50">
                      <div className="flex items-center gap-3">
                          <div className="w-12 h-12 bg-emerald-100 text-emerald-600 rounded-xl flex items-center justify-center">

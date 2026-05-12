@@ -244,6 +244,7 @@ export const StoreItemDetailsInline = ({ itemId, onClose, onAddRequest }: { item
           }
           
           toast.success("Equipo aceptado y listo para la venta");
+          onClose();
       } catch (err) {
           toast.error("Error al aceptar equipo");
       } finally {
@@ -728,8 +729,8 @@ export const StoreItemDetailsInline = ({ itemId, onClose, onAddRequest }: { item
         )}
         
         {showQR && (
-            <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[999] flex items-center justify-center p-4">
-                <div className="bg-slate-900 border border-slate-700 rounded-3xl p-6 shadow-2xl max-w-sm w-full animate-in zoom-in-95 fade-in duration-200">
+            <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[999] flex items-center justify-center p-4" onClick={() => setShowQR(false)}>
+                <div className="bg-slate-900 border border-slate-700 rounded-3xl p-6 shadow-2xl max-w-sm w-full animate-in zoom-in-95 fade-in duration-200" onClick={e => e.stopPropagation()}>
                     <div className="flex justify-between items-center mb-6">
                         <div className="flex items-center gap-3">
                             <div className="w-10 h-10 bg-indigo-500/20 rounded-xl flex items-center justify-center">

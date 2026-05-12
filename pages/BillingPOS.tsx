@@ -2000,8 +2000,8 @@ export const BillingPOS: React.FC = () => {
 
       {/* Global Success Overlay */}
       {showSuccess && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-emerald-500/90 dark:bg-emerald-600/90 backdrop-blur-md animate-in fade-in duration-300">
-          <div className="text-center text-white p-8 max-w-md animate-in zoom-in duration-500">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-emerald-500/90 dark:bg-emerald-600/90 backdrop-blur-md animate-in fade-in duration-300" onClick={() => setShowSuccess(false)}>
+          <div className="text-center text-white p-8 max-w-md animate-in zoom-in duration-500" onClick={(e) => e.stopPropagation()}>
             <div className="w-24 h-24 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-6 backdrop-blur-sm border-4 border-white/30">
               <CheckCircle2 className="w-12 h-12 text-white" />
             </div>
@@ -2042,8 +2042,8 @@ export const BillingPOS: React.FC = () => {
 
       {/* Tender Modal (Calculadora de Cambio) */}
       {showTenderModal && (
-        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-200 dark:border-slate-800 animate-in fade-in zoom-in duration-200">
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setShowTenderModal(false)}>
+          <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-200 dark:border-slate-800 animate-in fade-in zoom-in duration-200" onClick={(e) => e.stopPropagation()}>
             <div className="p-6 text-center">
               <h3 className="text-2xl font-black text-slate-900 dark:text-white mb-2">Monto Recibido</h3>
               <p className="text-slate-500 font-medium mb-6">Total a cobrar en efectivo: ${cashAmount.toLocaleString()}</p>
@@ -2101,8 +2101,8 @@ export const BillingPOS: React.FC = () => {
 
       {/* Prompt Modal */}
       {promptModal && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-in zoom-in duration-200">
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200" onClick={() => setPromptModal(null)}>
+              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-in zoom-in duration-200" onClick={(e) => e.stopPropagation()}>
                   <div className="p-6 bg-slate-50 border-b border-slate-100">
                       <h3 className="text-xl font-black text-slate-900">{promptModal.title}</h3>
                       <p className="text-slate-500 font-medium mt-1">{promptModal.message}</p>
@@ -2160,8 +2160,8 @@ export const BillingPOS: React.FC = () => {
 
       {/* Handover Modal (Confirmación Física) */}
       {handoverData && (
-        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-200 dark:border-slate-800 animate-in fade-in zoom-in duration-200">
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setHandoverData(null)}>
+          <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-200 dark:border-slate-800 animate-in fade-in zoom-in duration-200" onClick={(e) => e.stopPropagation()}>
             <div className="p-8 text-center">
               <div className={`w-24 h-24 rounded-full flex items-center justify-center mx-auto mb-6 ${handoverData.type === 'DELIVERY' ? 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-500' : 'bg-red-100 dark:bg-red-500/20 text-red-500'}`}>
                 {handoverData.type === 'DELIVERY' ? <Smartphone className="w-12 h-12" /> : <Banknote className="w-12 h-12" />}
@@ -2302,7 +2302,7 @@ export const BillingPOS: React.FC = () => {
 
       {/* Quotes Modal */}
       {showQuotesModal && (
-        <div className="fixed inset-0 z-[900] flex justify-center items-center p-4">
+        <div className="fixed inset-0 z-[900] flex justify-center items-center p-4" onClick={() => setShowQuotesModal(false)}>
           {/* Backdrop */}
           <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => setShowQuotesModal(false)} />
           

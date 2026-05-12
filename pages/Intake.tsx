@@ -498,8 +498,8 @@ export const Intake = () => {
       
       {/* AI Processing Overlay */}
       {isAnalyzing && (
-          <div className="fixed inset-0 z-[300] bg-black/90 backdrop-blur-md flex flex-col items-center justify-center p-6">
-              <div className="bg-slate-900 border border-slate-700 p-8 rounded-3xl shadow-2xl text-center">
+          <div className="fixed inset-0 z-[300] bg-black/90 backdrop-blur-md flex flex-col items-center justify-center p-6" onClick={() => setIsAnalyzing(false)}>
+              <div className="bg-slate-900 border border-slate-700 p-8 rounded-3xl shadow-2xl text-center" onClick={(e) => e.stopPropagation()}>
                   <BrainCircuit className="w-16 h-16 text-blue-400 mx-auto mb-4 animate-bounce" />
                   <h3 className="text-2xl font-bold text-white mb-2">Analizando Equipo</h3>
                   <p className="text-blue-200 text-sm font-medium animate-pulse">{analysisStep}</p>
@@ -900,8 +900,8 @@ export const Intake = () => {
 
       {/* Tech Copilot Modal */}
       {showTechCopilot && (
-          <div className="fixed inset-0 z-[200] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-              <div className="bg-white rounded-3xl p-6 w-full max-w-lg shadow-2xl animate-in zoom-in max-h-[80vh] flex flex-col">
+          <div className="fixed inset-0 z-[200] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setShowTechCopilot(false)}>
+              <div className="bg-white rounded-3xl p-6 w-full max-w-lg shadow-2xl animate-in zoom-in max-h-[80vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
                   <div className="flex justify-between items-center mb-4">
                       <h3 className="text-xl font-black text-slate-800 flex items-center gap-2">
                           <BrainCircuit className="w-6 h-6 text-indigo-600"/> Copiloto Técnico IA

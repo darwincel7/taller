@@ -189,8 +189,8 @@ export const StorePurchasesTab = () => {
       </div>
 
       {isModalOpen && (
-        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex justify-center items-center z-50 p-4">
-          <div className="bg-white rounded-[2rem] w-full max-w-md shadow-2xl p-8">
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex justify-center items-center z-50 p-4" onClick={() => setIsModalOpen(false)}>
+          <div className="bg-white rounded-[2rem] w-full max-w-md shadow-2xl p-8" onClick={e => e.stopPropagation()}>
             <h2 className="text-2xl font-black text-slate-800 mb-6 flex items-center gap-3">Registrar Compra</h2>
             <form onSubmit={handleCreatePurchase} className="space-y-4">
               <div>

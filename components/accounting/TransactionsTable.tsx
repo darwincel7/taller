@@ -13,6 +13,16 @@ import { useDebounce } from '../../hooks/useDebounce';
 import { supabase } from '../../services/supabase';
 import { EditTransactionModal } from './EditTransactionModal';
 
+const parseSafeDate = (dateStr?: string | null) => {
+  if (!dateStr) return new Date();
+  if (dateStr.includes('T')) {
+    const parsed = new Date(dateStr);
+    return isNaN(parsed.getTime()) ? new Date() : parsed;
+  }
+  const parsed = new Date(`${dateStr}T00:00:00`);
+  return isNaN(parsed.getTime()) ? new Date() : parsed;
+};
+
 interface TransactionsTableProps {
   transactions?: AccountingTransaction[]; // Optional now as we fetch internally for pagination
 }
@@ -36,16 +46,76 @@ export const TransactionsTable: React.FC<TransactionsTableProps> = () => {
   // Fetch transactions with pagination and search
   const { data, isLoading, isFetching } = useQuery({
     queryKey: ['transactions', page, debouncedSearch, filterType, filterSource, startDate, endDate],
-    queryFn: () => accountingService.getTransactions({
-        limit: pageSize,
-        offset: page * pageSize,
-        search: debouncedSearch,
-        type: filterType === 'ALL' ? undefined : filterType,
-        source: filterSource === 'ALL' ? undefined : filterSource,
-        excludeStatus: TransactionStatus.PENDING,
-        startDate: startDate || undefined,
-        endDate: endDate || undefined
-    }),
+    queryFn: async () => {
+        const rawTransactions = await accountingService.getTransactions({
+            limit: pageSize,
+            offset: page * pageSize,
+            search: debouncedSearch,
+            type: filterType === 'ALL' ? undefined : filterType,
+            source: filterSource === 'ALL' ? undefined : filterSource,
+            excludeStatus: TransactionStatus.PENDING,
+            startDate: startDate || undefined,
+            endDate: endDate || undefined
+        });
+
+        // Also fetch from v_sales_unified if filter allows it
+        let salesData: any[] = [];
+        if (filterSource === 'ALL' || filterSource === 'STORE' || filterSource === 'ORDER') {
+            if (filterType === 'ALL' || filterType === 'INCOME' || filterType === 'EXPENSE') {
+                let salesQuery = supabase.from('v_sales_unified').select('*');
+                
+                if (filterSource === 'STORE') salesQuery = salesQuery.eq('source_type', 'POS');
+                if (filterSource === 'ORDER') salesQuery = salesQuery.like('source_type', 'WORKSHOP%');
+                
+                if (filterType === 'INCOME') salesQuery = salesQuery.eq('is_refund', false);
+                if (filterType === 'EXPENSE') salesQuery = salesQuery.eq('is_refund', true);
+
+                if (startDate) salesQuery = salesQuery.gte('created_at', startDate);
+                if (endDate) salesQuery = salesQuery.lte('created_at', endDate + 'T23:59:59.999Z');
+                
+                // We fetch a batch and sort them in memory
+                const { data: sales, error } = await salesQuery.order('created_at', { ascending: false }).limit(200);
+                
+                if (!error && sales) {
+                    salesData = sales.map(s => {
+                        const amtRAW = Number(s.gross_amount) || 0;
+                        const amt = s.is_refund ? -Math.abs(amtRAW) : Math.abs(amtRAW);
+                        return {
+                            id: s.source_id,
+                            transaction_date: s.created_at,
+                            created_at: s.created_at,
+                            description: s.description || 'Venta POS',
+                            amount: amt,
+                            source: s.source_type === 'POS' ? 'STORE' : (s.source_type?.includes('WORKSHOP') ? 'ORDER' : s.source_type),
+                            status: TransactionStatus.COMPLETED,
+                            category_id: null,
+                            accounting_categories: { name: 'Ventas de Tienda' },
+                            invoice_number: s.readable_id || null,
+                            user_id: s.user_id,
+                            vendor: null,
+                            is_duplicate: false
+                        };
+                    });
+                }
+            }
+        }
+
+        if (debouncedSearch) {
+            const s = debouncedSearch.toLowerCase();
+            salesData = salesData.filter(x => 
+                x.description.toLowerCase().includes(s) || 
+                (x.invoice_number && x.invoice_number.toString().toLowerCase().includes(s))
+            );
+        }
+
+        // Merge and sort
+        const merged = [...rawTransactions, ...salesData];
+        merged.sort((a, b) => parseSafeDate(b.transaction_date).getTime() - parseSafeDate(a.transaction_date).getTime());
+        
+        // Paginate the merged array manually since we combined two sources
+        // Note: For true deep pagination, this isn't perfect, but covers recent history well.
+        return merged.slice(page * pageSize, (page + 1) * pageSize);
+    },
     keepPreviousData: true
   } as any);
 
@@ -262,10 +332,10 @@ export const TransactionsTable: React.FC<TransactionsTableProps> = () => {
               >
                 <td className="px-6 py-4 text-sm text-slate-500 font-mono">
                   <div className="flex flex-col">
-                    <span>{format(new Date(t.transaction_date + 'T00:00:00'), 'dd MMM yyyy', { locale: es })}</span>
+                    <span>{format(parseSafeDate(t.transaction_date), 'dd MMM yyyy', { locale: es })}</span>
                     {t.created_at && (
                       <span className="text-[10px] text-slate-400 mt-0.5">
-                        {format(new Date(t.created_at), 'hh:mm a')}
+                        {format(parseSafeDate(t.created_at), 'hh:mm a')}
                       </span>
                     )}
                   </div>
@@ -421,10 +491,10 @@ export const TransactionsTable: React.FC<TransactionsTableProps> = () => {
                     <div>
                       <p className="text-xs font-bold text-slate-400 uppercase">Fecha</p>
                       <p className="font-medium text-slate-700">
-                        {format(new Date(selectedTransaction.transaction_date + 'T00:00:00'), 'PPP', { locale: es })}
+                        {format(parseSafeDate(selectedTransaction.transaction_date), 'PPP', { locale: es })}
                         {selectedTransaction.created_at && (
                           <span className="text-xs text-slate-400 ml-2">
-                            {format(new Date(selectedTransaction.created_at), 'hh:mm a')}
+                            {format(parseSafeDate(selectedTransaction.created_at), 'hh:mm a')}
                           </span>
                         )}
                       </p>

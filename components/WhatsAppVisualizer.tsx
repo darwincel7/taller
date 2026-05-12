@@ -182,8 +182,8 @@ export const WhatsAppVisualizer: React.FC<WhatsAppVisualizerProps> = ({ lead, on
   }
 
   return (
-    <div className={embedded ? "w-full h-full flex rounded-2xl shadow-sm border border-slate-200 overflow-hidden" : "fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm"}>
-      <div className={embedded ? "w-full h-full flex" : "bg-slate-50 w-full max-w-6xl h-[85vh] rounded-3xl shadow-2xl flex overflow-hidden border border-slate-200"}>
+    <div className={embedded ? "w-full h-full flex rounded-2xl shadow-sm border border-slate-200 overflow-hidden" : "fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm"} onClick={!embedded ? onClose : undefined}>
+      <div className={embedded ? "w-full h-full flex" : "bg-slate-50 w-full max-w-6xl h-[85vh] rounded-3xl shadow-2xl flex overflow-hidden border border-slate-200"} onClick={e => e.stopPropagation()}>
         
         {embedded && allLeads && (
           <div className="w-1/3 bg-white border-r border-slate-200 flex flex-col">
@@ -539,8 +539,8 @@ export const WhatsAppVisualizer: React.FC<WhatsAppVisualizerProps> = ({ lead, on
 
       {/* Appointment Modal */}
       {showAppointmentModal && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm">
-          <div className="bg-white rounded-3xl shadow-2xl p-6 w-full max-w-sm border border-slate-200">
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm" onClick={() => setShowAppointmentModal(false)}>
+          <div className="bg-white rounded-3xl shadow-2xl p-6 w-full max-w-sm border border-slate-200" onClick={e => e.stopPropagation()}>
             <h3 className="font-bold text-lg mb-4 text-slate-800">Agendar Cita</h3>
             <p className="text-sm text-slate-500 mb-4">Esta cita se agendará y se enviarán recordatorios a este cliente por WhatsApp 24 horas y 1 hora antes.</p>
             <div className="space-y-4">

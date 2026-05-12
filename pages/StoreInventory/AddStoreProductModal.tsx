@@ -190,8 +190,8 @@ export const AddStoreProductModal = ({ cloneFromProductId, onClose }: { cloneFro
   };
 
   return (
-    <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
-      <div className="bg-white rounded-[2rem] w-full max-w-2xl shadow-2xl p-8 my-8">
+    <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto" onClick={onClose}>
+      <div className="bg-white rounded-[2rem] w-full max-w-2xl shadow-2xl p-8 my-8" onClick={e => e.stopPropagation()}>
         <div className="flex justify-between items-center mb-6">
            <h2 className="text-2xl font-black text-slate-800 flex items-center gap-3">
              <div className="w-10 h-10 bg-indigo-100 text-indigo-600 rounded-xl flex items-center justify-center">

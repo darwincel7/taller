@@ -1016,8 +1016,8 @@ const CashRegisterComponent: React.FC = () => {
     <div className="p-6 max-w-7xl mx-auto pb-20 relative">
         
         {isSuccessAnim && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/80 backdrop-blur-sm animate-in fade-in duration-300">
-                <div className="bg-white p-10 rounded-3xl shadow-2xl flex flex-col items-center animate-in zoom-in duration-500 border border-green-100">
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/80 backdrop-blur-sm animate-in fade-in duration-300" onClick={() => setIsSuccessAnim(false)}>
+                <div className="bg-white p-10 rounded-3xl shadow-2xl flex flex-col items-center animate-in zoom-in duration-500 border border-green-100" onClick={(e) => e.stopPropagation()}>
                     <div className="w-24 h-24 bg-green-100 rounded-full flex items-center justify-center mb-6">
                         <CheckCircle2 className="w-12 h-12 text-green-600" />
                     </div>
@@ -2192,8 +2192,8 @@ const CashRegisterComponent: React.FC = () => {
 
         {/* Confirmation Dialog */}
         {confirmationDialog && (
-            <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200">
-                <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden animate-in zoom-in-95 duration-200">
+            <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200" onClick={() => setConfirmationDialog(null)}>
+                <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden animate-in zoom-in-95 duration-200" onClick={(e) => e.stopPropagation()}>
                     <div className={`p-8 text-center ${confirmationDialog.type === 'danger' ? 'bg-red-50/50' : (confirmationDialog.type === 'warning' ? 'bg-amber-50/50' : 'bg-blue-50/50')}`}>
                         <div className={`w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6 shadow-sm border ${confirmationDialog.type === 'danger' ? 'bg-red-100 text-red-600 border-red-200' : (confirmationDialog.type === 'warning' ? 'bg-amber-100 text-amber-600 border-amber-200' : 'bg-blue-100 text-blue-600 border-blue-200')}`}>
                             <AlertCircle className="w-10 h-10" />
@@ -2221,8 +2221,8 @@ const CashRegisterComponent: React.FC = () => {
 
         {/* Prompt Modal */}
         {promptModal && (
-            <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200">
-                <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200">
+            <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200" onClick={() => setPromptModal(null)}>
+                <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200" onClick={(e) => e.stopPropagation()}>
                     <div className="p-6 bg-slate-50 border-b border-slate-100 flex justify-between items-center">
                         <div>
                             <h3 className="text-xl font-black text-slate-800 tracking-tight">{promptModal.title}</h3>
@@ -2356,8 +2356,8 @@ const CashRegisterComponent: React.FC = () => {
 
         {/* Closing Details Modal */}
         {selectedClosing && (
-            <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in duration-200">
-                <div className="bg-white rounded-3xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
+            <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in duration-200" onClick={() => setSelectedClosing(null)}>
+                <div className="bg-white rounded-3xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200" onClick={(e) => e.stopPropagation()}>
                     <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50">
                         <div>
                             <h2 className="text-2xl font-black text-slate-800 flex items-center gap-3">

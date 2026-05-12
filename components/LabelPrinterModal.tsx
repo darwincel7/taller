@@ -715,7 +715,7 @@ export const LabelPrinterModal: React.FC<LabelPrinterModalProps> = ({ isOpen, on
   };
 
   return (
-    <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-[200] flex items-center justify-center p-4">
+    <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-[200] flex items-center justify-center p-4" onClick={onClose}>
       <style>{`
         /* Rich Text Mappings for Preview */
         .rich-text-content font[size="1"] { font-size: 8px; line-height: 1.2; }
@@ -788,7 +788,7 @@ export const LabelPrinterModal: React.FC<LabelPrinterModalProps> = ({ isOpen, on
         }
       `}</style>
       
-      <div className="bg-slate-50/90 dark:bg-slate-900/90 backdrop-blur-xl rounded-[2rem] shadow-[0_20px_60px_-15px_rgba(0,0,0,0.3)] w-full max-w-7xl h-[92vh] flex flex-col overflow-hidden border border-white/20 dark:border-white/10 animate-in zoom-in-95 duration-300">
+      <div className="bg-slate-50/90 dark:bg-slate-900/90 backdrop-blur-xl rounded-[2rem] shadow-[0_20px_60px_-15px_rgba(0,0,0,0.3)] w-full max-w-7xl h-[92vh] flex flex-col overflow-hidden border border-white/20 dark:border-white/10 animate-in zoom-in-95 duration-300" onClick={e => e.stopPropagation()}>
         
         {/* Header */}
         <div className="bg-white/50 dark:bg-slate-950/50 backdrop-blur-md p-5 border-b border-slate-200/50 dark:border-slate-800/50 flex justify-between items-center shrink-0">

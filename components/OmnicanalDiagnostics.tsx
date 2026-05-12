@@ -211,8 +211,8 @@ export const OmnicanalDiagnostics: React.FC = () => {
             )}
 
             {showRawModal && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-                    <div className="bg-white dark:bg-slate-900 rounded-2xl w-full max-w-2xl max-h-[80vh] flex flex-col shadow-2xl">
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm" onClick={() => setShowRawModal(false)}>
+                    <div className="bg-white dark:bg-slate-900 rounded-2xl w-full max-w-2xl max-h-[80vh] flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
                         <div className="p-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
                             <h3 className="font-bold">Raw Data Check</h3>
                             <button onClick={() => setShowRawModal(null)} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full text-slate-500">

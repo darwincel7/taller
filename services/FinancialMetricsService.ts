@@ -148,9 +148,9 @@ export const financialMetricsService = {
   async fetchRawFinancialData(startDate?: string, endDate?: string) {
     if (!supabase) throw new Error('Supabase client not initialized');
 
-    let cashQuery = supabase.from('cash_movements').select('*');
-    let accQuery = supabase.from('accounting_transactions').select('*, accounting_categories(name)').eq('status', 'COMPLETED');
-    let salesQuery = supabase.from('v_sales_unified').select('*');
+    let cashQuery = supabase.from('cash_movements').select('*').order('created_at', { ascending: false });
+    let accQuery = supabase.from('accounting_transactions').select('*, accounting_categories(name)').eq('status', 'COMPLETED').order('transaction_date', { ascending: false });
+    let salesQuery = supabase.from('v_sales_unified').select('*').order('created_at', { ascending: false });
 
     if (startDate) {
         cashQuery = cashQuery.gte('created_at', startDate);

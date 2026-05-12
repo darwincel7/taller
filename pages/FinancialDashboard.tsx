@@ -23,6 +23,16 @@ import { useNavigate } from 'react-router-dom';
 import { supabase } from '../services/supabase';
 import Markdown from 'react-markdown';
 
+const parseSafeDate = (dateStr?: string | null) => {
+  if (!dateStr) return new Date();
+  if (dateStr.includes('T')) {
+    const parsed = new Date(dateStr);
+    return isNaN(parsed.getTime()) ? new Date() : parsed;
+  }
+  const parsed = new Date(`${dateStr}T00:00:00`);
+  return isNaN(parsed.getTime()) ? new Date() : parsed;
+};
+
 export const FinancialDashboard: React.FC = () => {
   const { currentUser, users } = useAuth();
   const queryClient = useQueryClient();
@@ -349,10 +359,10 @@ export const FinancialDashboard: React.FC = () => {
                       >
                         <td className="p-3 pl-4 font-mono text-slate-500">
                           <div className="flex flex-col">
-                            <span>{format(new Date(exp.transaction_date + 'T00:00:00'), 'dd MMM yyyy', { locale: es })}</span>
+                            <span>{format(parseSafeDate(exp.transaction_date), 'dd MMM yyyy', { locale: es })}</span>
                             {exp.created_at && (
                               <span className="text-[10px] text-slate-400 mt-0.5">
-                                {format(new Date(exp.created_at), 'hh:mm a')}
+                                {format(parseSafeDate(exp.created_at), 'hh:mm a')}
                               </span>
                             )}
                           </div>
@@ -429,10 +439,10 @@ export const FinancialDashboard: React.FC = () => {
                       >
                         <td className="p-3 pl-4 font-mono text-slate-500">
                           <div className="flex flex-col">
-                            <span>{format(new Date(exp.transaction_date + 'T00:00:00'), 'dd MMM yyyy', { locale: es })}</span>
+                            <span>{format(parseSafeDate(exp.transaction_date), 'dd MMM yyyy', { locale: es })}</span>
                             {exp.created_at && (
                               <span className="text-[10px] text-slate-400 mt-0.5">
-                                {format(new Date(exp.created_at), 'hh:mm a')}
+                                {format(parseSafeDate(exp.created_at), 'hh:mm a')}
                               </span>
                             )}
                           </div>
@@ -592,7 +602,7 @@ export const FinancialDashboard: React.FC = () => {
       {/* Vault PIN Modal */}
       <AnimatePresence>
         {isVaultPinModalOpen && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm" onClick={() => setIsVaultPinModalOpen(false)}>
             <motion.div
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
