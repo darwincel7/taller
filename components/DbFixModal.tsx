@@ -353,7 +353,9 @@ DECLARE
     v_sale_id uuid;
     v_item_json jsonb;
     v_payment_json jsonb;
+    v_product_id uuid;
     v_item_id uuid;
+    v_order_id uuid;
     v_customer_id text;
     v_real_item_cost numeric;
     v_actual_stock numeric;
@@ -491,9 +493,26 @@ BEGIN
         LOOP
              INSERT INTO inventory_parts (
                 name, stock, cost, price, category, status, created_by
+             ) VALUES (
+                v_item_json->>'name', 0, 0, 0,
+                jsonb_build_object('type', 'STORE_PRODUCT', 'brand', 'Generico', 'model', v_item_json->>'name'),
+                'active', p_payload->>'seller_id'
+             ) RETURNING id INTO v_product_id;
+
+             INSERT INTO inventory_parts (
+                name, stock, cost, price, category, status, created_by
             ) VALUES (
                 v_item_json->>'name', 1, (v_item_json->>'value')::numeric, (v_item_json->>'value')::numeric,
-                jsonb_build_object('received_via', 'EXCHANGE', 'sale_id', v_sale_id, 'details', v_item_json->'details'),
+                jsonb_build_object(
+                    'type', 'STORE_ITEM',
+                    'parentId', v_product_id,
+                    'imei', v_item_json->'details'->>'imei',
+                    'condition', v_item_json->'details'->>'deviceCondition',
+                    'supplier_id', (CASE WHEN p_payload->>'raw_customer_id' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN p_payload->>'raw_customer_id' ELSE 'POS_CAMBIAZO' END),
+                    'received_via', 'EXCHANGE',
+                    'sale_id', v_sale_id,
+                    'details', v_item_json->'details'
+                ),
                 'active', p_payload->>'seller_id'
             ) RETURNING id INTO v_item_id;
 
@@ -505,32 +524,51 @@ BEGIN
                 (v_item_json->>'value')::numeric, 'Cambiazo POS', p_payload->>'seller_id', 'POS', v_sale_id::text
             );
             
-             INSERT INTO cash_movements (
-                movement_type, amount, method, branch, cashier_id, source_type, source_id, reason, metadata
-            ) VALUES (
-                'CAMBIAZO_IN', (v_item_json->>'value')::numeric, 'EXCHANGE', p_payload->>'branch', 
-                p_payload->>'seller_id', 'POS', v_sale_id::text, 'Equipo recibido por canje', 
-                jsonb_build_object('item_id', v_item_id)
-            );
-
             INSERT INTO orders (
                 "customerId", customer, "deviceModel", status, "orderType",
-                "totalAmount", "finalPrice", payments, "currentBranch", "cashierId"
+                "totalAmount", "finalPrice", payments, "currentBranch", "cashierId",
+                "purchaseCost", "devicePassword", "accessories", "deviceIssue", "devicePhoto", "deviceCondition", "imei",
+                "history"
             ) VALUES (
                 (CASE WHEN p_payload->>'raw_customer_id' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN (p_payload->>'raw_customer_id')::uuid ELSE NULL END),
                 jsonb_build_object('name', COALESCE(p_payload->>'customer_name', 'Cliente POS'), 'phone', COALESCE(p_payload->>'customer_phone', '00000000')),
                 v_item_json->>'name',
-                'Entregado',
+                'Pendiente',
                 'RECIBIDOS',
                 (v_item_json->>'value')::numeric,
                 (v_item_json->>'value')::numeric,
                 '[]'::jsonb,
                 p_payload->>'branch',
-                p_payload->>'seller_id'
+                p_payload->>'seller_id',
+                (v_item_json->>'value')::numeric,
+                v_item_json->'details'->>'devicePassword',
+                v_item_json->'details'->>'accessories',
+                v_item_json->'details'->>'deviceIssue',
+                v_item_json->'details'->>'devicePhoto',
+                v_item_json->'details'->>'deviceCondition',
+                v_item_json->'details'->>'imei',
+                jsonb_build_array(
+                    jsonb_build_object(
+                        'id', gen_random_uuid(),
+                        'action_type', 'ORDER_CREATED',
+                        'note', 'Equipo recibido (Cambiazo). Valor a favor para el cliente: $' || (v_item_json->>'value')::numeric || '. Entregado a cambio de: ' || (SELECT string_agg(item->>'name' || ' ($' || (item->>'price')::text || ')', ', ') FROM jsonb_array_elements(p_payload->'cart') as item),
+                        'technician', COALESCE(p_payload->>'seller_name', 'Vendedor POS'),
+                        'date', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+                        'is_internal', false
+                    )
+                )
+            ) RETURNING id INTO v_order_id;
+            
+             INSERT INTO cash_movements (
+                movement_type, amount, method, branch, cashier_id, source_type, source_id, reason, metadata
+            ) VALUES (
+                'CAMBIAZO_IN', (v_item_json->>'value')::numeric, 'EXCHANGE', p_payload->>'branch', 
+                p_payload->>'seller_id', 'ORDER', v_order_id::text, 'Equipo recibido por canje', 
+                jsonb_build_object('item_id', v_item_id, 'pos_sale_id', v_sale_id, 'order_id', v_order_id)
             );
 
             INSERT INTO accounting_transactions (
-                amount, transaction_date, description, category_id, vendor, status, source, expense_destination, created_by, branch
+                amount, transaction_date, description, category_id, vendor, status, source, expense_destination, created_by, branch, order_id
             ) VALUES (
                 -((v_item_json->>'value')::numeric),
                 CURRENT_DATE,
@@ -538,10 +576,11 @@ BEGIN
                 '47c20ad7-8947-46ce-8f27-7cfd7b13c2eb',
                 COALESCE(p_payload->>'customer_name', 'Cliente POS'),
                 'COMPLETED',
-                'INVENTORY',
+                'STORE',
                 'STORE',
                 p_payload->>'seller_id',
-                p_payload->>'branch'
+                p_payload->>'branch',
+                v_order_id::text
             );
         END LOOP;
     END IF;
@@ -596,9 +635,9 @@ export const DbFixModal = ({ onClose }: { onClose: () => void }) => {
           <div className="bg-amber-50 border border-amber-200 text-amber-800 dark:bg-amber-900/20 dark:border-amber-800/30 dark:text-amber-300 p-4 rounded-xl mb-6 text-sm">
             <h3 className="font-bold flex items-center gap-2 mb-2">
               <AlertTriangle className="w-4 h-4"/> 
-              Importante (V27) - Correcciones Créditos y Vistas
+              Importante (V30) - Corrección Historial Cambiazo
             </h3>
-            <p className="mb-2">El error <b>null value in column "client_name"</b> ocurría porque la tabla client_credits original exigía campos que la nueva versión no incluía (como client_name). Este script relaja esas restricciones y actualiza el código para evitar choques con el esquema existente. También restaura las vistas dependientes que estaban causando errores "relation does not exist".</p>
+            <p className="mb-2">Añadido el registro de por qué artículo(s) se intercambió y cuál fue el valor exacto del cambiazo en la historia de la orden para mayor rastro. Haz clic de nuevo para aplicar esta corrección.</p>
           </div>
 
           <div className="relative group">

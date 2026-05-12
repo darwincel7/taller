@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { Search, ShoppingCart, CreditCard, Banknote, Smartphone, Plus, Trash2, Receipt, Calculator, X, User as UserIcon, Tag, ArrowRight, CheckCircle2, ArrowDownToLine, Loader2, ShieldAlert, Clock, XCircle, RefreshCw, Building2, ChevronDown, ChevronUp, Package, Minus, FileText, Bookmark, Save, List, Camera, Check } from 'lucide-react';
+import { Search, ShoppingCart, CreditCard, Banknote, Smartphone, Plus, Trash2, Receipt, Calculator, X, User as UserIcon, Tag, ArrowRight, CheckCircle2, ArrowDownToLine, Loader2, ShieldAlert, Clock, XCircle, RefreshCw, Building2, ChevronDown, ChevronUp, Package, Minus, FileText, Bookmark, Save, List, Camera, Check, AlertTriangle } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useOrders } from '../contexts/OrderContext';
@@ -16,6 +16,7 @@ import { CameraCapture } from '../components/CameraCapture';
 import { PendingExpensesWidget } from '../components/pos/PendingExpensesWidget';
 import { PosReturnModal } from './PosReturnModal';
 import { toast } from 'sonner';
+import { DbFixModal } from '../components/DbFixModal';
 
 interface CartItem {
   id: string;
@@ -172,6 +173,7 @@ export const BillingPOS: React.FC = () => {
   };
 
   const [isProcessing, setIsProcessing] = useState(false);
+  const [showDbFixModal, setShowDbFixModal] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
   const [showExpenseModal, setShowExpenseModal] = useState(false);
   const [showReturnModal, setShowReturnModal] = useState(false);
@@ -843,6 +845,9 @@ export const BillingPOS: React.FC = () => {
     } catch (error: any) {
       console.error("Transactional POS Error:", error);
       showNotification('error', `Error al procesar el cobro: ${error.message}`);
+      if (error.message && (error.message.includes('relation') || error.message.includes('column') || error.message.includes('constraint'))) {
+         setShowDbFixModal(true);
+      }
       // Close windows on error
       printWindows.forEach(w => w?.close());
       productPrintWindow?.close();
@@ -950,7 +955,12 @@ export const BillingPOS: React.FC = () => {
             </div>
             Punto de Venta
           </h1>
-          <p className="text-slate-500 font-medium mt-2 text-lg">Terminal de facturación y cobro rápido.</p>
+          <div className="flex items-center gap-4 mt-2">
+            <p className="text-slate-500 font-medium text-lg">Terminal de facturación y cobro rápido.</p>
+            <button onClick={() => setShowDbFixModal(true)} className="text-[10px] bg-amber-100 text-amber-700 font-bold px-3 py-1.5 rounded-lg uppercase tracking-widest hover:bg-amber-200 transition-colors border border-amber-200 shadow-sm flex items-center gap-1">
+              <AlertTriangle className="w-3 h-3" /> Fix Cambiazo (V30)
+            </button>
+          </div>
         </div>
         
       <div className="flex gap-3">
@@ -1985,6 +1995,8 @@ export const BillingPOS: React.FC = () => {
         </div>
         </div>
       </div>
+
+      {showDbFixModal && <DbFixModal onClose={() => setShowDbFixModal(false)} />}
 
       {/* Global Success Overlay */}
       {showSuccess && (

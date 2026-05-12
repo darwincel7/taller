@@ -160,6 +160,15 @@ export const TechnicalSheet: React.FC<TechnicalSheetProps> = ({
             <div><p className="text-[10px] font-bold text-slate-400 uppercase">FALLA</p><p className="font-medium text-slate-700 uppercase">{order.deviceIssue}</p></div>
             <div><p className="text-[10px] font-bold text-slate-400 uppercase">OBSERVACIONES VISUALES</p><p className="font-medium text-slate-700 uppercase">{order.deviceCondition || 'Sin observaciones'}</p></div>
             <div><p className="text-[10px] font-bold text-slate-400 uppercase">CONTRASEÑA</p><p className="font-mono bg-slate-100 px-2 py-1 rounded w-fit text-slate-700 border border-slate-200">{order.devicePassword || 'Sin clave'}</p></div>
+            {order.accessories && (
+                <div><p className="text-[10px] font-bold text-slate-400 uppercase">ACCESORIOS</p><p className="font-medium text-slate-700 uppercase">{order.accessories}</p></div>
+            )}
+            {order.orderType === 'RECIBIDOS' && (
+                <div className="bg-amber-50 p-3 rounded-xl border border-amber-200 mt-2">
+                   <p className="text-[10px] font-bold text-amber-500 uppercase">VALOR RECIBIDO (VALOR A FAVOR DEL CLIENTE)</p>
+                   <p className="font-black text-amber-700 text-lg">${Number(order.purchaseCost || 0).toFixed(2)}</p>
+                </div>
+            )}
           </div>
         )}
       </div>

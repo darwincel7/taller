@@ -65,13 +65,45 @@ export const AddStoreProductModal = ({ cloneFromProductId, onClose }: { cloneFro
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.name) return toast.error("Ingresa el nombre del artículo");
+
+    if (isCellphone) {
+      try {
+        setIsSubmitting(true);
+        const newProduct = await addInventoryPart({
+          name: formData.name,
+          stock: 0,
+          min_stock: parseInt(formData.min_stock as any) || 2,
+          cost: 0,
+          price: 0,
+          category: JSON.stringify({
+            type: 'STORE_PRODUCT',
+            isCellphone,
+            brandId: formData.brandId,
+            categoryId: formData.categoryId,
+            description: formData.description,
+            imageUrl: formData.imageUrl || undefined
+          })
+        });
+
+        if (!newProduct || !newProduct.id) {
+            throw new Error("El sistema no devolvió el ID del modelo creado. Revisa el catálogo para ver si apareció.");
+        }
+        toast.success(`Modelo ${formData.name} creado correctamente.`);
+        onClose();
+      } catch(err: any) {
+        toast.error("Error al crear modelo: " + err.message);
+      } finally {
+        setIsSubmitting(false);
+      }
+      return;
+    }
+
     if (!formData.purchaseId) return toast.error("Por favor, asocia este ingreso a un Gasto de Compra");
     if (formData.price <= 0) return toast.error("Precio de venta inválido");
     
     // Check if it's a cellphone, qty is 1 and imei is required
-    if (isCellphone && !formData.imei) return toast.error("Este artículo aparenta ser un celular. El IMEI es obligatorio y la cantidad será 1.");
-    
-    const qty = (isCellphone || formData.imei?.trim()) ? 1 : Math.max(1, formData.quantity);
+    // (This block will effectively not run for isCellphone due to the return above, but kept for logic consistency)
+    const qty = formData.imei?.trim() ? 1 : Math.max(1, formData.quantity);
 
     const purchasePart = inventory.find(i => i.id === formData.purchaseId);
     if (!purchasePart) return toast.error("Compra no encontrada");
@@ -203,49 +235,50 @@ export const AddStoreProductModal = ({ cloneFromProductId, onClose }: { cloneFro
              </div>
           </div>
 
-          <div className="mt-8 border-t border-slate-200 pt-6">
-             <div className="bg-emerald-50 border border-emerald-100 text-emerald-800 p-4 rounded-xl text-sm mb-4">
-                <strong>Paso 2: Unidades Iniciales</strong> - Usa un Gasto de Compra existente para asignar el costo a estas nuevas unidades.
-             </div>
-          </div>
+          {!isCellphone && (
+            <div className="mt-8 border-t border-slate-200 pt-6">
+              <div className="bg-emerald-50 border border-emerald-100 text-emerald-800 p-4 rounded-xl text-sm mb-4">
+                  <strong>Paso 2: Unidades Iniciales</strong> - Usa un Gasto de Compra existente para asignar el costo a estas nuevas unidades.
+              </div>
+            </div>
+          )}
 
-          <div>
-             <label className="block text-sm font-bold text-slate-700 mb-2">Gasto de Compra Asociado (Fondo) *</label>
-             <select required value={formData.purchaseId} onChange={e => setFormData({...formData, purchaseId: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 font-medium outline-none focus:ring-2 focus:ring-emerald-500">
-               <option value="">Selecciona la compra de donde salió el dinero...</option>
-               {purchases.map(p => {
-                 const cat = parseInventoryCategory(p.category) as any;
-                 const remaining = p.cost - (cat.usedAmount || 0);
-                 if (remaining <= 0) return null; // Hide depleted purchases
-                 return <option key={p.id} value={p.id}>{p.name} (Restante: ${remaining.toLocaleString()})</option>;
-               })}
-             </select>
-          </div>
+          {!isCellphone && (
+            <div>
+              <label className="block text-sm font-bold text-slate-700 mb-2">Gasto de Compra Asociado (Fondo) *</label>
+              <select required value={formData.purchaseId} onChange={e => setFormData({...formData, purchaseId: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 font-medium outline-none focus:ring-2 focus:ring-emerald-500">
+                <option value="">Selecciona la compra de donde salió el dinero...</option>
+                {purchases.map(p => {
+                  const cat = parseInventoryCategory(p.category) as any;
+                  const remaining = p.cost - (cat.usedAmount || 0);
+                  if (remaining <= 0) return null; // Hide depleted purchases
+                  return <option key={p.id} value={p.id}>{p.name} (Restante: ${remaining.toLocaleString()})</option>;
+                })}
+              </select>
+            </div>
+          )}
 
-          <div className="grid grid-cols-2 gap-4">
-             <div>
-                <label className="block text-sm font-bold text-slate-700 mb-2">Costo Unitario</label>
-                <div className="relative">
-                   <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold">$</span>
-                   <input required type="number" min="0" step="0.01" value={formData.cost || ''} onChange={e => setFormData({...formData, cost: parseFloat(e.target.value) || 0})} className="w-full pl-8 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl font-medium focus:ring-2 focus:ring-emerald-500 outline-none" placeholder="0.00" />
-                </div>
-             </div>
-             <div>
-                <label className="block text-sm font-bold text-slate-700 mb-2">Precio de Venta (PVP)</label>
-                <div className="relative">
-                   <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold">$</span>
-                   <input required type="number" min="0" step="0.01" value={formData.price || ''} onChange={e => setFormData({...formData, price: parseFloat(e.target.value) || 0})} className="w-full pl-8 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl font-medium focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="0.00" />
-                </div>
-             </div>
-          </div>
+          {!isCellphone && (
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                  <label className="block text-sm font-bold text-slate-700 mb-2">Costo Unitario</label>
+                  <div className="relative">
+                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold">$</span>
+                    <input required type="number" min="0" step="0.01" value={formData.cost || ''} onChange={e => setFormData({...formData, cost: parseFloat(e.target.value) || 0})} className="w-full pl-8 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl font-medium focus:ring-2 focus:ring-emerald-500 outline-none" placeholder="0.00" />
+                  </div>
+              </div>
+              <div>
+                  <label className="block text-sm font-bold text-slate-700 mb-2">Precio de Venta (PVP)</label>
+                  <div className="relative">
+                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold">$</span>
+                    <input required type="number" min="0" step="0.01" value={formData.price || ''} onChange={e => setFormData({...formData, price: parseFloat(e.target.value) || 0})} className="w-full pl-8 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl font-medium focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="0.00" />
+                  </div>
+              </div>
+            </div>
+          )}
 
-          {isCellphone ? (
-             <div>
-                <label className="block text-sm font-bold text-slate-700 mb-2">IMEI (Solo 1 unidad permitida)</label>
-                <input required type="text" value={formData.imei} onChange={e => setFormData({...formData, imei: e.target.value})} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl font-medium focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="Ingresa el IMEI de 15 dígitos" />
-             </div>
-          ) : (
-             <div className="grid grid-cols-2 gap-4">
+          {!isCellphone && (
+            <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-bold text-slate-700 mb-2">Cantidad a Ingresar</label>
                   <input required type="number" min="1" value={formData.quantity} onChange={e => setFormData({...formData, quantity: parseInt(e.target.value) || 1})} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl font-medium focus:ring-2 focus:ring-indigo-500 outline-none" />
@@ -254,7 +287,7 @@ export const AddStoreProductModal = ({ cloneFromProductId, onClose }: { cloneFro
                   <label className="block text-sm font-bold text-slate-700 mb-2">Serial Number SN (Opcional, fuerza 1 unidad)</label>
                   <input type="text" value={formData.imei} onChange={e => setFormData({...formData, imei: e.target.value})} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl font-medium focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="SN Opcional" />
                 </div>
-             </div>
+            </div>
           )}
 
           <div>
@@ -291,7 +324,7 @@ export const AddStoreProductModal = ({ cloneFromProductId, onClose }: { cloneFro
                <div className="flex gap-3 w-full">
                  <button type="button" onClick={onClose} className="flex-1 bg-slate-100 text-slate-600 font-bold py-3 rounded-xl hover:bg-slate-200 transition-colors">Cancelar</button>
                  <button type="submit" className="flex-1 bg-indigo-600 text-white font-bold py-3 rounded-xl hover:bg-indigo-700 shadow-lg justify-center items-center flex gap-2 transition-all shadow-indigo-200">
-                   {formData.quantity > 1 ? `Guardar y Añadir ${formData.quantity} Unidades` : 'Guardar Artículo'}
+                   {isCellphone ? 'Guardar Modelo' : formData.quantity > 1 ? `Guardar y Añadir ${formData.quantity} Unidades` : 'Guardar Artículo'}
                  </button>
                </div>
              )}

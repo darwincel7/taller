@@ -299,19 +299,6 @@ export const OrderDetails: React.FC = () => {
           
           const finalStatus = isAutoApproved ? ((order.status === OrderStatus.RETURNED || order.status === OrderStatus.REPAIRED) ? order.status : OrderStatus.REPAIRED) : order.status;
           
-          const newLog: HistoryLog = {
-              date: new Date().toISOString(),
-              status: finalStatus,
-              note: logMessage,
-              technician: currentUser?.name || 'Sistema',
-              logType: logType,
-              action_type: isAutoApproved ? ActionType.POINTS_AUTO_APPROVED : ActionType.POINTS_REQUESTED,
-              metadata: { points, reason, split }
-          };
-
-          const currentHistory = order.history || [];
-          const newHistory = [...currentHistory, newLog];
-
           const updates: Partial<RepairOrder> = {
               status: finalStatus, 
               completedAt: Date.now(),
@@ -325,8 +312,7 @@ export const OrderDetails: React.FC = () => {
                   status: isAutoApproved ? RequestStatus.APPROVED : RequestStatus.PENDING,
                   approvedBy: isAutoApproved ? 'Sistema' : undefined,
                   requestedAt: Date.now()
-              },
-              history: newHistory // Pass history directly to avoid separate update
+              }
           };
 
           if (isAutoApproved && split) {
@@ -334,6 +320,15 @@ export const OrderDetails: React.FC = () => {
           }
 
           await updateOrderDetails(order.id, updates);
+          
+          await recordOrderLog(
+              order.id, 
+              isAutoApproved ? ActionType.POINTS_AUTO_APPROVED : ActionType.POINTS_REQUESTED,
+              logMessage, 
+              { points, reason, split }, 
+              logType, 
+              currentUser?.name
+          );
           
           setShowPointsModal(false);
           
@@ -653,28 +648,23 @@ export const OrderDetails: React.FC = () => {
           const currentNotes = order.technicianNotes || '';
           const updatedNotes = instructions.trim() ? `${currentNotes}\n\n[APROBACIÓN (${currentUser.name})]: ${instructions}` : currentNotes;
           
-          const newLog = {
-              date: new Date().toISOString(),
-              status: OrderStatus.IN_REPAIR,
-              note: `✅ APROBADO: Presupuesto $${finalAmount}. Notas: ${instructions || 'Ninguna'}`,
-              technician: currentUser.name,
-              logType: LogType.SUCCESS,
-              action_type: ActionType.BUDGET_APPROVED,
-              metadata: { amount: finalAmount, instructions }
-          };
-
-          const currentHistory = order.history || [];
-          const newHistory = [...currentHistory, newLog];
-
           await updateOrderDetails(order.id, { 
               status: OrderStatus.IN_REPAIR,
               estimatedCost: !isNaN(newEstimate) ? newEstimate : order.estimatedCost,
               finalPrice: !isNaN(newEstimate) ? newEstimate : order.finalPrice,
               totalAmount: !isNaN(newEstimate) ? newEstimate : (order.totalAmount || order.estimatedCost),
               technicianNotes: updatedNotes,
-              approvalAckPending: true,
-              history: newHistory
+              approvalAckPending: true
           });
+          
+          await recordOrderLog(
+              order.id, 
+              ActionType.BUDGET_APPROVED, 
+              `✅ APROBADO: Presupuesto $${finalAmount}. Notas: ${instructions || 'Ninguna'}`, 
+              { amount: finalAmount, instructions }, 
+              LogType.SUCCESS, 
+              currentUser.name
+          );
           
           if (order.orderType === OrderType.REPAIR || order.orderType === OrderType.WARRANTY) {
               const updatedOrder = { ...order, status: OrderStatus.IN_REPAIR };
@@ -698,50 +688,33 @@ export const OrderDetails: React.FC = () => {
           if (approve) {
               const newPoints = order.pointRequest.requestedPoints;
               const finalStatus = (order.status === OrderStatus.RETURNED || order.status === OrderStatus.REPAIRED) ? order.status : OrderStatus.REPAIRED;
-              const newLog = {
-                  date: new Date().toISOString(),
-                  status: finalStatus,
-                  note: `✅ Puntos APROBADOS (${newPoints}) por ${currentUser.name}.`,
-                  technician: currentUser.name,
-                  logType: LogType.SUCCESS,
-                  action_type: ActionType.POINTS_APPROVED,
-                  metadata: { points: newPoints }
-              };
-              
-              const currentHistory = order.history || [];
-              const newHistory = [...currentHistory, newLog];
-
               const updates: Partial<RepairOrder> = { 
                   pointsAwarded: newPoints, 
                   originalPointsAwarded: (order.status === OrderStatus.REPAIRED || order.status === OrderStatus.RETURNED) ? (order.originalPointsAwarded ?? order.pointsAwarded) : undefined,
                   pointsEarnedBy: (order.status === OrderStatus.REPAIRED || order.status === OrderStatus.RETURNED) ? order.pointsEarnedBy : (order.pointsEarnedBy || order.assignedTo || undefined), // Keep the tech who earned them
                   pointRequest: { ...order.pointRequest, status: RequestStatus.APPROVED, approvedBy: currentUser.name },
-                  status: finalStatus,
-                  history: newHistory
+                  status: finalStatus
               };
               if (order.pointRequest.splitProposal) updates.pointsSplit = order.pointRequest.splitProposal;
               await updateOrderDetails(order.id, updates);
+              
+              await recordOrderLog(order.id, ActionType.POINTS_APPROVED, `✅ Puntos APROBADOS (${newPoints}) por ${currentUser.name}.`, { points: newPoints }, LogType.SUCCESS, currentUser.name);
               const updatedOrder = { ...order, ...updates };
               sendWhatsAppNotification(updatedOrder, finalStatus);
           } else {
-              const newLog = {
-                  date: new Date().toISOString(),
-                  status: order.status,
-                  note: `❌ Solicitud de puntos RECHAZADA por ${currentUser.name}. Los puntos previos se conservan.`,
-                  technician: currentUser.name,
-                  logType: LogType.DANGER,
-                  action_type: ActionType.POINTS_REJECTED,
-                  metadata: { requested: order.pointRequest.requestedPoints, current: order.pointsAwarded }
-              };
-              
-              const currentHistory = order.history || [];
-              const newHistory = [...currentHistory, newLog];
-
               // DO NOT set pointsAwarded to 0 on rejection. Keep current points.
               await updateOrderDetails(order.id, { 
-                  pointRequest: { ...order.pointRequest, status: RequestStatus.REJECTED, approvedBy: currentUser.name },
-                  history: newHistory
+                  pointRequest: { ...order.pointRequest, status: RequestStatus.REJECTED, approvedBy: currentUser.name }
               });
+              
+              await recordOrderLog(
+                  order.id,
+                  ActionType.POINTS_REJECTED,
+                  `❌ Solicitud de puntos RECHAZADA por ${currentUser.name}. Los puntos previos se conservan.`,
+                  { requested: order.pointRequest.requestedPoints, current: order.pointsAwarded },
+                  LogType.DANGER,
+                  currentUser.name
+              );
           }
       } finally {
           setIsProcessing(false);
@@ -871,50 +844,24 @@ export const OrderDetails: React.FC = () => {
       if (approve) {
           const fee = order.returnRequest.diagnosticFee || 0;
           
-          const newLog = {
-              date: new Date().toISOString(),
-              status: OrderStatus.REPAIRED,
-              note: `✅ DEVOLUCIÓN APROBADA por ${currentUser.name}. Costo Chequeo: $${fee}`,
-              technician: currentUser.name,
-              logType: LogType.SUCCESS,
-              action_type: ActionType.RETURN_APPROVED,
-              metadata: { fee }
-          };
-          
-          const currentHistory = order.history || [];
-          const newHistory = [...currentHistory, newLog];
-
           // Apply fee, set status to REPAIRED (Ready for delivery), approve request
           const updates = { 
               status: OrderStatus.REPAIRED,
               finalPrice: fee,
               totalAmount: fee,
-              returnRequest: { ...order.returnRequest, status: RequestStatus.APPROVED, approvedBy: currentUser.name },
-              history: newHistory
+              returnRequest: { ...order.returnRequest, status: RequestStatus.APPROVED, approvedBy: currentUser.name }
           };
           await updateOrderDetails(order.id, updates);
+          await recordOrderLog(order.id, ActionType.RETURN_APPROVED, `✅ DEVOLUCIÓN APROBADA por ${currentUser.name}. Costo Chequeo: $${fee}`, { fee }, LogType.SUCCESS, currentUser.name);
           
           const updatedOrder = { ...order, ...updates };
           sendWhatsAppNotification(updatedOrder, OrderStatus.REPAIRED);
           showNotification('success', 'Devolución aprobada. Orden lista para entregar.');
       } else {
-          const newLog = {
-              date: new Date().toISOString(),
-              status: order.status,
-              note: `❌ Devolución RECHAZADA por ${currentUser.name}.`,
-              technician: currentUser.name,
-              logType: LogType.DANGER,
-              action_type: ActionType.RETURN_REJECTED,
-              metadata: {}
-          };
-          
-          const currentHistory = order.history || [];
-          const newHistory = [...currentHistory, newLog];
-
           await updateOrderDetails(order.id, { 
-              returnRequest: { ...order.returnRequest, status: RequestStatus.REJECTED, approvedBy: currentUser.name },
-              history: newHistory
+              returnRequest: { ...order.returnRequest, status: RequestStatus.REJECTED, approvedBy: currentUser.name }
           });
+          await recordOrderLog(order.id, ActionType.RETURN_REJECTED, `❌ Devolución RECHAZADA por ${currentUser.name}.`, {}, LogType.DANGER, currentUser.name);
           showNotification('success', 'Solicitud de devolución rechazada.');
       }
   };

@@ -71,8 +71,9 @@ export const InventoryProvider: React.FC<{ children: ReactNode }> = ({ children 
       const { data: { user } } = await supabase.auth.getUser();
       const userId = user?.id || 'unknown';
 
-      // Using the atomic RPC to create the item
-      const { data: newId, error } = await supabase.rpc('create_inventory_item', {
+      // Using the atomic RPC to create the item, or fallback to manual insert
+      let newId = null;
+      const { data: rpcId, error: rpcError } = await supabase.rpc('create_inventory_item', {
           p_name: part.name,
           p_stock: part.stock || 0,
           p_cost: part.cost || 0,
@@ -83,9 +84,42 @@ export const InventoryProvider: React.FC<{ children: ReactNode }> = ({ children 
           p_image_url: (part as any).image_url
       });
 
-      if (error) {
-          console.error("Error creating inventory item:", error);
-          return null;
+      if (!rpcError && rpcId) {
+          newId = rpcId;
+      } else {
+          console.warn("RPC create_inventory_item failed or missing, falling back to direct insert. Error:", rpcError);
+          // Fallback to manual insert
+          let finalCategoryJSON = part.category ? JSON.parse(part.category) : {};
+          finalCategoryJSON.readableIdFallback = Math.floor(Math.random() * 9000) + 1000;
+          if ((part as any).sku) finalCategoryJSON.sku = (part as any).sku;
+          if ((part as any).image_url) finalCategoryJSON.imageUrl = (part as any).image_url;
+          
+          const { data: insertData, error: insertError } = await supabase.from('inventory_parts').insert([{
+              name: part.name,
+              stock: part.stock || 0,
+              cost: part.cost || 0,
+              price: part.price || 0,
+              category: JSON.stringify(finalCategoryJSON)
+          }]).select('id').single();
+
+          if (insertError) {
+              console.error("Manual insert failed:", insertError);
+              throw new Error("Database error (insert): " + insertError.message);
+          }
+          newId = insertData?.id;
+
+          if (newId && (part.stock || 0) > 0) {
+              await supabase.from('inventory_movements').insert([{
+                  item_id: newId,
+                  movement_type: 'IN',
+                  quantity: part.stock || 0,
+                  before_stock: 0,
+                  after_stock: part.stock || 0,
+                  unit_cost: part.cost || 0,
+                  reason: 'Carga inicial de inventario',
+                  created_by: userId
+              }]);
+          }
       }
 
       if (newId) {
@@ -118,6 +152,9 @@ export const InventoryProvider: React.FC<{ children: ReactNode }> = ({ children 
 
   const updateInventoryPart = async (id: string, updates: Partial<InventoryPart>) => {
       if (!supabase) return;
+
+      // Optimistic update
+      setInventory(prev => prev.map(p => p.id === id ? { ...p, ...updates } : p));
       
       const { data: { user } } = await supabase.auth.getUser();
       const userName = user?.user_metadata?.name || user?.email || 'Sistema';
@@ -138,19 +175,18 @@ export const InventoryProvider: React.FC<{ children: ReactNode }> = ({ children 
 
       if (Object.keys(updates).length === 0) return;
 
-      await supabase.from('inventory_parts').update(updates).eq('id', id);
-
-      const changes = Object.keys(updates).filter(k => k !== 'id').join(', ');
-      
-      await supabase.from('audit_logs').insert([{
-          action: 'INVENTORY_UPDATED',
-          details: `[INV_ID: ${id}] Inventario actualizado: Modificó ${changes}`,
-          user_id: user?.id,
-          user_name: userName,
-          created_at: Date.now()
-      }]);
-
-      fetchInventory();
+      // ... keep running async updates without blocking UI
+      supabase.from('inventory_parts').update(updates).eq('id', id).then(async () => {
+          const changes = Object.keys(updates).filter(k => k !== 'id').join(', ');
+          
+          await supabase.from('audit_logs').insert([{
+              action: 'INVENTORY_UPDATED',
+              details: `[INV_ID: ${id}] Inventario actualizado: Modificó ${changes}`,
+              user_id: user?.id,
+              user_name: userName,
+              created_at: Date.now()
+          }]);
+      });
   };
 
   const adjustStock = async (id: string, quantity: number, type: 'IN' | 'OUT' | 'ADJUSTMENT', reason: string): Promise<boolean> => {
@@ -180,25 +216,26 @@ export const InventoryProvider: React.FC<{ children: ReactNode }> = ({ children 
       const part = inventory.find(p => p.id === id);
       const name = part ? part.name : 'Desconocido';
 
+      // Optimistic update
+      setInventory(prev => prev.filter(p => p.id !== id));
+
       const { data: { user } } = await supabase.auth.getUser();
       const userName = user?.user_metadata?.name || user?.email || 'Sistema';
 
       // Phase 1 calls for Soft Delete
-      await supabase.from('inventory_parts').update({
+      supabase.from('inventory_parts').update({
           deleted_at: new Date().toISOString(),
           deleted_by: user?.id,
           status: 'archived'
-      }).eq('id', id);
-
-      await supabase.from('audit_logs').insert([{
-          action: 'INVENTORY_DELETED',
-          details: `[INV_ID: ${id}] Archivado (Soft-Delete): El artículo ${name} fue movido a archivo.`,
-          user_id: user?.id,
-          user_name: userName,
-          created_at: Date.now()
-      }]);
-
-      fetchInventory();
+      }).eq('id', id).then(async () => {
+          await supabase.from('audit_logs').insert([{
+              action: 'INVENTORY_DELETED',
+              details: `[INV_ID: ${id}] Archivado (Soft-Delete): El artículo ${name} fue movido a archivo.`,
+              user_id: user?.id,
+              user_name: userName,
+              created_at: Date.now()
+          }]);
+      });
   };
 
   const addWikiArticle = async (article: Partial<WikiArticle>) => {

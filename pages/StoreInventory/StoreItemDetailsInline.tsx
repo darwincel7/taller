@@ -201,8 +201,11 @@ export const StoreItemDetailsInline = ({ itemId, onClose, onAddRequest }: { item
       actualAction();
   };
 
+   const [isAccepting, setIsAccepting] = useState(false);
+
    const handleAcceptDevice = async (newImageUrl?: string) => {
       try {
+          setIsAccepting(true);
           const targetImageUrl = newImageUrl || itemCat.imageUrl || itemCat.oldImageUrl;
           const newHistory = [
               ...(itemCat.history || []),
@@ -243,6 +246,8 @@ export const StoreItemDetailsInline = ({ itemId, onClose, onAddRequest }: { item
           toast.success("Equipo aceptado y listo para la venta");
       } catch (err) {
           toast.error("Error al aceptar equipo");
+      } finally {
+          setIsAccepting(false);
       }
    };
 
@@ -628,10 +633,16 @@ export const StoreItemDetailsInline = ({ itemId, onClose, onAddRequest }: { item
                                </label>
                                <button 
                                    onClick={() => handleAcceptDevice()} 
-                                   className={`px-6 bg-indigo-600 text-white rounded-xl font-black text-[10px] uppercase transition-all shadow-lg shadow-indigo-600/30 active:scale-95 ${!(itemCat.imageUrl || itemCat.oldImageUrl) ? 'opacity-50 cursor-not-allowed' : 'hover:bg-indigo-700'}`}
-                                   disabled={!(itemCat.imageUrl || itemCat.oldImageUrl)}
+                                   className={`px-6 bg-indigo-600 text-white rounded-xl font-black text-[10px] uppercase transition-all shadow-lg shadow-indigo-600/30 active:scale-95 flex items-center justify-center gap-2 ${!(itemCat.imageUrl || itemCat.oldImageUrl) || isAccepting ? 'opacity-50 cursor-not-allowed' : 'hover:bg-indigo-700'}`}
+                                   disabled={!(itemCat.imageUrl || itemCat.oldImageUrl) || isAccepting}
                                >
-                                   {!!(itemCat.imageUrl || itemCat.oldImageUrl) ? 'ACEPTAR (MANTENER FOTO)' : 'FOTO REQUERIDA PARA ACEPTAR'}
+                                   {isAccepting ? (
+                                       <><Loader2 className="w-4 h-4 animate-spin"/> ACEPTANDO...</>
+                                   ) : !!(itemCat.imageUrl || itemCat.oldImageUrl) ? (
+                                       'ACEPTAR (MANTENER FOTO)'
+                                   ) : (
+                                       'FOTO REQUERIDA PARA ACEPTAR'
+                                   )}
                                </button>
                            </div>
                        </div>

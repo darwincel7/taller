@@ -305,10 +305,14 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
 
   const updateOrderStatus = useCallback(async (id: string, status: OrderStatus, note?: string, technician?: string) => {
     let order = orders.find(o => o.id === id);
-    if (!order) {
-      try { order = await orderService.getOrderById(id); } catch (e) { console.error(e); }
-    }
     if (!order) return;
+
+    try {
+        const freshOrder = await orderService.getOrderById(id);
+        if (freshOrder) order = freshOrder;
+    } catch (e) {
+        console.error("Error fetching order for updateOrderStatus:", e);
+    }
     
     const updates: Partial<RepairOrder> = { status };
     
@@ -336,14 +340,14 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
 
   const addOrderLog = useCallback(async (id: string, status: OrderStatus, note: string, technician?: string, logType: LogType = LogType.INFO) => {
     let order = orders.find(o => o.id === id);
-    if (!order) {
-      try {
-        order = await orderService.getOrderById(id);
-      } catch (e) {
-        console.error("Error fetching order for addOrderLog:", e);
-      }
-    }
     if (!order) return;
+
+    try {
+        const freshOrder = await orderService.getOrderById(id);
+        if (freshOrder) order = freshOrder;
+    } catch (e) {
+        console.error("Error fetching order for addOrderLog:", e);
+    }
     const newHistory = [...(order.history || []), { date: new Date().toISOString(), status, note, technician: technician || 'Sistema', logType }];
     await updateOrderMutation.mutateAsync({ id, updates: { history: newHistory } });
     
@@ -364,14 +368,14 @@ export const OrderProvider: React.FC<{ children: ReactNode }> = ({ children }) =
 
   const recordOrderLog = useCallback(async (id: string, actionType: string, message: string, metadata?: any, logType: LogType = LogType.INFO, userName: string = 'Sistema') => {
     let order = orders.find(o => o.id === id);
-    if (!order) {
-      try {
-        order = await orderService.getOrderById(id);
-      } catch (e) {
-        console.error("Error fetching order for recordOrderLog:", e);
-      }
-    }
     if (!order) return;
+
+    try {
+        const freshOrder = await orderService.getOrderById(id);
+        if (freshOrder) order = freshOrder;
+    } catch (e) {
+        console.error("Error fetching order for recordOrderLog:", e);
+    }
     const newHistory = [...(order.history || []), { date: new Date().toISOString(), status: order.status, note: message, technician: userName, logType, action_type: actionType, metadata }];
     await updateOrderMutation.mutateAsync({ id, updates: { history: newHistory } });
 
