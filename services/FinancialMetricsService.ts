@@ -3,18 +3,75 @@ import { FinancialKPIs } from '../types';
 
 export const financialMetricsService = {
   getCashDirection(cm: any) {
-    const mov = cm.movement_type;
+    const mov = cm.event_type || cm.movement_type;
     if (!mov) return 'NEUTRAL';
-    if (['SALE_IN', 'CREDIT_IN', 'INITIAL_CASH', 'TRANSFER_IN', 'IN'].includes(mov)) return 'IN';
-    if (['REFUND_OUT', 'EXPENSE_OUT', 'CASH_OUT', 'OUT'].includes(mov)) return 'OUT';
+    if (['SALE_IN', 'CREDIT_IN', 'INITIAL_CASH', 'TRANSFER_IN', 'IN', 'SALE'].includes(mov)) return 'IN';
+    if (['REFUND_OUT', 'EXPENSE_OUT', 'CASH_OUT', 'OUT', 'EXPENSE', 'REFUND', 'COGS'].includes(mov)) return 'OUT';
     return 'NEUTRAL';
   },
 
   /**
    * Generates the core financial KPIs for a given date range.
-   * If no range is given, defaults to current month vs previous month.
    */
   async getMetrics(startDate?: string, endDate?: string): Promise<FinancialKPIs> {
+    if (!supabase) throw new Error('Supabase client not initialized');
+    
+    // Convert to timestamptz for the RPC if provided
+    let p_start_date = startDate;
+    let p_end_date = endDate;
+    if (startDate && startDate.length <= 10) p_start_date = `${startDate}T00:00:00.000Z`;
+    if (endDate && endDate.length <= 10) p_end_date = `${endDate}T23:59:59.999Z`;
+
+    // Try new RPC V31
+    const { data: v31Data, error: v31Error } = await supabase.rpc('get_financial_dashboard_v31', {
+      p_start_date: p_start_date || new Date(2000, 0, 1).toISOString(),
+      p_end_date: p_end_date || new Date(2100, 0, 1).toISOString()
+    });
+
+    if (!v31Error && v31Data) {
+      // Consume V31 logic
+      const kpis = v31Data.kpis;
+      return {
+        // Legacy compat fields
+        current_income: kpis.ventasNetas,
+        current_expenses: kpis.gastosOperativos,
+        current_purchases: kpis.comprasInventario,
+        net_profit: kpis.utilidadNeta || kpis.utilidadOperativa,
+        prev_income: 0,
+        prev_expenses: 0,
+        prev_purchases: 0,
+        growth_income: 0,
+
+        // V31 precise fields
+        ventasNetas: kpis.ventasNetas,
+        costoVenta: kpis.costoVenta,
+        margenBruto: kpis.utilidadBruta,
+        margenBrutoPorcentaje: kpis.ventasNetas > 0 ? (kpis.utilidadBruta / kpis.ventasNetas) * 100 : 0,
+        gastosOperativos: kpis.gastosOperativos,
+        utilidadOperativa: kpis.utilidadOperativa,
+        utilidadNeta: kpis.utilidadOperativa,
+        flujoEfectivo: kpis.flujoEfectivo,
+        puntoEquilibrio: (kpis.ventasNetas > 0 && (kpis.utilidadBruta / kpis.ventasNetas) > 0) ? (kpis.gastosOperativos / (kpis.utilidadBruta / kpis.ventasNetas)) : 0,
+        capitalTrabajo: kpis.flujoEfectivo + kpis.cuentasPorCobrar + kpis.valorCambiazo,
+        rotacionInventario: 0,
+        ticketPromedio: 0, // This needs event count, let's just keep 0 or compute it if needed
+        cuentasPorCobrar: kpis.cuentasPorCobrar,
+        cuentasPorPagar: 0, // Pending feature
+        endeudamiento: 0,
+        roi: 0,
+        rentabilidadTaller: 0,
+        // Extras
+        valorCambiazo: kpis.valorCambiazo,
+        egresosTotales: kpis.egresosTotales
+      } as any;
+    }
+
+    // Fallback if RPC doesn't exist yet
+    console.warn("V31 RPC not found or error, falling back to FE logic:", v31Error);
+    return this.fallbackGetMetrics(startDate, endDate);
+  },
+
+  async fallbackGetMetrics(startDate?: string, endDate?: string): Promise<FinancialKPIs> {
     const rawData = await this.fetchRawFinancialData(startDate, endDate);
     
     // Core KPIs to calculate
@@ -279,6 +336,22 @@ export const financialMetricsService = {
     };
   },
 
+  async getRawV31Data(startDate?: string, endDate?: string) {
+    if (!supabase) return null;
+    let p_start_date = startDate;
+    let p_end_date = endDate;
+    if (startDate && startDate.length <= 10) p_start_date = `${startDate}T00:00:00.000Z`;
+    if (endDate && endDate.length <= 10) p_end_date = `${endDate}T23:59:59.999Z`;
+
+    const { data: v31Data, error } = await supabase.rpc('get_financial_dashboard_v31', {
+      p_start_date: p_start_date || new Date(2000, 0, 1).toISOString(),
+      p_end_date: p_end_date || new Date(2100, 0, 1).toISOString()
+    });
+    
+    if (!error && v31Data) return v31Data;
+    return null;
+  },
+
   async getCashflow(startDate?: string, endDate?: string): Promise<any[]> {
     const now = new Date();
     const sixMonthsAgoDate = new Date(now.getFullYear(), now.getMonth() - 5, 1);
@@ -289,51 +362,75 @@ export const financialMetricsService = {
         effectiveStartDate = sixMonthsAgoStr;
     }
 
-    const rawData = await this.fetchRawFinancialData(effectiveStartDate, endDate);
+    // Try V31
+    const v31Data = await this.getRawV31Data(effectiveStartDate, endDate);
     const monthlyData: { [key: string]: { income: number, expenses: number, purchases: number } } = {};
 
-    rawData.unifiedSales.forEach((s: any) => {
-      let d = new Date();
-      const val = s.created_at || s.createdAt;
-      if (val) {
-          d = typeof val === 'string' && val.includes('T') ? new Date(val) : new Date(Number(val));
-      }
+    if (v31Data && v31Data.events) {
+      v31Data.events.forEach((val: any) => {
+        if (!val.event_date) return;
+        let d = new Date(val.event_date);
+        const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+        if (!monthlyData[monthKey]) {
+          monthlyData[monthKey] = { income: 0, expenses: 0, purchases: 0 };
+        }
 
-      const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-      if (!monthlyData[monthKey]) {
-        monthlyData[monthKey] = { income: 0, expenses: 0, purchases: 0 };
-      }
-      
-      const cashEffect = Number(s.cash_effect_amount) || 0;
-      if (cashEffect > 0) {
-          monthlyData[monthKey].income += cashEffect;
-      } else if (cashEffect < 0) {
-          monthlyData[monthKey].expenses += Math.abs(cashEffect);
-      }
-    });
+        // Cash flow is only is_cash
+        if (val.is_cash && val.source_table === 'cash_movements') {
+           const type = val.event_type;
+           if (type.includes('_IN') || type === 'INITIAL_CASH') {
+              monthlyData[monthKey].income += Number(val.amount) || 0;
+           } else if (type.includes('_OUT')) {
+              monthlyData[monthKey].expenses += Math.abs(Number(val.amount) || 0);
+           }
+        }
+      });
+    } else {
+       // Fallback logic
+       const rawData = await this.fetchRawFinancialData(effectiveStartDate, endDate);
+       rawData.unifiedSales.forEach((s: any) => {
+         let d = new Date();
+         const val = s.created_at || s.createdAt;
+         if (val) {
+             d = typeof val === 'string' && val.includes('T') ? new Date(val) : new Date(Number(val));
+         }
 
-    rawData.transactions.forEach((t: any) => {
-      const dateParts = t.transaction_date.split('-');
-      if (!dateParts || dateParts.length < 2) return;
-      const monthKey = `${dateParts[0]}-${dateParts[1]}`;
-      
-      if (!monthlyData[monthKey]) {
-        monthlyData[monthKey] = { income: 0, expenses: 0, purchases: 0 };
-      }
+         const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+         if (!monthlyData[monthKey]) {
+           monthlyData[monthKey] = { income: 0, expenses: 0, purchases: 0 };
+         }
+         
+         const cashEffect = Number(s.cash_effect_amount) || 0;
+         if (cashEffect > 0) {
+             monthlyData[monthKey].income += cashEffect;
+         } else if (cashEffect < 0) {
+             monthlyData[monthKey].expenses += Math.abs(cashEffect);
+         }
+       });
 
-      const amount = Number(t.amount) || 0;
-      const categoryName = t.accounting_categories?.name?.toLowerCase();
-      const isPurchase = categoryName === 'compras' || categoryName === 'inventario' || categoryName === 'compra de inventario tienda';
+       rawData.transactions.forEach((t: any) => {
+         const dateParts = t.transaction_date.split('-');
+         if (!dateParts || dateParts.length < 2) return;
+         const monthKey = `${dateParts[0]}-${dateParts[1]}`;
+         
+         if (!monthlyData[monthKey]) {
+           monthlyData[monthKey] = { income: 0, expenses: 0, purchases: 0 };
+         }
 
-      // All transactions represent real cash movement
-      if (amount > 0) {
-        monthlyData[monthKey].income += amount;
-      } else if (isPurchase) {
-        monthlyData[monthKey].purchases += Math.abs(amount);
-      } else {
-        monthlyData[monthKey].expenses += Math.abs(amount);
-      }
-    });
+         const amount = Number(t.amount) || 0;
+         const categoryName = t.accounting_categories?.name?.toLowerCase();
+         const isPurchase = categoryName === 'compras' || categoryName === 'inventario' || categoryName === 'compra de inventario tienda';
+
+         // All transactions represent real cash movement
+         if (amount > 0) {
+           monthlyData[monthKey].income += amount;
+         } else if (isPurchase) {
+           monthlyData[monthKey].purchases += Math.abs(amount);
+         } else {
+           monthlyData[monthKey].expenses += Math.abs(amount);
+         }
+       });
+    }
 
     const result: any[] = [];
     
@@ -355,6 +452,12 @@ export const financialMetricsService = {
   },
 
   async getExpenseDistribution(startDate?: string, endDate?: string): Promise<any[]> {
+    const v31Data = await this.getRawV31Data(startDate, endDate);
+    if (v31Data && v31Data.expenses_distribution) {
+      return v31Data.expenses_distribution;
+    }
+
+    // Fallback logic
     const rawData = await this.fetchRawFinancialData(startDate, endDate);
     const distribution: { [key: string]: number } = {};
 

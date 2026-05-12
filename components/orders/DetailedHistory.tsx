@@ -104,7 +104,7 @@ export const DetailedHistory: React.FC<DetailedHistoryProps> = ({ history }) => 
                         {log.action_type?.replace(/_/g, ' ') || 'LOG'}
                     </span>
                     <span className="text-[9px] text-slate-400 font-bold uppercase flex items-center gap-1">
-                        {new Date(log.date || log.timestamp).toLocaleDateString()} {new Date(log.date || log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        {new Date(log.date || (log as any).timestamp || new Date()).toLocaleDateString()} {new Date(log.date || (log as any).timestamp || new Date()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                         <span className="text-slate-300">•</span>
                         <User className="w-3 h-3 inline-block" /> {log.technician}
                     </span>
@@ -116,7 +116,7 @@ export const DetailedHistory: React.FC<DetailedHistoryProps> = ({ history }) => 
                         {getIconForAction(log.action_type)}
                     </div>
                     <div className="flex-1 font-medium break-words leading-tight">
-                        {log.note || log.description}
+                        {log.note || (log as any).description}
                     </div>
                 </div>
                 </div>

@@ -17,11 +17,12 @@ import { NewIncomeModal } from '../components/accounting/NewIncomeModal';
 import { ManageCategoriesModal } from '../components/accounting/ManageCategoriesModal';
 import { ConsolidateExpenseModal } from '../components/accounting/ConsolidateExpenseModal';
 import { PendingExpenseDetailsModal } from '../components/accounting/PendingExpenseDetailsModal';
-import { Plus, Sparkles, MessageSquare, X, ShieldAlert, Tag, CheckCircle2, TrendingUp, Lock, Camera, Loader2, FileText, Calendar } from 'lucide-react';
+import { Plus, Sparkles, MessageSquare, X, ShieldAlert, Tag, CheckCircle2, TrendingUp, Lock, Camera, Loader2, FileText, Calendar, Wrench } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../services/supabase';
 import Markdown from 'react-markdown';
+import { DbFixModal } from '../components/DbFixModal';
 
 const parseSafeDate = (dateStr?: string | null) => {
   if (!dateStr) return new Date();
@@ -41,6 +42,7 @@ export const FinancialDashboard: React.FC = () => {
   const [isIncomeModalOpen, setIsIncomeModalOpen] = useState(false);
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
   const [isVaultPinModalOpen, setIsVaultPinModalOpen] = useState(false);
+  const [showDbFixModal, setShowDbFixModal] = useState(false);
   const [vaultPin, setVaultPin] = useState('');
   const [vaultPinError, setVaultPinError] = useState(false);
   const [isChatOpen, setIsChatOpen] = useState(false);
@@ -115,6 +117,7 @@ export const FinancialDashboard: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: ['pendingExpenses'] });
       queryClient.invalidateQueries({ queryKey: ['financialKPIs'] });
       queryClient.invalidateQueries({ queryKey: ['cashflow'] });
+      queryClient.invalidateQueries({ queryKey: ['expensesDistribution'] });
 
       // Record audit log
       if (currentUser) {
@@ -141,6 +144,7 @@ export const FinancialDashboard: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: ['pendingExpenses'] });
       queryClient.invalidateQueries({ queryKey: ['financialKPIs'] });
       queryClient.invalidateQueries({ queryKey: ['cashflow'] });
+      queryClient.invalidateQueries({ queryKey: ['expensesDistribution'] });
 
       // Record audit log
       if (currentUser) {
@@ -238,6 +242,13 @@ export const FinancialDashboard: React.FC = () => {
             )}
           </div>
 
+          <button 
+            onClick={() => setShowDbFixModal(true)}
+            className="px-4 py-2.5 bg-amber-100 border border-amber-200 text-amber-700 rounded-xl font-bold shadow-sm hover:bg-amber-200 transition flex items-center gap-2"
+          >
+            <Wrench className="w-4 h-4" />
+            V31
+          </button>
           <button 
             onClick={() => setIsVaultPinModalOpen(true)}
             className="px-4 py-2.5 bg-slate-900 border border-slate-800 text-white rounded-xl font-bold shadow-sm hover:bg-slate-800 transition flex items-center gap-2"
@@ -693,8 +704,11 @@ export const FinancialDashboard: React.FC = () => {
           queryClient.invalidateQueries({ queryKey: ['pendingExpenses'] });
           queryClient.invalidateQueries({ queryKey: ['financialKPIs'] });
           queryClient.invalidateQueries({ queryKey: ['cashflow'] });
+          queryClient.invalidateQueries({ queryKey: ['expensesDistribution'] });
         }}
       />
+      
+      {showDbFixModal && <DbFixModal onClose={() => setShowDbFixModal(false)} />}
     </div>
   );
 };

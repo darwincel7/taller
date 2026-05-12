@@ -241,7 +241,7 @@ const CashRegisterComponent: React.FC = () => {
             (c.client_name && c.client_name.toLowerCase().includes(term)) ||
             (c.order_id && c.order_id.toLowerCase().includes(term)) ||
             (c.cashier_name && c.cashier_name.toLowerCase().includes(term)) ||
-            (c.source_id && c.source_id.toLowerCase().includes(term))
+            ((c as any).source_id && (c as any).source_id.toLowerCase().includes(term))
         );
     });
   }, [clientCredits, creditSearch]);
