@@ -39,7 +39,7 @@ export const TransactionsTable: React.FC<TransactionsTableProps> = () => {
   
   // Filters
   const [filterType, setFilterType] = useState<'ALL' | 'INCOME' | 'EXPENSE'>('ALL');
-  const [filterSource, setFilterSource] = useState<'ALL' | 'MANUAL' | 'ORDER' | 'STORE'>('ALL');
+  const [filterSource, setFilterSource] = useState<'UNIFIED' | 'ALL' | 'MANUAL' | 'ORDER' | 'STORE'>('UNIFIED');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
 
@@ -47,6 +47,49 @@ export const TransactionsTable: React.FC<TransactionsTableProps> = () => {
   const { data, isLoading, isFetching } = useQuery({
     queryKey: ['transactions', page, debouncedSearch, filterType, filterSource, startDate, endDate],
     queryFn: async () => {
+        if (filterSource === 'UNIFIED') {
+           const { data: v31Data, error } = await supabase.rpc('get_financial_dashboard_v31', {
+              p_start_date: startDate ? startDate + 'T00:00:00.000Z' : new Date(2000, 0, 1).toISOString(),
+              p_end_date: endDate ? endDate + 'T23:59:59.999Z' : new Date(2100, 0, 1).toISOString()
+           });
+           
+           if (!error && v31Data && v31Data.events) {
+               let events = v31Data.events;
+               if (filterType === 'INCOME') events = events.filter((e: any) => e.amount > 0 && e.event_type !== 'EXPENSE' && e.event_type !== 'COGS' && !e.event_type.includes('OUT'));
+               if (filterType === 'EXPENSE') events = events.filter((e: any) => e.amount < 0 || e.event_type === 'EXPENSE' || e.event_type === 'COGS' || e.event_type.includes('OUT'));
+               if (debouncedSearch) {
+                   const s = debouncedSearch.toLowerCase();
+                   events = events.filter((e: any) => 
+                      (e.description && e.description.toLowerCase().includes(s)) || 
+                      (e.source_id && e.source_id.toLowerCase().includes(s)) ||
+                      (e.amount && e.amount.toString().includes(s)) 
+                   );
+               }
+               
+               return events.map((e: any) => {
+                   const isExp = e.is_expense || e.is_cogs || (e.event_type || '').includes('OUT');
+                   let amt = Number(e.amount) || 0;
+                   if (isExp && amt > 0) amt = -Math.abs(amt);
+                   if (e.event_type === 'REFUND') amt = -Math.abs(amt);
+                   
+                   return {
+                       id: e.event_id,
+                       transaction_date: e.event_date,
+                       created_at: e.event_date,
+                       description: e.description,
+                       amount: amt,
+                       source: e.source_table === 'v_sales_unified' ? 'ORDER/STORE' : (e.source_table === 'cash_movements' ? 'CASH' : 'MANUAL'),
+                       status: TransactionStatus.COMPLETED,
+                       category_name: e.metadata?.category_id || e.event_type,
+                       invoice_number: e.source_id,
+                       user_id: e.user_id,
+                       vendor: null,
+                       is_duplicate: false
+                   };
+               }).slice(page * pageSize, (page + 1) * pageSize);
+           }
+        }
+
         const rawTransactions = await accountingService.getTransactions({
             limit: pageSize,
             offset: page * pageSize,
@@ -289,6 +332,7 @@ export const TransactionsTable: React.FC<TransactionsTableProps> = () => {
             value={filterSource}
             onChange={e => { setFilterSource(e.target.value as any); setPage(0); }}
           >
+            <option value="UNIFIED">V31 (Recomendado)</option>
             <option value="ALL">Todos los Orígenes</option>
             <option value="MANUAL">Manual</option>
             <option value="ORDER">Órdenes</option>

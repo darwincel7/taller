@@ -761,7 +761,7 @@ FROM client_credits;
 
 -- 2. Crear RPC para consumir la VISTA
 CREATE OR REPLACE FUNCTION public.get_financial_dashboard_v31(p_start_date timestamptz, p_end_date timestamptz)
-RETURNS jsonb AS $
+RETURNS jsonb AS $$
 DECLARE
     v_ventas_netas numeric;
     v_costo_venta_total numeric;
@@ -869,7 +869,7 @@ BEGIN
         'events', COALESCE(v_events, '[]'::jsonb)
     );
 END;
-$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
 
 COMMIT;
 
