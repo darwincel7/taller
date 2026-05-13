@@ -112,11 +112,13 @@ export function getSupabase() {
     if (!supabaseClient) {
         let supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || "https://ruwcektpadeqovwtdixd.supabase.co";
         
-        // Prioritize SERVICE_ROLE_KEY for backend operations to bypass RLS
-        const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || "sb_publishable_FFOEpTNXpWSsQuJ3HosR-Q_QXNWnU4_";
+        let supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY;
+        if (process.env.NODE_ENV !== 'production' && !supabaseKey) {
+            supabaseKey = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || "sb_publishable_FFOEpTNXpWSsQuJ3HosR-Q_QXNWnU4_";
+        }
         
         if (!supabaseUrl || !supabaseKey) {
-            console.warn('Supabase credentials missing. WhatsApp auth will not be saved.');
+            console.error('CRITICAL: Supabase SUPABASE_SERVICE_ROLE_KEY missing in production environment. WhatsApp failed to initialize.');
             return null;
         }
 

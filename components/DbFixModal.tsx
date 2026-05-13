@@ -24,7 +24,7 @@ export const DbFixModal = ({ onClose }: { onClose: () => void }) => {
             <p className="mb-2">El código SQL para arreglar la base de datos ya no se proporciona por aquí para evitar parches manuales.</p>
             <p>Por favor ejecuta las migraciones formales en tu base de datos de Supabase, que se encuentran en el archivo:</p>
             <pre className="mt-2 text-xs bg-black/10 p-2 rounded">
-              supabase/migrations/2026_05_13_v33_financial_dashboard.sql
+              supabase/migrations/2026_05_13_v35_security_finance_cleanup.sql
             </pre>
           </div>
         </div>

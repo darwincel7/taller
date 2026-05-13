@@ -138,10 +138,17 @@ async function startServer() {
     const criticalVars = ['ENCRYPTION_KEY', 'SUPABASE_SERVICE_ROLE_KEY'];
     const missing = criticalVars.filter(v => !process.env[v]);
     
-    res.json({
-      ok: missing.length === 0,
-      missing_vars: missing
-    });
+    if (process.env.NODE_ENV === 'production') {
+      res.json({
+        ok: missing.length === 0,
+        missing_vars: []
+      });
+    } else {
+      res.json({
+        ok: missing.length === 0,
+        missing_vars: missing
+      });
+    }
   });
 
 
@@ -209,7 +216,13 @@ async function startServer() {
       const { createClient } = await import('@supabase/supabase-js');
       const inputUrl = req.headers['x-supabase-url'] || process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
       const supabaseUrl = normalizeSupabaseUrl(inputUrl);
-      const supabaseRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || process.env.VITE_SUPABASE_ANON_KEY || "sb_publishable_FFOEpTNXpWSsQuJ3HosR-Q_QXNWnU4_";
+      let supabaseRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY;
+      if (process.env.NODE_ENV !== 'production' && !supabaseRoleKey) {
+          supabaseRoleKey = process.env.VITE_SUPABASE_ANON_KEY || "sb_publishable_FFOEpTNXpWSsQuJ3HosR-Q_QXNWnU4_";
+      }
+      if (!supabaseRoleKey) {
+          return res.status(500).json({ error: 'Configuración insegura. Falta SUPABASE_SERVICE_ROLE_KEY en entorno de producción.' });
+      }
       
       const supabaseAdmin = createClient(supabaseUrl, supabaseRoleKey);
 
@@ -262,7 +275,13 @@ async function startServer() {
       const safeLimit = Math.min(Math.max(limit, 1), 200);
       const { createClient } = await import('@supabase/supabase-js');
       const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || "https://ruwcektpadeqovwtdixd.supabase.co";
-      const supabaseRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || process.env.VITE_SUPABASE_ANON_KEY || "sb_publishable_FFOEpTNXpWSsQuJ3HosR-Q_QXNWnU4_";
+      let supabaseRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY;
+      if (process.env.NODE_ENV !== 'production' && !supabaseRoleKey) {
+          supabaseRoleKey = process.env.VITE_SUPABASE_ANON_KEY || "sb_publishable_FFOEpTNXpWSsQuJ3HosR-Q_QXNWnU4_";
+      }
+      if (!supabaseRoleKey) {
+          return res.status(500).json({ success: false, error: 'Configuración insegura. Falta SUPABASE_SERVICE_ROLE_KEY.' });
+      }
       
       const supabaseAdmin = createClient(supabaseUrl, supabaseRoleKey);
 
@@ -531,10 +550,7 @@ async function startServer() {
     app.get('*all', (req, res) => {
       const indexPath = path.join(distPath, "index.html");
       if (fs.existsSync(indexPath)) {
-        let html = fs.readFileSync(indexPath, 'utf-8');
-        const envScript = `<script>window.ENV = { GEMINI_API_KEY: "${process.env.GEMINI_API_KEY || ''}" };</script>`;
-        html = html.replace('</head>', `${envScript}</head>`);
-        res.send(html);
+        res.sendFile(indexPath);
       } else {
         res.status(404).send("index.html not found");
       }
