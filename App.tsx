@@ -21,6 +21,7 @@ import { WorkshopAudit } from './pages/WorkshopAudit';
 import { PartsPanel } from './pages/PartsPanel';
 import { MobileVideoUpload } from './pages/MobileVideoUpload';
 import { FinancialDashboard } from './pages/FinancialDashboard';
+import { ReconciliationReport } from './pages/ReconciliationReport';
 import { StrategicVault } from './pages/StrategicVault';
 import { CRM } from './pages/CRM';
 import { Customers } from './pages/Customers';
@@ -93,6 +94,7 @@ const App: React.FC = () => {
                   
                   <Route path="/" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
                   <Route path="/finance" element={<ProtectedRoute><FinancialDashboard /></ProtectedRoute>} />
+                  <Route path="/reconciliation" element={<ProtectedRoute><ReconciliationReport /></ProtectedRoute>} />
                   <Route path="/vault" element={<ProtectedRoute><StrategicVault /></ProtectedRoute>} />
                   <Route path="/crm" element={<ProtectedRoute><CRM /></ProtectedRoute>} />
                   <Route path="/customers" element={<ProtectedRoute><Customers /></ProtectedRoute>} />

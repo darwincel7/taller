@@ -233,6 +233,10 @@ const LayoutComponent: React.FC<LayoutProps> = ({ children }) => {
                 <Activity className="w-4 h-4" />
                 Dashboard Financiero
               </Link>
+              <Link to="/reconciliation" className={getNavLinkClass('/reconciliation')}>
+                <Activity className="w-4 h-4" />
+                Reporte de Conciliación
+              </Link>
             </>
           )}
 

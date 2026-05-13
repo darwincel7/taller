@@ -53,7 +53,9 @@ export const TransactionsTable: React.FC<TransactionsTableProps> = () => {
                p_end_date: endDate ? endDate + 'T23:59:59.999Z' : new Date(2100, 0, 1).toISOString()
            });
            
-           console.log("V31 DATA FETCHED in Table", {startDate, endDate, v31Data, error, eventsCount: v31Data?.events?.length});
+           if (process.env.NODE_ENV === 'development') {
+               console.log("V31 DATA FETCHED in Table", {startDate, endDate, v31Data, error, eventsCount: v31Data?.events?.length});
+           }
 
            if (!error && v31Data && v31Data.events) {
                let events = v31Data.events;
@@ -374,12 +376,14 @@ export const TransactionsTable: React.FC<TransactionsTableProps> = () => {
         </div>
       </div>
 
-      <div className="bg-slate-900 text-green-400 font-mono text-[10px] p-2 m-2 rounded overflow-auto max-h-32">
-         DEBUG V31: Length of transactions array={transactions.length}.  
-         IsLoading={isLoading ? 'true' : 'false'}.  
-         FilterSource={filterSource}.  
-         DataError={(data as any)?.error ? JSON.stringify((data as any).error) : 'None'}
-      </div>
+      {process.env.NODE_ENV === 'development' && (
+        <div className="bg-slate-900 text-green-400 font-mono text-[10px] p-2 m-2 rounded overflow-auto max-h-32">
+           DEBUG V31: Length of transactions array={transactions.length}.  
+           IsLoading={isLoading ? 'true' : 'false'}.  
+           FilterSource={filterSource}.  
+           DataError={(data as any)?.error ? JSON.stringify((data as any).error) : 'None'}
+        </div>
+      )}
       
       <div className="overflow-x-auto min-h-[300px]">
         <table className="w-full text-left border-collapse">

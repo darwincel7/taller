@@ -134,35 +134,7 @@ async function startServer() {
     res.json({ status: "ok", message: "Server is running" });
   });
 
-  // QZ Tray Certificate Route
-  app.get("/api/cert-qz", (req, res) => {
-    const certificate = process.env.QZ_CERTIFICATE || '';
-    res.set('Content-Type', 'text/plain');
-    res.send(certificate);
-  });
 
-  // QZ Tray Signing Route
-  app.post("/api/sign-qz", (req, res) => {
-    const requestToSign = req.body.request;
-    if (!requestToSign) {
-      return res.status(400).send("Missing request parameter");
-    }
-
-    try {
-      const privateKey = process.env.QZ_PRIVATE_KEY || '';
-
-      const sign = crypto.createSign('SHA256');
-      sign.update(requestToSign);
-      // QZ Tray expects the signature to be base64 encoded
-      const signature = sign.sign(privateKey, 'base64');
-      
-      res.set('Content-Type', 'text/plain');
-      res.send(signature);
-    } catch (error) {
-      console.warn("Issue signing QZ request:", error);
-      res.status(500).send("Error signing request");
-    }
-  });
 
   function normalizeSupabaseUrl(input: any) {
     let value = String(input || '').trim();

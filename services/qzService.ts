@@ -8,49 +8,6 @@ export const connectQZ = (retryCount = 0): Promise<void> => {
     return Promise.resolve();
   }
 
-  // Set up QZ Tray security
-  qz.security.setCertificatePromise((resolve, reject) => {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
-    
-    fetch("/api/cert-qz", { signal: controller.signal })
-      .then(res => {
-        clearTimeout(timeoutId);
-        if (!res.ok) throw new Error("Failed to fetch certificate");
-        return res.text();
-      })
-      .then(resolve)
-      .catch(err => {
-        clearTimeout(timeoutId);
-        reject(err);
-      });
-  });
-
-  qz.security.setSignatureAlgorithm("SHA256");
-  qz.security.setSignaturePromise((toSign) => {
-    return (resolve, reject) => {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
-      
-      fetch("/api/sign-qz", {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ request: toSign }),
-        signal: controller.signal
-      })
-      .then(res => {
-        clearTimeout(timeoutId);
-        if (!res.ok) throw new Error("Failed to sign request");
-        return res.text();
-      })
-      .then(resolve)
-      .catch(err => {
-        clearTimeout(timeoutId);
-        reject(err);
-      });
-    };
-  });
-
   // If a connection attempt is already in progress, return that promise
   if (connectionPromise) {
     return connectionPromise;
