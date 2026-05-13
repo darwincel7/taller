@@ -219,7 +219,7 @@ async function startServer() {
            console.warn("requireAuth: Using dev fallback for local admin headers");
            req.headers['x-user-id'] = '1';
         } else {
-           console.error("requireAuth failed: missing Authorization and X-User-Id headers");
+           console.warn("requireAuth failed: missing Authorization and X-User-Id headers");
            return res.status(401).json({ error: 'No authorization header properly set' });
         }
       }
@@ -258,7 +258,7 @@ async function startServer() {
         if (process.env.NODE_ENV !== 'production' && targetUserId === '1') {
            console.warn("requireAuth: Using dev fallback for local admin");
         } else {
-           console.error("requireAuth failed lookup:", { targetUserId, error, data });
+           console.warn("requireAuth failed lookup:", { targetUserId, error, data });
            throw new Error('User not found or inactive');
         }
       }
@@ -266,7 +266,7 @@ async function startServer() {
       // Make sure the authenticated user matches the requested user if any
       next();
     } catch (e: any) {
-      console.error("requireAuth exception:", e.message);
+      console.warn("requireAuth exception:", e.message);
       res.status(401).json({ error: 'Unauthorized' });
     }
   };

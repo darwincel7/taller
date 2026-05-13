@@ -49,14 +49,20 @@ export const TransactionsTable: React.FC<TransactionsTableProps> = () => {
     queryFn: async () => {
         if (filterSource === 'UNIFIED') {
            const { data: v31Data, error } = await supabase.rpc('get_financial_dashboard_v31', {
-              p_start_date: startDate ? startDate + 'T00:00:00.000Z' : new Date(2000, 0, 1).toISOString(),
-              p_end_date: endDate ? endDate + 'T23:59:59.999Z' : new Date(2100, 0, 1).toISOString()
+               p_start_date: startDate ? startDate + 'T00:00:00.000Z' : new Date(2000, 0, 1).toISOString(),
+               p_end_date: endDate ? endDate + 'T23:59:59.999Z' : new Date(2100, 0, 1).toISOString()
            });
            
+           console.log("V31 DATA FETCHED in Table", {startDate, endDate, v31Data, error, eventsCount: v31Data?.events?.length});
+
            if (!error && v31Data && v31Data.events) {
                let events = v31Data.events;
-               if (filterType === 'INCOME') events = events.filter((e: any) => e.amount > 0 && e.event_type !== 'EXPENSE' && e.event_type !== 'COGS' && !e.event_type.includes('OUT'));
-               if (filterType === 'EXPENSE') events = events.filter((e: any) => e.amount < 0 || e.event_type === 'EXPENSE' || e.event_type === 'COGS' || e.event_type.includes('OUT'));
+               if (!Array.isArray(events)) {
+                   events = JSON.parse(events || '[]');
+               }
+               
+               if (filterType === 'INCOME') events = events.filter((e: any) => e.amount > 0 && e.event_type !== 'EXPENSE' && e.event_type !== 'COGS' && !e.event_type?.includes('OUT'));
+               if (filterType === 'EXPENSE') events = events.filter((e: any) => e.amount < 0 || e.event_type === 'EXPENSE' || e.event_type === 'COGS' || e.event_type?.includes('OUT'));
                if (debouncedSearch) {
                    const s = debouncedSearch.toLowerCase();
                    events = events.filter((e: any) => 
@@ -73,14 +79,14 @@ export const TransactionsTable: React.FC<TransactionsTableProps> = () => {
                    if (e.event_type === 'REFUND') amt = -Math.abs(amt);
                    
                    return {
-                       id: e.event_id,
-                       transaction_date: e.event_date,
-                       created_at: e.event_date,
-                       description: e.description,
+                       id: e.event_id || Math.random().toString(),
+                       transaction_date: e.event_date || new Date().toISOString(),
+                       created_at: e.event_date || new Date().toISOString(),
+                       description: e.description || 'Sin descripción',
                        amount: amt,
                        source: e.source_table === 'v_sales_unified' ? 'ORDER/STORE' : (e.source_table === 'cash_movements' ? 'CASH' : 'MANUAL'),
                        status: TransactionStatus.COMPLETED,
-                       category_name: e.metadata?.category_id || e.event_type,
+                       category_name: e.metadata?.category_id || e.event_type || 'N/A',
                        invoice_number: e.source_id,
                        user_id: e.user_id,
                        vendor: null,
@@ -88,6 +94,22 @@ export const TransactionsTable: React.FC<TransactionsTableProps> = () => {
                    };
                }).slice(page * pageSize, (page + 1) * pageSize);
            }
+           
+           if (error) {
+              return [{
+                       id: 'error-db',
+                       transaction_date: new Date().toISOString(),
+                       created_at: new Date().toISOString(),
+                       description: 'Error V31: ' + (error?.message || JSON.stringify(error)),
+                       amount: 0,
+                       source: 'MANUAL',
+                       category_name: 'GENERAL',
+                       status: TransactionStatus.COMPLETED
+               }];
+           }
+           
+           // Evitar que caiga al fallback inferior con source='UNIFIED' que retornará 0
+           return [];
         }
 
         const rawTransactions = await accountingService.getTransactions({
@@ -351,6 +373,13 @@ export const TransactionsTable: React.FC<TransactionsTableProps> = () => {
           </div>
         </div>
       </div>
+
+      <div className="bg-slate-900 text-green-400 font-mono text-[10px] p-2 m-2 rounded overflow-auto max-h-32">
+         DEBUG V31: Length of transactions array={transactions.length}.  
+         IsLoading={isLoading ? 'true' : 'false'}.  
+         FilterSource={filterSource}.  
+         DataError={(data as any)?.error ? JSON.stringify((data as any).error) : 'None'}
+      </div>
       
       <div className="overflow-x-auto min-h-[300px]">
         <table className="w-full text-left border-collapse">
@@ -390,7 +419,7 @@ export const TransactionsTable: React.FC<TransactionsTableProps> = () => {
                       {t.amount > 0 ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownLeft className="w-3 h-3" />}
                     </div>
                     <div>
-                        <span className="font-bold text-slate-700 text-sm truncate max-w-[200px] block">{t.description}</span>
+                        <span className={`font-bold text-sm block ${t.id === 'error-db' ? 'text-red-600 whitespace-pre-wrap max-w-3xl' : 'text-slate-700 max-w-[300px]'}`}>{t.description}</span>
                         {t.readable_id && <span className="text-[10px] font-bold text-slate-400 block mt-0.5">Ref: #{t.readable_id}</span>}
                         {t.receipt_url && (
                             <span className="inline-flex items-center gap-1 text-[10px] text-indigo-500 font-medium mt-0.5">

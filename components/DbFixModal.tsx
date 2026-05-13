@@ -698,8 +698,8 @@ SELECT
     'EXPENSE' as event_type,
     description,
     abs(amount) as amount,
-    COALESCE(method, 'CASH') as method,
-    branch,
+    'CASH' as method,
+    NULL as branch,
     created_by as user_id,
     false as is_cash, -- el flujo lo maneja cash_movements
     false as is_revenue,
@@ -825,7 +825,7 @@ BEGIN
     SELECT COALESCE(SUM(amount), 0)
     INTO v_valor_cambiazos
     FROM v_financial_events
-    WHERE source_table = 'cash_movements' AND movement_type = 'CAMBIAZO_IN'
+    WHERE source_table = 'cash_movements' AND event_type = 'CAMBIAZO_IN'
     AND event_date >= p_start_date AND event_date <= p_end_date;
     
     v_compras_inventario := v_valor_cambiazos; -- Plus direct manual inventory purchases if handled
