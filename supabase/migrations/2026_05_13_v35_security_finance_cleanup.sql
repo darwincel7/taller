@@ -37,7 +37,7 @@ SELECT
     source_id,
     'COGS' as event_type,
     'Costo Directo Venta/Taller' as description,
-    cost_amount as amount,
+    CASE WHEN is_refund THEN -cost_amount ELSE cost_amount END as amount,
     'NONE' as method,
     branch,
     user_id,
@@ -321,7 +321,7 @@ BEGIN
     AND (p_branch IS NULL OR branch = p_branch)
     AND method IN ('EXCHANGE', 'CAMBIAZO') AND movement_type LIKE '%_IN%';
 
-    v_diferencia := v_total_sales - (v_total_cash_in + v_total_credits_opened + v_total_cambiazos);
+    v_diferencia := v_total_sales - (v_total_cash_in - v_total_cash_out + v_total_credits_opened + v_total_cambiazos);
 
     IF ABS(v_diferencia) <= 1 THEN v_status := 'OK';
     ELSIF ABS(v_diferencia) <= 100 THEN v_status := 'ADVERTENCIA';

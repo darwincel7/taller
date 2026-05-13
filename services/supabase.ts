@@ -1,11 +1,6 @@
 
 import { createClient } from '@supabase/supabase-js';
 
-// --- CREDENCIALES CONFIGURADAS ---
-// Hemos formateado el ID del proyecto como una URL válida de Supabase.
-const PROVIDED_URL = "https://ruwcektpadeqovwtdixd.supabase.co"; 
-const PROVIDED_KEY = "sb_publishable_FFOEpTNXpWSsQuJ3HosR-Q_QXNWnU4_";
-
 // 1. Intentar obtener de Variables de Entorno (Prioridad Alta)
 const getEnv = (key: string) => {
   try {
@@ -18,6 +13,11 @@ const getEnv = (key: string) => {
   } catch (e) {}
   return undefined;
 };
+
+// --- CREDENCIALES CONFIGURADAS ---
+// Hemos formateado el ID del proyecto como una URL válida de Supabase.
+const PROVIDED_URL = "https://ruwcektpadeqovwtdixd.supabase.co"; 
+const PROVIDED_KEY = getEnv('SUPABASE_ANON_KEY') || "";
 
 const envUrl = getEnv('SUPABASE_URL');
 const envKey = getEnv('SUPABASE_KEY') || getEnv('SUPABASE_ANON_KEY');

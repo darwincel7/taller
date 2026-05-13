@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { AlertTriangle, X } from 'lucide-react';
 
 export const ConfigWarning = () => {
+  const [isOk, setIsOk] = useState<boolean>(true);
   const [missingVars, setMissingVars] = useState<string[]>([]);
   const [dismissed, setDismissed] = useState(false);
 
@@ -9,14 +10,15 @@ export const ConfigWarning = () => {
     fetch('/api/config-status')
       .then(res => res.json())
       .then(data => {
-        if (!data.ok && data.missing_vars) {
-          setMissingVars(data.missing_vars);
+        if (!data.ok) {
+          setIsOk(false);
+          setMissingVars(data.missing_vars || []);
         }
       })
       .catch(err => console.error("Error fetching config status:", err));
   }, []);
 
-  if (missingVars.length === 0 || dismissed) return null;
+  if (isOk || dismissed) return null;
 
   return (
     <div className="bg-red-600 text-white p-3 flex items-start justify-between gap-4 z-50 sticky top-0 shadow-lg">
@@ -25,8 +27,9 @@ export const ConfigWarning = () => {
         <div>
           <h4 className="font-bold">Advertencia del Servidor</h4>
           <p className="text-sm opacity-90 mt-1">
-            Faltan variables críticas en el backend: <strong>{missingVars.join(', ')}</strong>.
-            Algunas funcionalidades fallarán. Configúralas en Replit/Render/Panel de Control y reinicia el servidor.
+            Faltan variables críticas en el backend. Algunas funcionalidades fallarán.
+            {missingVars.length > 0 && <span> Específicamente: <strong>{missingVars.join(', ')}</strong>.</span>}
+            {' '}Configúralas en Replit/Render/Panel de Control y reinicia el servidor.
           </p>
         </div>
       </div>

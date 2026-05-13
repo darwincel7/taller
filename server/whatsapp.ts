@@ -114,7 +114,7 @@ export function getSupabase() {
         
         let supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY;
         if (process.env.NODE_ENV !== 'production' && !supabaseKey) {
-            supabaseKey = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || "sb_publishable_FFOEpTNXpWSsQuJ3HosR-Q_QXNWnU4_";
+            supabaseKey = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY ;
         }
         
         if (!supabaseUrl || !supabaseKey) {
