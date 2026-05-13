@@ -8,6 +8,7 @@ import { LabelPrinterModal } from './LabelPrinterModal';
 import { PrinterSettingsModal } from './PrinterSettingsModal';
 import { WhatsAppAlert } from './WhatsAppAlert';
 import { AITestModal } from './AITestModal';
+import { ConfigWarning } from './ConfigWarning';
 import { useAuth } from '../contexts/AuthContext';
 import { useOrders } from '../contexts/OrderContext';
 import { UserRole } from '../types';
@@ -394,6 +395,7 @@ const LayoutComponent: React.FC<LayoutProps> = ({ children }) => {
       )}
 
       <main className="flex-1 md:ml-64 p-2 md:p-0 dark:text-slate-200 flex flex-col">
+        <ConfigWarning />
         <WhatsAppAlert />
         <div className="md:hidden bg-white dark:bg-slate-900 p-4 mb-4 shadow-sm flex items-center justify-between sticky top-0 z-10 border-b dark:border-slate-800">
            <div className="flex items-center gap-3">

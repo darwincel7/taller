@@ -113,13 +113,15 @@ if (!validUrl) {
 let finalConnectionUrl = formattedUrl;
 if (typeof window !== 'undefined' && formattedUrl.includes('ruwcektpadeqovwtdixd')) {
     finalConnectionUrl = window.location.origin + '/api/supabase-tunnel';
-    console.log("Activando Túnel Proxy Anti-Bloqueo...");
+    if (process.env.NODE_ENV === 'development') {
+        console.log("Activando Túnel Proxy Anti-Bloqueo...");
+    }
 }
 
 // Exponemos la URL formateada limpia para depuración en la UI si lo desean
 export const cleanFormattedUrl = finalConnectionUrl;
 
-if (typeof window !== 'undefined') {
+if (typeof window !== 'undefined' && process.env.NODE_ENV === 'development') {
   console.log("=== SUPABASE INIT ===");
   console.log("Final URL:", finalConnectionUrl);
   console.log("Final Key length:", finalKey ? finalKey.length : 0);

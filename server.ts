@@ -134,6 +134,16 @@ async function startServer() {
     res.json({ status: "ok", message: "Server is running" });
   });
 
+  app.get("/api/config-status", (req, res) => {
+    const criticalVars = ['ENCRYPTION_KEY', 'SUPABASE_SERVICE_ROLE_KEY'];
+    const missing = criticalVars.filter(v => !process.env[v]);
+    
+    res.json({
+      ok: missing.length === 0,
+      missing_vars: missing
+    });
+  });
+
 
 
   function normalizeSupabaseUrl(input: any) {

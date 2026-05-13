@@ -1,0 +1,4 @@
+SELECT table_name, column_name, data_type 
+FROM information_schema.columns 
+WHERE table_schema = 'public' 
+AND table_name IN ('cash_movements', 'v_sales_unified', 'accounting_transactions', 'floating_expenses', 'client_credits', 'credit_payments');

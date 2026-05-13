@@ -1,0 +1,1 @@
+alter table whatsapp_conversations disable row level security; alter table whatsapp_messages disable row level security; alter table whatsapp_auth disable row level security;

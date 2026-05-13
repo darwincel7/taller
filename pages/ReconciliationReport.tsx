@@ -34,7 +34,9 @@ export const ReconciliationReport = () => {
             console.error("Error fetching report:", error);
             alert("Error: " + error.message);
         } else {
-            console.log("Reconciliation Data:", data);
+            if (process.env.NODE_ENV === 'development') {
+                console.log("Reconciliation Data:", data);
+            }
             setReport(data);
         }
     } catch (e: any) {
@@ -146,19 +148,37 @@ export const ReconciliationReport = () => {
               </div>
            </div>
 
-           <div className={`col-span-1 md:col-span-3 p-6 rounded-2xl border ${Math.abs(report.detected_difference) > 0.05 ? 'bg-red-50 dark:bg-red-900/10 border-red-200 dark:border-red-900/30' : 'bg-green-50 dark:bg-green-900/10 border-green-200 dark:border-green-900/30'}`}>
-              <div className="flex flex-col md:flex-row items-center justify-between gap-4">
+           <div className={`col-span-1 md:col-span-3 p-6 rounded-2xl border ${report.status === 'ERROR' ? 'bg-red-50 dark:bg-red-900/10 border-red-200 dark:border-red-900/30' : report.status === 'ADVERTENCIA' ? 'bg-amber-50 dark:bg-amber-900/10 border-amber-200 dark:border-amber-900/30' : 'bg-green-50 dark:bg-green-900/10 border-green-200 dark:border-green-900/30'}`}>
+              <div className="flex flex-col md:flex-row items-center justify-between gap-4 border-b border-black/10 dark:border-white/10 pb-4 mb-4">
                  <div>
-                    <h3 className={`text-lg font-black flex items-center gap-2 ${Math.abs(report.detected_difference) > 0.05 ? 'text-red-700 dark:text-red-400' : 'text-green-700 dark:text-green-400'}`}>
-                      {Math.abs(report.detected_difference) > 0.05 ? <AlertTriangle className="w-6 h-6" /> : <CheckCircle2 className="w-6 h-6" />}
-                      DIFERENCIA DETECTADA
+                    <h3 className={`text-lg font-black flex items-center gap-2 ${report.status === 'ERROR' ? 'text-red-700 dark:text-red-400' : report.status === 'ADVERTENCIA' ? 'text-amber-700 dark:text-amber-400' : 'text-green-700 dark:text-green-400'}`}>
+                      {report.status !== 'OK' ? <AlertTriangle className="w-6 h-6" /> : <CheckCircle2 className="w-6 h-6" />}
+                      ESTADO: {report.status}
                     </h3>
-                    <p className={`text-sm mt-1 ${Math.abs(report.detected_difference) > 0.05 ? 'text-red-600 dark:text-red-300' : 'text-green-600 dark:text-green-300'}`}>
+                    <p className={`text-sm mt-1 ${report.status === 'ERROR' ? 'text-red-600 dark:text-red-300' : report.status === 'ADVERTENCIA' ? 'text-amber-600 dark:text-amber-300' : 'text-green-600 dark:text-green-300'}`}>
                       (Ventas Netas) - (Neto Caja + Cambiazos + Creditos Nuevos)
                     </p>
                  </div>
-                 <div className={`text-4xl font-black ${Math.abs(report.detected_difference) > 0.05 ? 'text-red-600' : 'text-green-600'}`}>
+                 <div className={`text-4xl font-black ${report.status === 'ERROR' ? 'text-red-600' : report.status === 'ADVERTENCIA' ? 'text-amber-600' : 'text-green-600'}`}>
                     {currencyFormat(report.detected_difference)}
+                 </div>
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm mt-4">
+                 <div className="bg-white/50 dark:bg-black/20 p-3 rounded-lg">
+                    <div className="text-xs uppercase font-bold opacity-60">Diferencia Ventas vs Caja</div>
+                    <div className="font-bold">{currencyFormat(report.diff_details?.ventas_vs_caja || 0)}</div>
+                 </div>
+                 <div className="bg-white/50 dark:bg-black/20 p-3 rounded-lg">
+                    <div className="text-xs uppercase font-bold opacity-60">Gastos sin categoría</div>
+                    <div className="font-bold">{currencyFormat(report.diff_details?.gastos || 0)}</div>
+                 </div>
+                 <div className="bg-white/50 dark:bg-black/20 p-3 rounded-lg">
+                    <div className="text-xs uppercase font-bold opacity-60">POS sin movimiento</div>
+                    <div className="font-bold">{report.unmatched_events?.length || 0} eventos</div>
+                 </div>
+                 <div className="bg-white/50 dark:bg-black/20 p-3 rounded-lg">
+                    <div className="text-xs uppercase font-bold opacity-60">Creditos sin registro</div>
+                    <div className="font-bold">--</div>
                  </div>
               </div>
            </div>
