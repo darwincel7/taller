@@ -49,9 +49,7 @@ function validateEnv() {
   
   if (missing.length > 0) {
     console.error(`\x1b[31m[CRITICAL] Faltan variables de entorno obligatorias: ${missing.join(', ')}\x1b[0m`);
-    if (process.env.NODE_ENV === 'production') {
-      process.exit(1);
-    }
+    // NOTE: Removed process.exit(1) here so Cloud Run can still boot and serve the frontend
   }
 
   const encryptionKey = process.env.ENCRYPTION_KEY;
@@ -219,7 +217,7 @@ async function startServer() {
            console.warn("requireAuth: Using dev fallback for local admin headers");
            req.headers['x-user-id'] = '1';
         } else {
-           console.warn("requireAuth failed: missing Authorization and X-User-Id headers");
+           // Silently return 401 to avoid spamming the Cloud Run logs when the frontend polls
            return res.status(401).json({ error: 'No authorization header properly set' });
         }
       }
