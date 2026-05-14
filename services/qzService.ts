@@ -1,5 +1,18 @@
 import qz from 'qz-tray';
 
+// Provide standard Promise implementation for QZ Tray 
+qz.api.setPromiseType((resolver: any) => new Promise(resolver));
+
+// Provide a basic SHA-256 implementation to satisfy QZ Tray's security requirement
+// even if we are not actively signing messages with a private key.
+qz.api.setSha256Type(async (data: string) => {
+  const encoder = new TextEncoder();
+  const dataBuffer = encoder.encode(data);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', dataBuffer);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+});
+
 let connectionPromise: Promise<void> | null = null;
 
 export const connectQZ = (retryCount = 0): Promise<void> => {

@@ -747,7 +747,7 @@ export const StoreItemDetailsInline = ({ itemId, onClose, onAddRequest }: { item
                     </div>
                     
                     <div className="bg-white p-4 rounded-2xl flex items-center justify-center mb-6 shadow-indigo-500/10 shadow-xl w-fit mx-auto">
-                        <QRCodeSVG value={`${window.location.origin}/#/mobile-upload/${sessionId}`} size={200} level="H" includeMargin={true} className="rounded-xl" />
+                        <QRCodeSVG value={`${window.location.origin}/#/mobile-upload/${sessionId}?type=device`} size={200} level="H" includeMargin={true} className="rounded-xl" />
                     </div>
                     
                     <div className="flex items-center gap-3 mb-6 bg-indigo-500/10 border border-indigo-500/20 p-4 rounded-2xl">

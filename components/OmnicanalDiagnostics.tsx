@@ -30,7 +30,9 @@ export const OmnicanalDiagnostics: React.FC = () => {
             
             // Analytics snapshot for scaling overview
             const analyticsRes = await fetchWithAuth('/api/omnicanal/analytics/overview');
-            if (analyticsRes.ok) setAnalytics(await analyticsRes.json());
+            if (analyticsRes.ok && analyticsRes.headers.get('content-type')?.includes('application/json')) {
+                setAnalytics(await analyticsRes.json());
+            }
         } catch (e) {
             console.error(e);
         } finally {

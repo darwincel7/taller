@@ -1,10 +1,12 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useInventory } from '../../contexts/InventoryContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { parseInventoryCategory } from '../../types';
-import { ShoppingCart, X, UploadCloud, Smartphone } from 'lucide-react';
+import { ShoppingCart, X, UploadCloud, Smartphone, Camera, QrCode, Loader2 } from 'lucide-react';
 import { supabase, getCleanStorageUrl } from '../../services/supabase';
 import { toast } from 'sonner';
+import { CameraCapture } from '../../components/CameraCapture';
+import { QRCodeSVG } from 'qrcode.react';
 
 export const AddStoreItemModal = ({ productId, onClose }: { productId: string, onClose: () => void }) => {
   const { inventory, addInventoryPart, updateInventoryPart } = useInventory();
@@ -28,6 +30,49 @@ export const AddStoreItemModal = ({ productId, onClose }: { productId: string, o
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [progress, setProgress] = useState(0);
   const [progressError, setProgressError] = useState('');
+
+  const [showCamera, setShowCamera] = useState(false);
+  const [showQR, setShowQR] = useState(false);
+  const [sessionId] = useState(() => `sess_${Math.random().toString(36).substr(2, 9)}`);
+
+  useEffect(() => {
+    if (!showQR) return;
+    const channel = supabase.channel(`upload_${sessionId}`)
+      .on('broadcast', { event: 'image_uploaded' }, payload => {
+        setFormData(prev => ({ ...prev, imageUrl: payload.payload.imageUrl }));
+        setShowQR(false);
+        toast.success("Imagen recibida correctamente");
+      })
+      .subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [showQR, sessionId]);
+
+  const handleAcceptDevice = async (base64OrFile: any) => {
+    let file: File;
+    if (typeof base64OrFile === 'string') {
+      const res = await fetch(base64OrFile);
+      const blob = await res.blob();
+      file = new File([blob], "camera_capture.jpg", { type: "image/jpeg" });
+    } else {
+      file = base64OrFile;
+    }
+    setIsUploading(true);
+    try {
+       const ext = 'jpg';
+       const fileName = `item_${Date.now()}_${Math.random().toString(36).substring(7)}.${ext}`;
+       const { error } = await supabase.storage.from('receipts').upload(fileName, file, { cacheControl: '3600' });
+       if (error) throw error;
+       const { data } = supabase.storage.from('receipts').getPublicUrl(fileName);
+       setFormData(prev => ({ ...prev, imageUrl: getCleanStorageUrl(data.publicUrl) }));
+       toast.success('Imagen capturada');
+    } catch (err: any) {
+       toast.error('Error al subir imagen');
+    } finally {
+       setIsUploading(false);
+    }
+  };
 
   const purchases = useMemo(() => {
     return inventory.filter(p => {
@@ -197,8 +242,9 @@ export const AddStoreItemModal = ({ productId, onClose }: { productId: string, o
   };
 
   return (
-    <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[60] flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-white rounded-[2rem] w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]" onClick={e => e.stopPropagation()}>
+    <>
+    <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[60] flex items-center justify-start p-4 sm:pl-[10%] xl:pl-[15%]" onClick={onClose}>
+      <div className="bg-white rounded-[2rem] w-full max-w-xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]" onClick={e => e.stopPropagation()}>
         <div className="p-6 bg-slate-50 border-b border-slate-100 flex justify-between items-center shrink-0">
            <h2 className="text-2xl font-black text-slate-800 flex items-center gap-3">
              <div className="w-10 h-10 bg-indigo-100 text-indigo-600 rounded-xl flex items-center justify-center">
@@ -258,15 +304,34 @@ export const AddStoreItemModal = ({ productId, onClose }: { productId: string, o
 
               <div>
                 <label className="block text-sm font-bold text-slate-700 mb-2">Foto de la Unidad {isCellphone ? '(Requerida)' : '(Opcional)'}</label>
-                <div className={`relative group rounded-2xl overflow-hidden border-2 border-dashed ${isCellphone && !formData.imageUrl ? 'border-amber-400 bg-amber-50' : 'border-slate-300 hover:border-indigo-500 bg-slate-50'} transition-colors flex items-center justify-center min-h-[160px] cursor-pointer`}>
-                    <input type="file" accept="image/*" onChange={handleImageUpload} disabled={isUploading} className="absolute inset-0 opacity-0 cursor-pointer z-10" />
-                    {isUploading ? <span className="font-bold text-indigo-500">Subiendo...</span> : formData.imageUrl ? <img src={formData.imageUrl} className="h-full object-contain p-2" alt="img" /> : (
-                       <div className={`flex flex-col items-center justify-center ${isCellphone ? 'text-amber-600' : 'text-slate-400'}`}>
-                          <UploadCloud className="w-8 h-8 mb-2" />
-                          <span className="font-bold text-sm tracking-tight">{isCellphone ? 'DEBES SUBIR FOTO' : 'Escoger Imagen'}</span>
-                       </div>
-                    )}
-                </div>
+                {!formData.imageUrl ? (
+                   <div className="grid grid-cols-3 gap-2">
+                      <button type="button" onClick={() => document.getElementById('item-upload-input')?.click()} className={`col-span-3 lg:col-span-1 bg-slate-50 border ${isCellphone ? 'border-amber-400 bg-amber-50' : 'border-slate-200'} hover:border-indigo-500 rounded-xl p-3 flex flex-col items-center justify-center gap-1 transition-colors text-slate-500 hover:text-indigo-600`}>
+                         <UploadCloud className="w-5 h-5 mb-1" />
+                         <span className="text-[10px] uppercase font-bold text-center">Subir Archivo</span>
+                      </button>
+                      <button type="button" onClick={() => setShowCamera(true)} className={`col-span-3 lg:col-span-1 bg-slate-50 border ${isCellphone ? 'border-amber-400 bg-amber-50' : 'border-slate-200'} hover:border-indigo-500 rounded-xl p-3 flex flex-col items-center justify-center gap-1 transition-colors text-slate-500 hover:text-indigo-600`}>
+                         <Camera className="w-5 h-5 mb-1" />
+                         <span className="text-[10px] uppercase font-bold text-center">Usar Cámara</span>
+                      </button>
+                      <button type="button" onClick={() => setShowQR(true)} className={`col-span-3 lg:col-span-1 bg-slate-50 border ${isCellphone ? 'border-amber-400 bg-amber-50' : 'border-slate-200'} hover:border-indigo-500 rounded-xl p-3 flex flex-col items-center justify-center gap-1 transition-colors text-slate-500 hover:text-indigo-600`}>
+                         <QrCode className="w-5 h-5 mb-1" />
+                         <span className="text-[10px] uppercase font-bold text-center">Desde Celular</span>
+                      </button>
+                      <input id="item-upload-input" type="file" accept="image/*" onChange={handleImageUpload} disabled={isUploading} className="hidden" />
+                   </div>
+                ) : (
+                   <div className="relative group rounded-2xl overflow-hidden border-2 border-slate-200 bg-slate-50 flex items-center justify-center min-h-[160px]">
+                      {isUploading ? <span className="font-bold text-indigo-500">Subiendo...</span> : <img src={formData.imageUrl} className="h-full object-contain p-2 max-h-[250px]" alt="img" />}
+                      {!isUploading && (
+                         <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                            <button type="button" onClick={() => setFormData(prev => ({...prev, imageUrl: ''}))} className="bg-rose-500 text-white font-bold px-4 py-2 rounded-xl text-sm hover:bg-rose-600 flex items-center gap-2">
+                               <X className="w-4 h-4"/> Remover Imagen
+                            </button>
+                         </div>
+                      )}
+                   </div>
+                )}
               </div>
            </form>
         </div>
@@ -294,5 +359,55 @@ export const AddStoreItemModal = ({ productId, onClose }: { productId: string, o
         </div>
       </div>
     </div>
+      {showCamera && (
+          <CameraCapture 
+              onCapture={(img) => {
+                  handleAcceptDevice(img);
+                  setShowCamera(false);
+              }} 
+              onClose={() => setShowCamera(false)} 
+          />
+      )}
+      {showQR && (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[999] flex items-center justify-center p-4" onClick={(e) => { e.stopPropagation(); setShowQR(false); }}>
+              <div className="bg-slate-900 border border-slate-700 rounded-3xl p-6 shadow-2xl max-w-sm w-full animate-in zoom-in-95 fade-in duration-200" onClick={e => e.stopPropagation()}>
+                  <div className="flex justify-between items-center mb-6">
+                      <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 bg-indigo-500/20 rounded-xl flex items-center justify-center">
+                              <QrCode className="w-5 h-5 text-indigo-400" />
+                          </div>
+                          <div>
+                              <h3 className="font-black text-white leading-tight">Escanear QR</h3>
+                              <p className="text-xs text-slate-400 font-medium">Subir foto del equipo</p>
+                          </div>
+                      </div>
+                      <button onClick={() => setShowQR(false)} className="text-slate-400 hover:text-white bg-slate-800 hover:bg-slate-700 p-2 rounded-full transition-colors">
+                          <X className="w-4 h-4" />
+                      </button>
+                  </div>
+                  
+                  <div className="bg-white p-4 rounded-2xl flex items-center justify-center mb-6 shadow-indigo-500/10 shadow-xl w-fit mx-auto">
+                      <QRCodeSVG value={`${window.location.origin}/#/mobile-upload/${sessionId}?type=device`} size={200} level="H" includeMargin={true} className="rounded-xl" />
+                  </div>
+                  
+                  <div className="flex items-center gap-3 mb-6 bg-indigo-500/10 border border-indigo-500/20 p-4 rounded-2xl">
+                      <div className="w-8 h-8 rounded-full bg-indigo-500/20 flex items-center justify-center shrink-0">
+                          <Loader2 className="w-4 h-4 text-indigo-400 animate-spin" />
+                      </div>
+                      <p className="text-xs font-medium text-indigo-200 leading-relaxed">
+                          Esperando recepción de imagen... La ventana se cerrará automáticamente al finalizar.
+                      </p>
+                  </div>
+
+                  <button
+                      onClick={() => setShowQR(false)}
+                      className="w-full bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold py-3 rounded-xl transition-colors text-sm"
+                  >
+                      Cancelar
+                  </button>
+              </div>
+          </div>
+      )}
+    </>
   );
 }

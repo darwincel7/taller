@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { fetchWithAuth } from '../lib/fetchWithAuth';
 import { supabase } from '../services/supabase';
-import { Send, User, MessageCircle, Clock, CheckCircle2, AlertCircle, Link as LinkIcon, Search, Image as ImageIcon, File, Mic, Phone, Instagram, Facebook, HelpCircle, Bot } from 'lucide-react';
-import { format } from 'date-fns';
+import { Send, User, MessageCircle, Clock, CheckCircle2, AlertCircle, Link as LinkIcon, Search, Image as ImageIcon, File, Mic, Phone, Instagram, Facebook, HelpCircle, Bot, Check, CheckCheck } from 'lucide-react';
+import { format, isToday } from 'date-fns';
 
 type Channel = 'whatsapp' | 'instagram' | 'facebook' | 'tiktok';
 
@@ -12,6 +12,19 @@ const ChannelIcon = ({ channel, className }: { channel: Channel, className?: str
     case 'instagram': return <Instagram className={className} />;
     case 'facebook': return <Facebook className={className} />;
     default: return <MessageCircle className={className} />;
+  }
+};
+
+const formatMessageDate = (dateString: string | null | undefined) => {
+  if (!dateString) return '';
+  try {
+    const date = new Date(dateString);
+    if (isToday(date)) {
+      return format(date, 'HH:mm');
+    }
+    return format(date, 'd/M/yy');
+  } catch (e) {
+    return '';
   }
 };
 
@@ -26,15 +39,38 @@ export const OmnicanalInbox: React.FC = () => {
   const [searchResults, setSearchResults] = useState<{messages: any[], contacts: any[]} | null>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [filterChannel, setFilterChannel] = useState<string>('all');
-  const [filterStatus, setFilterStatus] = useState<string>('all');
+  const [filterStatus, setFilterStatus] = useState<string>('open');
   const [filterPriority, setFilterPriority] = useState<string>('all');
   const [filterAssignment, setFilterAssignment] = useState<'all' | 'mine' | 'unassigned'>('all');
   const [agents, setAgents] = useState<any[]>([]);
+  const [duplicatesInfo, setDuplicatesInfo] = useState<any>(null);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
 
   const userId = localStorage.getItem('user_id'); // Assuming user_id is stored
+  const userRole = localStorage.getItem('userRole') || 'ADMIN'; // Using localStorage for role (you might want useAuth context)
+
+  const checkDuplicates = async () => {
+    try {
+      const res = await fetchWithAuth('/api/omnicanal/diagnostics/duplicates');
+      if (res.ok) setDuplicatesInfo(await res.json());
+    } catch(e) { console.error(e); }
+  };
+
+  const handleMergeDuplicates = async () => {
+    if (!confirm('¿Estás seguro de que quieres unificar los contactos y conversaciones duplicadas de forma automática?')) return;
+    try {
+      const res = await fetchWithAuth('/api/omnicanal/diagnostics/merge', { method: 'POST' });
+      if (!res.ok) throw new Error('Error al unificar duplicados');
+      const data = await res.json();
+      alert(`Unificación completada: ${data.mergedContacts} contactos y ${data.mergedConversations} conversaciones.`);
+      fetchConversations();
+      checkDuplicates();
+    } catch (e: any) {
+      alert(`Error unificando: ${e.message}`);
+    }
+  };
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -97,23 +133,27 @@ export const OmnicanalInbox: React.FC = () => {
     } catch (e) { console.error(e); }
   };
 
-  const handleSearch = async (query: string) => {
+  const handleSearch = (query: string) => {
     setSearchQuery(query);
-    if (!query.trim()) {
-      setSearchResults(null);
-      setIsSearching(false);
-      return;
-    }
-    
-    setIsSearching(true);
-    try {
-      const res = await fetchWithAuth(`/api/omnicanal/search?query=${encodeURIComponent(query)}`);
-      if (res.ok) {
-        setSearchResults(await res.json());
-      }
-    } catch (e) { console.error(e); }
   };
 
+  const filteredConversations = conversations.filter(c => {
+    const term = searchQuery.toLowerCase();
+    const searchMatch = (c.crm_contacts?.display_name || '').toLowerCase().includes(term) || 
+                        (c.crm_contacts?.full_name || '').toLowerCase().includes(term) ||
+                        (c.crm_contacts?.primary_phone || '').includes(term) ||
+                        (c.last_message || '').toLowerCase().includes(term) ||
+                        (c.active_channel || '').toLowerCase().includes(term);
+    
+    const channelMatch = filterChannel === 'all' || c.active_channel === filterChannel;
+    const statusMatch = (filterStatus === 'all' && c.status !== 'merged') || c.status === filterStatus;
+    const priorityMatch = filterPriority === 'all' || c.priority === filterPriority;
+    const assignmentMatch = filterAssignment === 'all' || 
+                          (filterAssignment === 'mine' && c.assigned_to === userId) ||
+                          (filterAssignment === 'unassigned' && !c.assigned_to);
+
+    return searchMatch && channelMatch && statusMatch && priorityMatch && assignmentMatch;
+  });
   const fetchMessages = async (convId: string) => {
     try {
       const res = await fetchWithAuth(`/api/omnicanal/conversations/${convId}/messages`);
@@ -123,7 +163,13 @@ export const OmnicanalInbox: React.FC = () => {
       }
       const data = await res.json();
       if (data.error) throw new Error(data.error);
-      setMessages(data);
+      
+      setMessages(prev => {
+        // Merge without losing client optimistic messages that are not yet in DB
+        const serverIds = new Set(data.map((m: any) => m.raw?.client_request_id || m.client_request_id || m.id));
+        const localPending = prev.filter(m => String(m.id).startsWith('temp-') && !serverIds.has(m.client_request_id || m.raw?.client_request_id));
+        return [...data, ...localPending].sort((a: any, b: any) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+      });
     } catch (err: any) {
       console.error('Error fetching messages:', err);
     }
@@ -141,6 +187,7 @@ export const OmnicanalInbox: React.FC = () => {
   useEffect(() => {
     fetchConversations();
     fetchAgents();
+    checkDuplicates();
     const interval = setInterval(fetchConversations, 15000);
     
     const realtimeSub = supabase.channel('crm_conversations_changes')
@@ -162,7 +209,7 @@ export const OmnicanalInbox: React.FC = () => {
       const interval = setInterval(() => fetchMessages(activeConversationId), 5000);
       
       const messagesSub = supabase.channel(`crm_messages_${activeConversationId}`)
-        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'crm_messages', filter: `conversation_id=eq.${activeConversationId}` }, () => {
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'crm_messages', filter: `conversation_id=eq.${activeConversationId}` }, () => {
           fetchMessages(activeConversationId);
           fetchInsights(activeConversationId);
         })
@@ -221,8 +268,10 @@ export const OmnicanalInbox: React.FC = () => {
         const base64 = event.target?.result as string;
         const finalUrl = mediaUrl || base64; // Use Supabase URL if successful, otherwise base64
         
+        const tempMsgId = `temp-${Date.now()}`;
         const tempMsg = {
-          id: `temp-${Date.now()}`,
+          id: tempMsgId,
+          client_request_id: tempMsgId,
           text: '',
           message_type: msgType,
           media_url: finalUrl,
@@ -241,7 +290,8 @@ export const OmnicanalInbox: React.FC = () => {
               conversationId: activeConv.id, 
               text: '',
               mediaUrl: finalUrl,
-              mediaType: msgType
+              mediaType: msgType,
+              clientRequestId: tempMsgId
             })
           });
           
@@ -252,7 +302,7 @@ export const OmnicanalInbox: React.FC = () => {
           const data = await res.json();
           if (!data.success) throw new Error(data.error);
           
-          setMessages(prev => prev.map(m => m.id === tempMsg.id ? { ...m, status: 'sent', id: data.messageId || m.id } : m));
+          setMessages(prev => prev.map(m => m.id === tempMsg.id ? { ...m, status: 'sent', id: data.message?.id || m.id } : m));
         } catch (error) {
           console.error('Error sending media:', error);
           setMessages(prev => prev.map(m => m.id === tempMsg.id ? { ...m, status: 'failed' } : m));
@@ -288,8 +338,10 @@ export const OmnicanalInbox: React.FC = () => {
           const base64AudioMessage = reader.result as string;
           // Send audio message
           if (!activeConv) return;
+          const tempMsgId = `temp-${Date.now()}`;
           const tempMsg = {
-            id: `temp-${Date.now()}`,
+            id: tempMsgId,
+            client_request_id: tempMsgId,
             text: '',
             message_type: 'audio',
             media_url: base64AudioMessage,
@@ -308,12 +360,13 @@ export const OmnicanalInbox: React.FC = () => {
                 conversationId: activeConv.id, 
                 text: '',
                 mediaUrl: base64AudioMessage,
-                mediaType: 'audio'
+                mediaType: 'audio',
+                clientRequestId: tempMsgId
               })
             });
             const data = await res.json();
             if (!data.success) throw new Error(data.error);
-            setMessages(prev => prev.map(m => m.id === tempMsg.id ? { ...m, status: 'sent' } : m));
+            setMessages(prev => prev.map(m => m.id === tempMsg.id ? { ...m, status: 'sent', id: data.message?.id || m.id } : m));
           } catch (error) {
             console.error('Error sending audio:', error);
             setMessages(prev => prev.map(m => m.id === tempMsg.id ? { ...m, status: 'failed' } : m));
@@ -358,10 +411,13 @@ export const OmnicanalInbox: React.FC = () => {
     const text = inputText;
     setInputText('');
     
+    const tempMsgId = `temp-${Date.now()}`;
     const tempMsg = {
-      id: `temp-${Date.now()}`,
+      id: tempMsgId,
+      client_request_id: tempMsgId,
       text,
       direction: 'outbound',
+      message_type: 'text',
       status: 'sending',
       created_at: new Date().toISOString(),
       channel: activeConv.active_channel
@@ -372,31 +428,47 @@ export const OmnicanalInbox: React.FC = () => {
       const res = await fetchWithAuth('/api/omnicanal/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ conversationId: activeConv.id, text })
+        body: JSON.stringify({ conversationId: activeConv.id, text, clientRequestId: tempMsgId })
       });
       const data = await res.json();
       if (!data.success) throw new Error(data.error);
       
-      setMessages(prev => prev.map(m => m.id === tempMsg.id ? { ...m, status: 'sent' } : m));
+      setMessages(prev => prev.map(m => m.id === tempMsg.id ? { ...m, status: 'sent', id: data.message?.id || m.id } : m));
     } catch (error) {
       console.error('Error sending message:', error);
       setMessages(prev => prev.map(m => m.id === tempMsg.id ? { ...m, status: 'failed' } : m));
     }
   };
 
-  const filteredConversations = conversations.filter(c => {
-    const searchMatch = (c.crm_contacts?.display_name || '').toLowerCase().includes(searchQuery.toLowerCase()) || 
-                        (c.crm_contacts?.full_name || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-                        (c.crm_contacts?.primary_phone || '').includes(searchQuery);
-    const channelMatch = filterChannel === 'all' || c.active_channel === filterChannel;
-    const statusMatch = filterStatus === 'all' || c.status === filterStatus;
-    const priorityMatch = filterPriority === 'all' || c.priority === filterPriority;
-    const assignmentMatch = filterAssignment === 'all' || 
-                          (filterAssignment === 'mine' && c.assigned_to === userId) ||
-                          (filterAssignment === 'unassigned' && !c.assigned_to);
+  const handleRetry = async (msg: any) => {
+    if (!activeConv) return;
+    
+    // Optimistic UI update
+    setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, status: 'sending' } : m));
 
-    return searchMatch && channelMatch && statusMatch && priorityMatch && assignmentMatch;
-  });
+    try {
+      const res = await fetchWithAuth('/api/omnicanal/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+           conversationId: activeConv.id, 
+           text: msg.text || '', 
+           mediaUrl: msg.media_url,
+           mediaType: msg.message_type,
+           clientRequestId: msg.client_request_id || msg.id 
+        })
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error);
+      
+      setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, status: 'sent', id: data.message?.id || m.id } : m));
+    } catch (error) {
+      console.error('Error retrying message:', error);
+      setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, status: 'failed' } : m));
+    }
+  };
+
+
 
   return (
     <div className="flex bg-white rounded-3xl shadow-xl overflow-hidden border border-slate-200 h-full">
@@ -407,6 +479,16 @@ export const OmnicanalInbox: React.FC = () => {
             <MessageCircle className="w-5 h-5 text-indigo-500" />
             Bandeja Omnicanal
           </h2>
+          {userRole === 'ADMIN' && duplicatesInfo && 
+           (duplicatesInfo.by_phone?.length > 0 || duplicatesInfo.multiple_conversations_per_contact?.length > 0) && (
+             <div className="mb-3 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg flex items-start gap-2 text-sm text-amber-800">
+               <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5 text-amber-500" />
+               <div className="flex-1">
+                 <p className="font-medium mb-1">Contactos duplicados detectados</p>
+                 <button onClick={handleMergeDuplicates} className="font-bold underline hover:text-amber-900 transition">Unificar automáticamente</button>
+               </div>
+             </div>
+          )}
           <div className="space-y-2">
             <div className="relative">
               <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
@@ -466,14 +548,16 @@ export const OmnicanalInbox: React.FC = () => {
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex justify-between items-center mb-1">
-                    <h3 className="font-bold text-sm text-slate-800 truncate">
+                    <h3 className={`text-sm truncate ${conv.unread_count > 0 ? 'font-bold text-slate-900' : 'font-medium text-slate-700'}`}>
                       {conv.crm_contacts?.display_name || conv.crm_contacts?.primary_phone}
                     </h3>
-                    <span className="text-[10px] text-slate-400">
-                      {conv.last_message_at ? format(new Date(conv.last_message_at), 'HH:mm') : ''}
+                    <span className={`text-[10px] ${conv.unread_count > 0 ? 'text-indigo-600 font-bold' : 'text-slate-400'}`}>
+                      {formatMessageDate(conv.last_message_at || conv.created_at)}
                     </span>
                   </div>
-                  <p className="text-xs text-slate-500 truncate">{conv.last_message || '...'}</p>
+                  <p className={`text-xs truncate ${conv.unread_count > 0 ? 'font-medium text-slate-800' : 'text-slate-500'}`}>
+                    {conv.last_message || '...'}
+                  </p>
                 </div>
                 {conv.unread_count > 0 && (
                   <div className="w-4 h-4 bg-indigo-500 rounded-full flex items-center justify-center text-white text-[10px] font-bold">
@@ -496,15 +580,27 @@ export const OmnicanalInbox: React.FC = () => {
                </div>
                <div>
                   <h3 className="font-bold text-slate-800 flex items-center gap-2">
-                    {activeConv.crm_contacts?.display_name}
+                    {activeConv.crm_contacts?.display_name || 'Desconocido'}
                     <span className="bg-slate-100 text-slate-600 text-[10px] px-2 py-0.5 rounded-full uppercase tracking-wider border border-slate-200 flex items-center gap-1">
                       <ChannelIcon channel={activeConv.active_channel} className="w-3 h-3" />
                       {activeConv.active_channel}
                     </span>
                   </h3>
-                  {activeConv.crm_contacts?.primary_phone && (
-                     <p className="text-xs text-slate-500">{activeConv.crm_contacts.primary_phone}</p>
-                  )}
+                  <div className="flex items-center gap-2 mt-1">
+                    {activeConv.crm_contacts?.primary_phone && (
+                      <p className="text-xs text-slate-500">{activeConv.crm_contacts.primary_phone}</p>
+                    )}
+                    {/* Badge de canales conectados */}
+                    {activeConv.crm_contacts?.crm_contact_identities && (
+                      <div className="flex gap-1">
+                        {Array.from(new Set(activeConv.crm_contacts.crm_contact_identities.map((id: any) => id.channel))).map((channel: any) => (
+                           <div key={channel} className="bg-slate-50 border border-slate-200 p-0.5 rounded text-slate-400" title={`Conectado vía ${channel}`}>
+                              <ChannelIcon channel={channel} className="w-3 h-3" />
+                           </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                </div>
                 <div className="ml-auto flex items-center gap-2">
                  {activeConv.assigned_to ? (
@@ -603,12 +699,27 @@ export const OmnicanalInbox: React.FC = () => {
                       
                       <div className="flex items-center justify-end gap-1 mt-1">
                         <span className="text-[10px] opacity-70">
-                          {format(new Date(msg.created_at || new Date()), 'HH:mm')}
+                          {formatMessageDate(msg.created_at || new Date().toISOString())}
                         </span>
                         {isOutbound && (
-                           msg.status === 'sending' ? <Clock className="w-3 h-3 opacity-50" /> :
-                           msg.status === 'failed' ? <AlertCircle className="w-3 h-3 text-red-500" /> :
-                           <CheckCircle2 className="w-3 h-3 opacity-70" />
+                           <div className="flex items-center ml-1">
+                             {msg.status === 'sending' && <Clock className="w-3 h-3 text-slate-400" />}
+                             {msg.status === 'sent' && <Check className="w-3 h-3 text-slate-500" />}
+                             {msg.status === 'delivered' && <CheckCheck className="w-3 h-3 text-slate-500" />}
+                             {msg.status === 'received' && <CheckCheck className="w-3 h-3 text-slate-500" />}
+                             {msg.status === 'read' && <CheckCheck className="w-3 h-3 text-blue-500" />}
+                             {msg.status === 'failed' && (
+                               <div className="flex items-center gap-1 text-red-500 ml-1">
+                                 <AlertCircle className="w-3 h-3" />
+                                 <button
+                                    onClick={() => handleRetry(msg)}
+                                    className="text-[10px] underline hover:text-red-700"
+                                 >
+                                    Reintentar
+                                 </button>
+                               </div>
+                             )}
+                           </div>
                         )}
                       </div>
                     </div>

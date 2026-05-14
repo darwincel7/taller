@@ -15,7 +15,12 @@ router.get('/conversations', async (req, res) => {
       .from('crm_conversations')
       .select(`
         *,
-        crm_contacts:contact_id ( full_name, display_name, primary_phone )
+        crm_contacts:contact_id ( 
+          full_name, 
+          display_name, 
+          primary_phone,
+          crm_contact_identities(channel)
+        )
       `);
 
     // Basic assignment scoping (Phase 9/7)
@@ -25,7 +30,9 @@ router.get('/conversations', async (req, res) => {
        // Or eventually: query = query.or(`assigned_to.eq.${userId},assigned_to.is.null`);
     }
 
-    const { data: convs, error } = await query.order('last_message_at', { ascending: false });
+    const { data: convs, error } = await query
+      .order('last_message_at', { ascending: false, nullsFirst: false })
+      .order('created_at', { ascending: false });
 
     if (error) throw error;
     res.json(convs || []);
@@ -48,6 +55,10 @@ router.get('/conversations/:id/messages', async (req, res) => {
       .order('created_at', { ascending: true });
 
     if (error) throw error;
+
+    // Reset unread counts when messages are viewed
+    await supabase.from('crm_conversations').update({ unread_count: 0 }).eq('id', id);
+
     res.json(messages || []);
   } catch (error: any) {
     console.error('Error fetching messages:', error);
@@ -56,7 +67,7 @@ router.get('/conversations/:id/messages', async (req, res) => {
 });
 
 router.post('/send', async (req, res) => {
-  const { conversationId, text, mediaUrl, mediaType } = req.body;
+  const { conversationId, text, mediaUrl, mediaType, clientRequestId } = req.body;
   let adapterMediaUrl = mediaUrl;
   const supabase = getSupabase();
   if (!supabase) return res.status(500).json({ error: 'DB no conectada' });
@@ -83,140 +94,163 @@ router.post('/send', async (req, res) => {
     let externalMessageId = `crm-send-${Date.now()}`;
     let finalMediaUrlForDb = adapterMediaUrl; // defaults to whatever was passed
 
-    if (adapterMediaUrl && adapterMediaUrl.startsWith('data:')) {
-      // Decode and upload to supabase
-       const arr = adapterMediaUrl.split(',');
-       const mimeMatch = arr[0].match(/:(.*?);/);
-       const mimeType = mimeMatch ? mimeMatch[1] : 'application/octet-stream';
-       const base64Data = arr[1];
-       const buffer = Buffer.from(base64Data, 'base64');
-       
-       const extension = mimeType.split('/')[1] || 'bin';
-       const fileName = `${conv.id}/${Date.now()}.${extension}`;
-       
-       const { error: uploadError } = await supabase.storage.from('crm-media').upload(fileName, buffer, {
-          contentType: mimeType
-       });
+    const { data: rawMsg } = await supabase.from('crm_messages').select('channel_account_id').eq('conversation_id', conv.id).eq('direction', 'inbound').order('created_at', {ascending: false}).limit(1).maybeSingle();
+    const internalChannelAccountId = rawMsg ? rawMsg.channel_account_id : null;
 
-       if (!uploadError) {
-          const { data } = supabase.storage.from('crm-media').getPublicUrl(fileName);
-          if (data.publicUrl) {
-             finalMediaUrlForDb = data.publicUrl;
-             // also save an entry in crm_media_assets
-             await supabase.from('crm_media_assets').insert({
-                message_id: null, // we don't have msg id yet
-                channel: conv.active_channel,
-                file_name: fileName,
-                mime_type: mimeType,
-                size_bytes: buffer.length,
-                storage_path: fileName,
-                public_url: data.publicUrl,
-                source: 'outbound'
-             });
-          }
-       } else {
-          console.error("Storage upload error:", uploadError);
-       }
-    } else if (adapterMediaUrl && adapterMediaUrl.startsWith('http')) {
-       finalMediaUrlForDb = adapterMediaUrl;
-       try {
-         // Optionally insert in crm_media_assets if not already there, but lets assume frontend did it.
-         // We need to fetch the http URL and convert it to base64 for Baileys/Meta adapters for now.
-         const fetchRes = await fetch(adapterMediaUrl);
-         if (fetchRes.ok) {
-           const arrayBuffer = await fetchRes.arrayBuffer();
-           const buffer = Buffer.from(arrayBuffer);
-           const mimeType = fetchRes.headers.get('content-type') || 'application/octet-stream';
-           adapterMediaUrl = `data:${mimeType};base64,${buffer.toString('base64')}`;
-         }
-       } catch (e) {
-         console.error("Error downloading media for adapter:", e);
-       }
-    }
-
-    if (conv.active_channel === 'whatsapp') {
-       const { sendWhatsAppMessage } = await import('../whatsapp');
-       const targetJid = identity.external_id.includes('@s.whatsapp.net') || identity.external_id.includes('@lid') ? identity.external_id : `${identity.external_id}@s.whatsapp.net`;
-       
-       let imageObj = undefined;
-       let mediaObj = undefined;
-
-       if (adapterMediaUrl) {
-         if (mediaType === 'image') {
-            imageObj = adapterMediaUrl; // Keep passing original base64 to Baileys as it probably supports data:image
-         } else {
-            mediaObj = {
-               base64: adapterMediaUrl.split(',')[1] || adapterMediaUrl,
-               mimetype: mediaType === 'audio' ? 'audio/webm' : 'application/pdf',
-               fileName: 'media_file'
-            };
-         }
-       }
-
-       await sendWhatsAppMessage(targetJid, text, imageObj, mediaObj);
-    } else if (conv.active_channel === 'facebook' || conv.active_channel === 'instagram') {
-       const { sendMetaMessage } = await import('./meta');
-       // We need the pageId (channelAccountId) from the last inbound message.
-       // Ideally we stored this in identity or somewhere.
-       // For now, let's query the last inbound message for this conversation.
-       const { data: lastInbound } = await supabase.from('crm_messages')
-         .select('channel_account_id:crm_channel_accounts(external_account_id)')
-         .eq('conversation_id', conv.id)
-         .eq('direction', 'inbound')
-         .order('created_at', { ascending: false })
-         .limit(1)
-         .single();
-         
-       // Supabase relation syntax: channel_account_id is a UUID, we requested the join.
-       // But wait, the standard approach is just to get the identity or message.
-       // Let's just fetch the raw message to get the channel_account_id.
-       const { data: rawMsg } = await supabase.from('crm_messages').select('channel_account_id').eq('conversation_id', conv.id).eq('direction', 'inbound').order('created_at', {ascending: false}).limit(1).single();
-       if (!rawMsg || !rawMsg.channel_account_id) throw new Error("Could not find Meta page ID for this conversation");
-       
-       const { data: acc } = await supabase.from('crm_channel_accounts').select('external_account_id').eq('id', rawMsg.channel_account_id).single();
-       if (!acc) throw new Error("Account not found");
-
-       await sendMetaMessage(acc.external_account_id, identity.external_id, text, finalMediaUrlForDb, mediaType);
-    } else if (conv.active_channel === 'tiktok') {
-       const { sendTikTokMessage } = await import('./tiktok');
-       const { data: rawMsg } = await supabase.from('crm_messages').select('channel_account_id').eq('conversation_id', conv.id).eq('direction', 'inbound').order('created_at', {ascending: false}).limit(1).single();
-       if (!rawMsg || !rawMsg.channel_account_id) throw new Error("Could not find TikTok account ID for this conversation");
-       
-       const { data: acc } = await supabase.from('crm_channel_accounts').select('external_account_id').eq('id', rawMsg.channel_account_id).single();
-       if (!acc) throw new Error("Account not found");
-
-       await sendTikTokMessage(acc.external_account_id, identity.external_id, text);
-    } else {
-       throw new Error(`Sending to ${conv.active_channel} is not implemented`);
-    }
-
-    // 3. Save outbound message
-    const { data: savedMsg, error: msgError } = await supabase
+    // INSERT FIRST (status = sending)
+    const { data: pendingMsg, error: insertError } = await supabase
       .from('crm_messages')
       .insert({
         conversation_id: conv.id,
         contact_id: conv.contact_id,
         channel: conv.active_channel,
-        external_message_id: externalMessageId,
+        channel_account_id: internalChannelAccountId,
+        external_message_id: externalMessageId, // can be updated later if provider gives one
+        raw: { client_request_id: clientRequestId },
         direction: 'outbound',
         message_type: mediaUrl ? mediaType : 'text',
         text,
         media_url: finalMediaUrlForDb,
-        status: 'sent'
+        status: 'sending'
       })
       .select('*')
       .single();
-
-    if (savedMsg) {
-       // Update message_id in crm_media_assets if uploaded
-       if (finalMediaUrlForDb && finalMediaUrlForDb !== mediaUrl) {
-           await supabase.from('crm_media_assets')
-             .update({ message_id: savedMsg.id })
-             .eq('public_url', finalMediaUrlForDb);
-       }
+    
+    if (insertError) {
+      console.error('Failed to insert initial message:', insertError);
     }
+    if (insertError || !pendingMsg) throw new Error(`Failed to insert initial message: ${insertError?.message || 'unknown error'}`);
 
-    res.json({ success: true, message: savedMsg });
+    let providerMessageId = null;
+
+    try {
+      if (adapterMediaUrl && adapterMediaUrl.startsWith('data:')) {
+        // Decode and upload to supabase
+         const arr = adapterMediaUrl.split(',');
+         const mimeMatch = arr[0].match(/:(.*?);/);
+         const mimeType = mimeMatch ? mimeMatch[1] : 'application/octet-stream';
+         const base64Data = arr[1];
+         const buffer = Buffer.from(base64Data, 'base64');
+         
+         const extension = mimeType.split('/')[1] || 'bin';
+         const fileName = `${conv.id}/${Date.now()}.${extension}`;
+         
+         const { error: uploadError } = await supabase.storage.from('crm-media').upload(fileName, buffer, {
+            contentType: mimeType
+         });
+
+         if (!uploadError) {
+            const { data } = supabase.storage.from('crm-media').getPublicUrl(fileName);
+            if (data.publicUrl) {
+               finalMediaUrlForDb = data.publicUrl;
+               // also save an entry in crm_media_assets
+               await supabase.from('crm_media_assets').insert({
+                  message_id: pendingMsg.id,
+                  channel: conv.active_channel,
+                  file_name: fileName,
+                  mime_type: mimeType,
+                  size_bytes: buffer.length,
+                  storage_path: fileName,
+                  public_url: data.publicUrl,
+                  source: 'outbound'
+               });
+            }
+         } else {
+            console.error("Storage upload error:", uploadError);
+         }
+      } else if (adapterMediaUrl && adapterMediaUrl.startsWith('http')) {
+         finalMediaUrlForDb = adapterMediaUrl;
+         try {
+           const fetchRes = await fetch(adapterMediaUrl);
+           if (fetchRes.ok) {
+             const arrayBuffer = await fetchRes.arrayBuffer();
+             const buffer = Buffer.from(arrayBuffer);
+             const mimeType = fetchRes.headers.get('content-type') || 'application/octet-stream';
+             adapterMediaUrl = `data:${mimeType};base64,${buffer.toString('base64')}`;
+           }
+         } catch (e) {
+           console.error("Error downloading media for adapter:", e);
+         }
+      }
+
+      if (conv.active_channel === 'whatsapp') {
+         const { sendWhatsAppMessage } = await import('../whatsapp');
+         const targetJid = identity.external_id.includes('@s.whatsapp.net') || identity.external_id.includes('@lid') ? identity.external_id : `${identity.external_id}@s.whatsapp.net`;
+         
+         let imageObj = undefined;
+         let mediaObj = undefined;
+
+         if (adapterMediaUrl) {
+           if (mediaType === 'image') {
+              imageObj = adapterMediaUrl; 
+           } else {
+              mediaObj = {
+                 base64: adapterMediaUrl.split(',')[1] || adapterMediaUrl,
+                 mimetype: mediaType === 'audio' ? 'audio/webm' : 'application/pdf',
+                 fileName: 'media_file'
+              };
+           }
+         }
+
+         const sentInfo = await sendWhatsAppMessage(targetJid, text, imageObj, mediaObj);
+         if (sentInfo && typeof sentInfo === 'object' && sentInfo.messageId) { providerMessageId = sentInfo.messageId; }
+      } else if (conv.active_channel === 'facebook' || conv.active_channel === 'instagram') {
+         const { sendMetaMessage } = await import('./meta');
+         if (!internalChannelAccountId) throw new Error("Could not find Meta page ID for this conversation");
+         
+         const { data: acc } = await supabase.from('crm_channel_accounts').select('external_account_id').eq('id', internalChannelAccountId).single();
+         if (!acc) throw new Error("Account not found");
+
+         const sentId = await sendMetaMessage(acc.external_account_id, identity.external_id, text, finalMediaUrlForDb, mediaType);
+         providerMessageId = sentId || null;
+      } else if (conv.active_channel === 'tiktok') {
+         const { sendTikTokMessage } = await import('./tiktok');
+         if (!internalChannelAccountId) throw new Error("Could not find TikTok account ID for this conversation");
+         
+         const { data: acc } = await supabase.from('crm_channel_accounts').select('external_account_id').eq('id', internalChannelAccountId).single();
+         if (!acc) throw new Error("Account not found");
+
+         await sendTikTokMessage(acc.external_account_id, identity.external_id, text);
+         providerMessageId = null;
+      } else {
+         throw new Error(`Sending to ${conv.active_channel} is not implemented`);
+      }
+
+      // Update to sent
+      const { data: updatedMsg } = await supabase
+        .from('crm_messages')
+        .update({ 
+          status: 'sent', 
+          media_url: finalMediaUrlForDb,
+          external_message_id: providerMessageId || externalMessageId 
+        })
+        .eq('id', pendingMsg.id)
+        .select('*')
+        .single();
+
+      // Update conversation's last_message and last_message_at
+      await supabase.from('crm_conversations').update({
+        last_message: text || (mediaUrl ? `[${mediaType}]` : '[mensaje]'),
+        last_message_at: new Date().toISOString(),
+        unread_count: 0
+      }).eq('id', conv.id);
+
+      // And optional contact update:
+      await supabase.from('crm_contacts').update({
+        last_interaction_at: new Date().toISOString()
+      }).eq('id', conv.contact_id);
+
+      res.json({ success: true, message: updatedMsg || pendingMsg });
+
+    } catch (sendError: any) {
+      // Update to failed
+      await supabase
+        .from('crm_messages')
+        .update({ status: 'failed', raw: { error: sendError.message } })
+        .eq('id', pendingMsg.id);
+      
+      throw sendError;
+    }
   } catch (error: any) {
     console.error('Error sending omnicanal message:', error);
     res.status(500).json({ error: error.message });
@@ -465,6 +499,104 @@ router.post('/conversations/bulk-close', async (req, res) => {
 
      if (error) throw error;
      res.json({ success: true, count: ids.length });
+  } catch (error: any) {
+     res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/diagnostics/duplicates', async (req, res) => {
+  const supabase = getSupabase();
+  if (!supabase) return res.status(500).json({ error: 'DB no conectada' });
+
+  try {
+     const { data: contacts } = await supabase.from('crm_contacts').select('id, primary_phone, display_name');
+     const byPhoneOrName: any = {};
+     if (contacts) {
+        for(const c of contacts) {
+           let key = c.primary_phone ? c.primary_phone.replace(/\D/g, '') : null;
+           if (!key && c.display_name) key = 'name:' + c.display_name.trim().toLowerCase();
+           if (!key) continue;
+           if (!byPhoneOrName[key]) byPhoneOrName[key] = [];
+           byPhoneOrName[key].push(c);
+        }
+     }
+     const phoneDups = Object.values(byPhoneOrName).filter((l: any) => l.length > 1);
+
+     const { data: convs } = await supabase.from('crm_conversations').select('id, contact_id').eq('status', 'open');
+     const byContact: any = {};
+     if (convs) {
+        for(const c of convs) {
+           if (!byContact[c.contact_id]) byContact[c.contact_id] = [];
+           byContact[c.contact_id].push(c);
+        }
+     }
+     const convDups = Object.values(byContact).filter((l: any) => l.length > 1);
+
+     res.json({
+         by_phone: phoneDups,
+         by_display_name: [],
+         by_external_id: [],
+         multiple_conversations_per_contact: convDups
+     });
+  } catch (error: any) {
+     res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/diagnostics/merge', async (req, res) => {
+  const supabase = getSupabase();
+  if (!supabase) return res.status(500).json({ error: 'DB no conectada' });
+
+  try {
+     let mergedContacts = 0;
+     let mergedConversations = 0;
+
+     // 1. Merge contacts
+     const { data: contacts } = await supabase.from('crm_contacts').select('id, primary_phone, display_name').order('created_at', { ascending: true });
+     if (contacts) {
+        const byPhoneOrName: any = {};
+        for(const c of contacts) {
+           let key = c.primary_phone ? c.primary_phone.replace(/\D/g, '') : null;
+           if (!key && c.display_name) key = 'name:' + c.display_name.trim().toLowerCase();
+           if (!key) continue;
+           if (!byPhoneOrName[key]) byPhoneOrName[key] = [];
+           byPhoneOrName[key].push(c);
+        }
+        for(const pKey in byPhoneOrName) {
+           const list = byPhoneOrName[pKey];
+           if (list.length > 1) {
+              const master = list[0];
+              const others = list.slice(1).map((x:any) => x.id);
+              await supabase.from('crm_messages').update({ contact_id: master.id }).in('contact_id', others);
+              await supabase.from('crm_contact_identities').update({ contact_id: master.id }).in('contact_id', others);
+              await supabase.from('crm_conversations').update({ contact_id: master.id }).in('contact_id', others);
+              await supabase.from('crm_contacts').delete().in('id', others);
+              mergedContacts += others.length;
+           }
+        }
+     }
+
+     // 2. Merge conversations
+     const { data: convs } = await supabase.from('crm_conversations').select('id, contact_id').eq('status', 'open').order('created_at', { ascending: false });
+     if (convs) {
+        const byContact: any = {};
+        for(const c of convs) {
+           if (!byContact[c.contact_id]) byContact[c.contact_id] = [];
+           byContact[c.contact_id].push(c);
+        }
+        for(const contactId in byContact) {
+           const list = byContact[contactId];
+           if (list.length > 1) {
+              const master = list[0];
+              const others = list.slice(1).map((x:any) => x.id);
+              await supabase.from('crm_messages').update({ conversation_id: master.id }).in('conversation_id', others);
+              await supabase.from('crm_conversations').update({ status: 'merged' }).in('id', others);
+              mergedConversations += others.length;
+           }
+        }
+     }
+
+     res.json({ success: true, mergedContacts, mergedConversations });
   } catch (error: any) {
      res.status(500).json({ error: error.message });
   }

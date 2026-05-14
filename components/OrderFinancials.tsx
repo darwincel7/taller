@@ -264,7 +264,7 @@ export const OrderFinancials: React.FC<OrderFinancialsProps> = ({
                   p_source_type: 'ORDER',
                   p_source_id: order.id,
                   p_reason: `Extracción para Orden #${order.readable_id || order.id.slice(0, 8)}`,
-                  p_user_id: userData.user?.id
+                  p_user_id: userData.user?.id || currentUser?.id || null
               });
 
               if (consumeErr) {

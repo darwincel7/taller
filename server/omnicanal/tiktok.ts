@@ -13,6 +13,15 @@ router.get('/oauth/start', (req, res) => {
    res.json({ success: true, url: oauthUrl });
 });
 
+router.get('/accounts', async (req, res) => {
+   const { getSupabase } = await import('../whatsapp');
+   const supabase = getSupabase();
+   if (!supabase) return res.status(500).json({ error: "DB error" });
+   
+   const { data } = await supabase.from('crm_channel_accounts').select('*').eq('channel', 'tiktok');
+   res.json({ success: true, accounts: data || [] });
+});
+
 router.get('/oauth/callback', async (req, res) => {
   const code = req.query.code as string;
   if (!code) return res.status(400).send("No code provided");

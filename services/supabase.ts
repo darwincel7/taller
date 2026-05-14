@@ -17,7 +17,7 @@ const getEnv = (key: string) => {
 // --- CREDENCIALES CONFIGURADAS ---
 // Hemos formateado el ID del proyecto como una URL válida de Supabase.
 const PROVIDED_URL = "https://ruwcektpadeqovwtdixd.supabase.co"; 
-const PROVIDED_KEY = getEnv('SUPABASE_ANON_KEY') || "";
+const PROVIDED_KEY = getEnv('SUPABASE_ANON_KEY') || "sb_publishable_FFOEpTNXpWSsQuJ3HosR-Q_QXNWnU4_";
 
 const envUrl = getEnv('SUPABASE_URL');
 const envKey = getEnv('SUPABASE_KEY') || getEnv('SUPABASE_ANON_KEY');
@@ -61,7 +61,7 @@ tempKey = tempKey.trim();
 // Supabase bloquea el uso de claves secretas (service_role) en el navegador por seguridad.
 // Si las variables de entorno de AI Studio tienen la clave secreta por error, forzamos la pública.
 if (typeof window !== 'undefined' && tempKey && tempKey.includes('secret')) {
-    tempKey = PROVIDED_KEY.trim();
+    tempKey = "sb_publishable_FFOEpTNXpWSsQuJ3HosR-Q_QXNWnU4_";
 }
 export const finalKey = tempKey;
 

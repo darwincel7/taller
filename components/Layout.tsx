@@ -79,6 +79,8 @@ const LayoutComponent: React.FC<LayoutProps> = ({ children }) => {
   const canSeeFinance = currentUser?.role === UserRole.ADMIN || currentUser?.role === UserRole.CASHIER || currentUser?.role === UserRole.MONITOR || currentUser?.permissions?.canDeliverOrder;
   const isTech = currentUser?.role === UserRole.TECHNICIAN;
 
+  const isCrmActive = location.pathname.startsWith('/crm') || location.pathname === '/omnicanal' || location.pathname === '/customers' || location.pathname === '/commissions';
+
   return (
     <div className="flex min-h-screen bg-slate-50 dark:bg-slate-950 transition-colors duration-200">
       
@@ -243,16 +245,41 @@ const LayoutComponent: React.FC<LayoutProps> = ({ children }) => {
 
           <div className="pt-3 pb-1 text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest pl-2">Operaciones</div>
           
-          <Link to="/customers" className={getNavLinkClass('/customers')}>
-            <Users className="w-4 h-4" />
-            Directorio Clientes
-          </Link>
+          {currentUser?.role !== UserRole.ADMIN && (
+            <Link to="/customers" className={getNavLinkClass('/customers')}>
+              <Users className="w-4 h-4" />
+              Directorio Clientes
+            </Link>
+          )}
 
           {currentUser?.role === UserRole.ADMIN && (
-            <Link to="/crm" className={getNavLinkClass('/crm')}>
-              <Users className="w-4 h-4" />
-              CRM & Marketing
-            </Link>
+            <div className="flex flex-col space-y-1">
+              <Link to="/crm" className={getNavLinkClass('/crm')}>
+                <div className="flex items-center justify-between w-full">
+                  <div className="flex items-center gap-3">
+                    <Users className="w-4 h-4" />
+                    CRM & Marketing
+                  </div>
+                  {isCrmActive ? <ChevronDown className="w-3 h-3" /> : <ChevronDown className="w-3 h-3 -rotate-90" />}
+                </div>
+              </Link>
+              {isCrmActive && (
+                <div className="flex flex-col space-y-1 pl-6 py-1 mx-2 relative before:absolute before:left-3 before:top-0 before:bottom-2 before:w-[2px] before:bg-slate-100 dark:before:bg-slate-800">
+                  <Link to="/customers" className={getNavLinkClass('/customers')}>
+                      <Users className="w-3 h-3" />
+                      Directorio Clientes
+                  </Link>
+                  <Link to="/omnicanal" className={getNavLinkClass('/omnicanal')}>
+                      <MessageSquare className="w-3 h-3" />
+                      Omnicanal
+                  </Link>
+                  <Link to="/commissions" className={getNavLinkClass('/commissions')}>
+                      <ShoppingBag className="w-3 h-3" />
+                      Comisiones
+                  </Link>
+                </div>
+              )}
+            </div>
           )}
           
           <div className="pt-3 pb-1 text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest pl-2">Herramientas</div>
@@ -305,14 +332,6 @@ const LayoutComponent: React.FC<LayoutProps> = ({ children }) => {
                 <Link to="/team" className={getNavLinkClass('/team')}>
                     <Users className="w-4 h-4" />
                     Equipo
-                </Link>
-                <Link to="/commissions" className={getNavLinkClass('/commissions')}>
-                    <ShoppingBag className="w-4 h-4" />
-                    Comisiones
-                </Link>
-                <Link to="/omnicanal" className={getNavLinkClass('/omnicanal')}>
-                    <MessageSquare className="w-4 h-4" />
-                    Omnicanal
                 </Link>
                 {currentUser?.name?.includes('Darwin') || currentUser.email?.toLowerCase() === 'daruingmejia@gmail.com' ? (
                   <button 

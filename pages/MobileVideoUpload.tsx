@@ -1,10 +1,13 @@
 import React, { useState, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
-import { Camera, CheckCircle2, Loader2, UploadCloud } from 'lucide-react';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import { Camera, CheckCircle2, Loader2, UploadCloud, Smartphone } from 'lucide-react';
 import { supabase, getCleanStorageUrl } from '../services/supabase';
 
 export const MobileVideoUpload: React.FC = () => {
   const { sessionId } = useParams<{ sessionId: string }>();
+  const [searchParams] = useSearchParams();
+  const uploadType = searchParams.get('type') || 'receipt';
+  const isDevice = uploadType === 'device';
   const navigate = useNavigate();
   const [isUploading, setIsUploading] = useState(false);
   const [isSuccess, setIsSuccess] = useState(false);
@@ -82,17 +85,35 @@ export const MobileVideoUpload: React.FC = () => {
         .from('receipts')
         .getPublicUrl(fileName);
 
-      // 4. Trigger PC via floating_expenses dummy record
-      const { error: insertError } = await supabase
-        .from('floating_expenses')
-        .insert({
-          description: 'RECEIPT_UPLOAD_TRIGGER',
-          amount: 0,
-          shared_receipt_id: sessionId,
-          receipt_url: getCleanStorageUrl(publicUrlData.publicUrl)
-        });
+      const publicUrl = getCleanStorageUrl(publicUrlData.publicUrl);
 
-      if (insertError) throw insertError;
+      // 3.5 Broadcast to generic upload channel (for inventory/devices etc)
+      const channel = supabase.channel(`upload_${sessionId}`);
+      await channel.send({
+        type: 'broadcast',
+        event: 'image_uploaded',
+        payload: { imageUrl: publicUrl, url: publicUrl }
+      });
+      await channel.send({
+        type: 'broadcast',
+        event: 'upload_complete',
+        payload: { imageUrl: publicUrl, url: publicUrl }
+      });
+      setTimeout(() => supabase.removeChannel(channel), 1000);
+
+      if (!isDevice) {
+        // 4. Trigger PC via floating_expenses dummy record
+        const { error: insertError } = await supabase
+          .from('floating_expenses')
+          .insert({
+            description: 'RECEIPT_UPLOAD_TRIGGER',
+            amount: 0,
+            shared_receipt_id: sessionId,
+            receipt_url: getCleanStorageUrl(publicUrlData.publicUrl)
+          });
+  
+        if (insertError) throw insertError;
+      }
 
       setIsSuccess(true);
       setTimeout(() => {
@@ -113,7 +134,9 @@ export const MobileVideoUpload: React.FC = () => {
         <div className="bg-green-100 p-6 rounded-full mb-6">
           <CheckCircle2 className="w-20 h-20 text-green-600" />
         </div>
-        <h1 className="text-3xl font-black text-slate-800 mb-2 tracking-tight">¡Factura Subida!</h1>
+        <h1 className="text-3xl font-black text-slate-800 mb-2 tracking-tight">
+          {isDevice ? '¡Foto Subida!' : '¡Factura Subida!'}
+        </h1>
         <p className="text-slate-500 text-lg">Puede continuar en la computadora.</p>
         <p className="text-slate-400 text-sm mt-8">Ya puede cerrar esta pestaña.</p>
       </div>
@@ -124,10 +147,14 @@ export const MobileVideoUpload: React.FC = () => {
     <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center p-6 text-center">
       <div className="bg-slate-800 p-8 rounded-3xl shadow-2xl max-w-sm w-full border border-slate-700">
         <div className="bg-blue-500/10 p-4 rounded-full w-20 h-20 mx-auto mb-6 flex items-center justify-center">
-          <UploadCloud className="w-10 h-10 text-blue-400" />
+          {isDevice ? <Smartphone className="w-10 h-10 text-blue-400" /> : <UploadCloud className="w-10 h-10 text-blue-400" />}
         </div>
-        <h1 className="text-2xl font-black text-white mb-2 tracking-tight">Subir Factura</h1>
-        <p className="text-slate-400 text-sm mb-8">Tome una foto clara de la factura para adjuntarla a los gastos.</p>
+        <h1 className="text-2xl font-black text-white mb-2 tracking-tight">
+          {isDevice ? 'Foto del Equipo' : 'Subir Factura'}
+        </h1>
+        <p className="text-slate-400 text-sm mb-8">
+          {isDevice ? 'Tome una foto clara del equipo para la base de datos.' : 'Tome una foto clara de la factura para adjuntarla a los gastos.'}
+        </p>
 
         <input 
           type="file" 

@@ -255,8 +255,8 @@ export const InventoryProvider: React.FC<{ children: ReactNode }> = ({ children 
           p_source_type: orderId ? 'ORDER' : 'MANUAL',
           p_source_id: orderId || null,
           p_reason: `Consumo para ${orderDetails || 'operación general'}`,
-          p_user_id: user?.id,
-          p_order_details: orderDetails
+          p_user_id: user?.id || null,
+          p_order_details: orderDetails || null
       });
 
       if (error) {

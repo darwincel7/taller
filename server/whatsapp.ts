@@ -847,13 +847,20 @@ export async function connectToWhatsApp(manual = false) {
                text = msg.message?.imageMessage?.caption || '';
             }
 
+            const isGroup = senderJid?.endsWith('@g.us');
+            if (isGroup) {
+               console.log('[WA] Ignorando mensaje de grupo:', senderJid);
+               return;
+            }
+            const actualSenderJid = senderJid;
+
             // Normalizamos para pipeline
             const normalized = {
                channel: 'whatsapp' as const,
                channelAccountId: 'default', // O numero de empresa si soportan varios
-               externalConversationId: senderJid,
+               externalConversationId: senderJid, // Mantener conversacion en el grupo (o private si es private)
                externalMessageId: messageId,
-               externalSenderId: senderJid,
+               externalSenderId: actualSenderJid,
                senderName: msg.pushName || '',
                text: text,
                messageType: type as any,

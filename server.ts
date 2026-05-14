@@ -217,9 +217,6 @@ async function startServer() {
       const inputUrl = req.headers['x-supabase-url'] || process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
       const supabaseUrl = normalizeSupabaseUrl(inputUrl);
       let supabaseRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY;
-      if (process.env.NODE_ENV !== 'production' && !supabaseRoleKey) {
-          supabaseRoleKey = process.env.VITE_SUPABASE_ANON_KEY ;
-      }
       if (!supabaseRoleKey) {
           return res.status(500).json({ error: 'Configuración insegura. Falta SUPABASE_SERVICE_ROLE_KEY en entorno de producción.' });
       }
@@ -276,9 +273,6 @@ async function startServer() {
       const { createClient } = await import('@supabase/supabase-js');
       const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || "https://ruwcektpadeqovwtdixd.supabase.co";
       let supabaseRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY;
-      if (process.env.NODE_ENV !== 'production' && !supabaseRoleKey) {
-          supabaseRoleKey = process.env.VITE_SUPABASE_ANON_KEY ;
-      }
       if (!supabaseRoleKey) {
           return res.status(500).json({ success: false, error: 'Configuración insegura. Falta SUPABASE_SERVICE_ROLE_KEY.' });
       }

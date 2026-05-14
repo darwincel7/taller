@@ -51,6 +51,89 @@ export async function startJobWorkers() {
   }, 10000); // Check every 10 seconds
 }
 
+export async function resolveContactIdentity(msg: NormalizedIncomingMessage) {
+  const supabase = getSupabase();
+  if (!supabase) throw new Error('No DB');
+
+  let phone = null;
+  const rawId = msg.externalSenderId || '';
+  
+  // Extract canonical phone if possible
+  const cleanNum = rawId.replace(/\D/g, '');
+  if (cleanNum && cleanNum.length >= 10) {
+     if (cleanNum.match(/^(1)?(809|829|849)\d{7}$/)) {
+        phone = cleanNum.length === 10 ? '1' + cleanNum : cleanNum;
+     } else if (cleanNum.length >= 10) {
+        phone = cleanNum; // other country codes
+     }
+  }
+
+  // Fallback check in raw data (e.g. senderPn, participant)
+  const raw = msg.raw || {};
+  const participant = raw.key?.participant || raw.participant;
+  const participantAlt = raw.key?.participantAlt || raw.participantAlt;
+  const senderPn = raw.key?.senderPn || raw.senderPn;
+  const remoteJidAlt = raw.key?.remoteJidAlt || raw.remoteJidAlt;
+  
+  if (!phone && (participant || participantAlt || senderPn || remoteJidAlt)) {
+      const altNum = (participantAlt || participant || senderPn || remoteJidAlt).replace(/\D/g, '');
+      if (altNum && altNum.length >= 10) phone = altNum.length === 10 && altNum.match(/^(809|829|849)\d{7}$/) ? '1' + altNum : altNum;
+  }
+
+  let contactId = null;
+
+  // 1. Find by exact channel + external_id
+  const { data: exactIdentity } = await supabase.from('crm_contact_identities')
+    .select('contact_id').eq('channel', msg.channel).eq('external_id', msg.externalSenderId).limit(1).maybeSingle();
+  if (exactIdentity) contactId = exactIdentity.contact_id;
+
+  // 2. If not found, try by canonical phone
+  if (!contactId && phone) {
+      const { data: phoneIdentity } = await supabase.from('crm_contact_identities')
+        .select('contact_id').eq('phone', phone).limit(1).maybeSingle();
+      if (phoneIdentity) contactId = phoneIdentity.contact_id;
+      
+      if (!contactId) {
+         const { data: primaryContact } = await supabase.from('crm_contacts')
+            .select('id').eq('primary_phone', phone).limit(1).maybeSingle();
+         if (primaryContact) contactId = primaryContact.id;
+      }
+  }
+
+  // 3. Create if not found
+  if (!contactId) {
+      const { data: newContact, error: contactError } = await supabase
+        .from('crm_contacts')
+        .insert({
+          display_name: msg.senderName || msg.username || msg.externalSenderId,
+          primary_phone: phone,
+          source_first_seen: msg.channel
+        })
+        .select('id')
+        .single();
+        
+      if (contactError) throw contactError;
+      contactId = newContact.id;
+  }
+
+  // Upsert Identity
+  if (!exactIdentity) {
+      await supabase.from('crm_contact_identities').insert({
+          contact_id: contactId,
+          channel: msg.channel,
+          external_id: msg.externalSenderId,
+          phone: phone || null,
+          display_name: msg.senderName,
+          username: msg.username,
+          raw: msg.raw
+      });
+  } else if (phone) {
+      await supabase.from('crm_contact_identities').update({ phone }).eq('channel', msg.channel).eq('external_id', msg.externalSenderId);
+  }
+
+  return contactId;
+}
+
 export async function processIncomingMessage(msg: NormalizedIncomingMessage) {
   const supabase = getSupabase();
   if (!supabase) return;
@@ -61,70 +144,47 @@ export async function processIncomingMessage(msg: NormalizedIncomingMessage) {
       .select('id')
       .eq('channel', msg.channel)
       .eq('external_message_id', msg.externalMessageId)
-      .single();
+      .limit(1)
+      .maybeSingle();
 
     if (existingMsg) {
       console.log(`[Omnicanal Pipeline] Ignorando mensaje duplicado ${msg.externalMessageId}`);
       return;
     }
 
-    // 2. Busca o crea contacto e identidad
-    let contactId = null;
+    // 2. Busca o crea contacto e identidad (Fase 2)
+    const contactId = await resolveContactIdentity(msg);
 
-    const { data: existingIdentity } = await supabase
-      .from('crm_contact_identities')
-      .select('contact_id')
-      .eq('channel', msg.channel)
-      .eq('external_id', msg.externalSenderId)
-      .single();
-
-    if (existingIdentity) {
-      contactId = existingIdentity.contact_id;
-    } else {
-      // Crear nuevo contacto
-      const { data: newContact, error: contactError } = await supabase
-        .from('crm_contacts')
-        .insert({
-          display_name: msg.senderName || msg.username || msg.externalSenderId,
-          source_first_seen: msg.channel
-        })
-        .select('id')
-        .single();
-        
-      if (contactError) throw contactError;
-      contactId = newContact.id;
-
-      // Crear nueva identidad
-      await supabase
-        .from('crm_contact_identities')
-        .insert({
-          contact_id: contactId,
-          channel: msg.channel,
-          external_id: msg.externalSenderId,
-          display_name: msg.senderName,
-          username: msg.username,
-          raw: msg.raw
-        });
-    }
-
-    // 3. Busca o crea conversacion (solo por contact_id, no se pide canal)
+    // 3. Busca conversacion abierta por contact_id primero (Fase 3)
     let conversationId = null;
-    const { data: existingConv } = await supabase
-      .from('crm_conversations')
-      .select('id, assigned_to')
-      .eq('contact_id', contactId)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .single();
+    let existingConv = null;
 
-    if (existingConv) {
+    const { data: openConvs } = await supabase
+      .from('crm_conversations')
+      .select('id, assigned_to, created_at, unread_count')
+      .eq('contact_id', contactId)
+      .eq('status', 'open')
+      .order('created_at', { ascending: false });
+
+    if (openConvs && openConvs.length > 0) {
+      existingConv = openConvs[0];
       conversationId = existingConv.id;
+      
+      // Merge si hay varias
+      if (openConvs.length > 1) {
+         const masterId = conversationId;
+         const toMerge = openConvs.slice(1).map(c => c.id);
+         
+         await supabase.from('crm_messages').update({ conversation_id: masterId }).in('conversation_id', toMerge);
+         await supabase.from('crm_conversations').update({ status: 'merged', updated_at: new Date().toISOString() }).in('id', toMerge);
+      }
+      
       // Actualizar ultima interacción y cambiar el active_channel al canal del ultimo msj
       await supabase.from('crm_conversations').update({
         last_message: msg.text || `[${msg.messageType}]`,
         last_message_at: msg.createdAt,
-        status: 'open',
-        active_channel: msg.channel
+        active_channel: msg.channel,
+        unread_count: (existingConv.unread_count || 0) + 1
       }).eq('id', conversationId);
       
       await supabase.from('crm_contacts').update({
@@ -139,7 +199,8 @@ export async function processIncomingMessage(msg: NormalizedIncomingMessage) {
           active_channel: msg.channel,
           last_message: msg.text || `[${msg.messageType}]`,
           last_message_at: msg.createdAt,
-          source: msg.channel
+          source: msg.channel,
+          unread_count: 1
         })
         .select('id, assigned_to')
         .single();
@@ -151,7 +212,7 @@ export async function processIncomingMessage(msg: NormalizedIncomingMessage) {
     // Get channel_account_id if we have channelAccountId from msg
     let internalChannelAccountId = null;
     if (msg.channelAccountId) {
-       const { data: acc } = await supabase.from('crm_channel_accounts').select('id').eq('external_account_id', msg.channelAccountId).single();
+       const { data: acc } = await supabase.from('crm_channel_accounts').select('id').eq('external_account_id', msg.channelAccountId).maybeSingle();
        if (acc) internalChannelAccountId = acc.id;
     }
 
@@ -171,7 +232,8 @@ export async function processIncomingMessage(msg: NormalizedIncomingMessage) {
         media_url: msg.mediaUrl,
         media_mime: msg.mediaMime,
         raw: msg.raw,
-        created_at: msg.createdAt
+        created_at: msg.createdAt,
+        status: 'received'
       })
       .select('id')
       .single();

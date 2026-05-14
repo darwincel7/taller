@@ -24,13 +24,13 @@ export const OmnicanalSettings: React.FC = () => {
          fetchWithAuth('/api/meta/accounts').catch(() => null),
          fetchWithAuth('/api/tiktok/accounts').catch(() => null)
       ]);
-      if (metaRes && metaRes.ok) {
+      if (metaRes && metaRes.ok && metaRes.headers.get('content-type')?.includes('application/json')) {
          const data = await metaRes.json();
-         if (data.success) setMetaAccounts(data.data);
+         if (data.success) setMetaAccounts(data.accounts || []);
       }
-      if (tiktokRes && tiktokRes.ok) {
+      if (tiktokRes && tiktokRes.ok && tiktokRes.headers.get('content-type')?.includes('application/json')) {
          const data = await tiktokRes.json();
-         if (data.success) setTiktokAccounts(data.data);
+         if (data.success) setTiktokAccounts(data.accounts || []);
       }
     } catch (e) {
       console.error(e);
@@ -41,11 +41,19 @@ export const OmnicanalSettings: React.FC = () => {
     try {
       const res = await fetchWithAuth('/api/meta/connect', { method: 'POST' });
       if (res.ok) {
-         const data = await res.json();
-         if (data.oauthUrl) window.location.href = data.oauthUrl;
+         const contentType = res.headers.get('content-type') || '';
+         if (contentType.includes('application/json')) {
+           const data = await res.json();
+           if (data.oauthUrl) window.location.href = data.oauthUrl;
+         }
       } else {
-        const err = await res.json();
-        alert(err.error || 'No autorizado');
+        const contentType = res.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+          const err = await res.json();
+          alert(err.error || 'No autorizado');
+        } else {
+          alert(`Error: ${res.status}`);
+        }
       }
     } catch(e) { console.error(e); }
   };
@@ -54,11 +62,19 @@ export const OmnicanalSettings: React.FC = () => {
     try {
       const res = await fetchWithAuth('/api/tiktok/oauth/start');
       if (res.ok) {
-         const data = await res.json();
-         if (data.url) window.location.href = data.url;
+         const contentType = res.headers.get('content-type') || '';
+         if (contentType.includes('application/json')) {
+           const data = await res.json();
+           if (data.url) window.location.href = data.url;
+         }
       } else {
-        const err = await res.json();
-        alert(err.error || 'No autorizado');
+        const contentType = res.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+          const err = await res.json();
+          alert(err.error || 'No autorizado');
+        } else {
+          alert(`Error: ${res.status}`);
+        }
       }
     } catch(e) { console.error(e); }
   };
@@ -87,10 +103,11 @@ export const OmnicanalSettings: React.FC = () => {
   const fetchAuditLogs = async () => {
     try {
       const res = await fetchWithAuth('/api/whatsapp/audit?limit=50');
-      if (!res.ok) return;
-      const data = await res.json();
-      if (data.success) {
-        setAuditLogs(data.data);
+      if (res.ok && res.headers.get('content-type')?.includes('application/json')) {
+        const data = await res.json();
+        if (data.success) {
+          setAuditLogs(data.data || []);
+        }
       }
     } catch (error) {
       console.warn('Error fetching audit logs', error);
@@ -191,13 +208,13 @@ export const OmnicanalSettings: React.FC = () => {
     }
   };
 
-  const hasDecryptionError = auditLogs.some(log => log.reason_to_ignore === 'decryption_error');
+  const hasDecryptionError = auditLogs?.some(log => log.reason_to_ignore === 'decryption_error') || false;
 
-  const filteredLogs = auditLogs.filter(log => {
+  const filteredLogs = auditLogs?.filter(log => {
       if (auditFilter === 'all') return true;
       if (auditFilter === 'decryption_error') return log.reason_to_ignore === 'decryption_error';
       return log.action === auditFilter;
-  });
+  }) || [];
 
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6">
@@ -386,14 +403,14 @@ export const OmnicanalSettings: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                {filteredLogs.length === 0 ? (
+                {filteredLogs?.length === 0 ? (
                   <tr>
                     <td colSpan={6} className="px-4 py-8 text-center text-slate-500">
                       No hay eventos recientes {auditFilter !== 'all' ? `para el filtro: ${auditFilter}` : ''}
                     </td>
                   </tr>
                 ) : (
-                  filteredLogs.map(log => (
+                  filteredLogs?.map(log => (
                     <tr key={log.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
                       <td className="px-4 py-2 text-slate-600 dark:text-slate-300">
                         {new Date(log.created_at).toLocaleTimeString()}
@@ -446,11 +463,11 @@ export const OmnicanalSettings: React.FC = () => {
               Recibe y responde mensajes de tu Página de Facebook y cuenta Business de Instagram directamente desde el Inbox.
            </p>
            
-           {metaAccounts.length > 0 ? (
+           {metaAccounts?.length > 0 ? (
              <div className="space-y-4 mb-6">
-               <h3 className="font-semibold text-sm text-slate-800 dark:text-slate-200">Cuentas Conectadas ({metaAccounts.length})</h3>
+               <h3 className="font-semibold text-sm text-slate-800 dark:text-slate-200">Cuentas Conectadas ({metaAccounts?.length || 0})</h3>
                <div className="flex flex-col gap-2">
-                 {metaAccounts.map(acc => (
+                 {metaAccounts?.map(acc => (
                    <div key={acc.id} className="flex flex-row items-center justify-between bg-slate-50 dark:bg-slate-800 p-3 rounded-lg border border-slate-100 dark:border-slate-700">
                      <div className="flex items-center gap-2">
                        <CheckCircle2 className="w-4 h-4 text-green-500" />
@@ -467,7 +484,7 @@ export const OmnicanalSettings: React.FC = () => {
              onClick={handleConnectMeta}
              className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-medium transition-colors"
            >
-             {metaAccounts.length > 0 ? "Vincular otra cuenta" : "Vincular con Meta"}
+             {metaAccounts?.length > 0 ? "Vincular otra cuenta" : "Vincular con Meta"}
            </button>
         </div>
 
@@ -481,11 +498,11 @@ export const OmnicanalSettings: React.FC = () => {
               Recibe notificaciones de comentarios. Nota: La opción de envío de DM directos no está disponible por políticas de API de TikTok.
            </p>
 
-           {tiktokAccounts.length > 0 ? (
+           {tiktokAccounts?.length > 0 ? (
              <div className="space-y-4 mb-6">
-               <h3 className="font-semibold text-sm text-slate-800 dark:text-slate-200">Cuentas Conectadas ({tiktokAccounts.length})</h3>
+               <h3 className="font-semibold text-sm text-slate-800 dark:text-slate-200">Cuentas Conectadas ({tiktokAccounts?.length || 0})</h3>
                <div className="flex flex-col gap-2">
-                 {tiktokAccounts.map(acc => (
+                 {tiktokAccounts?.map(acc => (
                    <div key={acc.id} className="flex flex-row items-center justify-between bg-slate-50 dark:bg-slate-800 p-3 rounded-lg border border-slate-100 dark:border-slate-700">
                      <div className="flex items-center gap-2">
                        <CheckCircle2 className="w-4 h-4 text-green-500" />
@@ -502,7 +519,7 @@ export const OmnicanalSettings: React.FC = () => {
              onClick={handleConnectTikTok}
              className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-slate-900 hover:bg-slate-800 dark:bg-white dark:text-slate-900 dark:hover:bg-slate-200 text-white rounded-xl font-medium transition-colors"
            >
-             {tiktokAccounts.length > 0 ? "Vincular otra cuenta" : "Vincular con TikTok"}
+             {tiktokAccounts?.length > 0 ? "Vincular otra cuenta" : "Vincular con TikTok"}
            </button>
         </div>
       </div>

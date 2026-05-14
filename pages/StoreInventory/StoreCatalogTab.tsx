@@ -448,6 +448,17 @@ export const StoreCatalogTab = () => {
                                   <tr>
                                     <td colSpan={3} className="p-0 border-b border-slate-200 bg-slate-50/80 shadow-inner">
                                       <div className="p-3">
+                                         <div className="flex justify-between items-center mb-3 px-1">
+                                             <h4 className="font-bold text-slate-500 text-[10px] uppercase tracking-wider">Unidades de este modelo</h4>
+                                             {canManageInv && (
+                                                 <button 
+                                                    onClick={(e) => { e.stopPropagation(); setItemModalProductId(product.id); }}
+                                                    className="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all flex items-center gap-1.5 shadow-sm shadow-indigo-600/20 active:scale-95"
+                                                 >
+                                                    <Plus className="w-3.5 h-3.5" /> Añadir Nueva Unidad
+                                                 </button>
+                                             )}
+                                         </div>
                                          {productItems.length === 0 ? (
                                             <div className="text-center py-4 text-slate-400 text-xs font-bold bg-white rounded-xl border border-dashed border-slate-200">
                                               No hay equipos registrados.
