@@ -23,6 +23,14 @@ const CashRegisterComponent: React.FC = () => {
   const { performCashClosing, getCashierDebtLogs, payCashierDebt, getCashClosings, deleteCashClosing, updateCashClosing, forceClearPendingPayments, getClosingDetails, editClosedPayment } = useCash();
   const { users, currentUser } = useAuth();
   
+  const getCashierName = (cashierId: string | undefined, fallbackName: string | undefined) => {
+    if (!cashierId) return fallbackName || 'Cajero';
+    const user = users.find(u => u.id === cashierId);
+    if (user) return user.name;
+    if (fallbackName === 'Cajero POS' || fallbackName === 'Cajero') return 'Sistema POS';
+    return fallbackName || 'Cajero';
+  };
+  
   // View State
   const [activeTab, setActiveTab] = useState<'DAILY' | 'DEBTS' | 'HISTORY' | 'APPROVALS' | 'CREDITS' | 'TRANSACTIONS'>('DAILY');
 
@@ -44,11 +52,59 @@ const CashRegisterComponent: React.FC = () => {
   const [legacyPayments, setLegacyPayments] = useState<FlatPayment[]>([]);
   const [isConsolidatingLegacy, setIsConsolidatingLegacy] = useState(false);
 
+  const handleViewTransaction = async (tx: any) => {
+      // Si es una orden de taller
+      if (tx.source_type === 'ORDER') {
+          navigate(`/orders/${tx.order_id}`);
+          return;
+      }
+      
+      // Si es un producto / POS y tenemos su source ID
+      if (tx.source_type === 'CASH_LEDGER') {
+        const w = window.open('about:blank', '_blank') || null;
+        if (!w) {
+            showNotification('error', 'Por favor permite ventanas emergentes para ver la factura.');
+            return;
+        }
+        
+        try {
+            // Obtener los detalles de la venta y los items
+            const { data: sale } = await supabase.from('pos_sales').select('*').eq('id', tx.order_id).single();
+            const { data: items } = await supabase.from('pos_sale_items').select('*').eq('sale_id', tx.order_id);
+            
+            const dummyOrder: any = {
+                id: tx.order_id,
+                readable_id: sale?.readable_id ? `POS-${sale.readable_id}` : `POS-${tx.order_id.slice(0,4)}`,
+                customer: typeof sale?.customer_data === 'object' && sale?.customer_data ? sale.customer_data : { name: 'Cliente POS', phone: 'S/N' },
+                deviceModel: tx.order_model || 'Venta POS',
+                orderType: 'PART_ONLY',
+                totalAmount: Math.abs(tx.amount),
+                payments: [{ method: tx.method, amount: Math.abs(tx.amount) }],
+                expenses: items && items.length > 0 
+                    ? items.map((i:any) => ({ description: `${i.quantity}x ${i.product_name}`, cost: i.unit_price, price: i.unit_price * i.quantity }))
+                    : [{ description: tx.order_model || 'Venta POS', cost: Math.abs(tx.amount), price: Math.abs(tx.amount) }],
+                status: 'RETURNED'
+            };
+            
+            const { printInvoice } = await import('../services/invoiceService');
+            printInvoice(dummyOrder, w, 'FINAL');
+        } catch (error) {
+            console.error('Error fetching POST receipt data', error);
+            w.close();
+            showNotification('error', 'No se pudo generar la factura');
+        }
+        return;
+      }
+      
+      // Si es otro tipo (Gasto, Floating, etc) y no podemos ver la orden, redirigir al detalle de Gasto
+      showNotification('error', 'No hay factura para este tipo de movimiento (ej: gasto interno)');
+  };
+
   const handleConsolidateLegacy = async () => {
     if (!currentUser || legacyPayments.length === 0) return;
     
     const cashierNames = Array.from(new Set(
-        legacyPayments.map(p => p.cashier_name || p.cashier_id || 'Desconocido')
+        legacyPayments.map(p => getCashierName(p.cashier_id, p.cashier_name))
     ));
     const branches = Array.from(new Set(
         legacyPayments.map(p => p.order_branch || (p as any).branch || 'T4')
@@ -70,12 +126,17 @@ const CashRegisterComponent: React.FC = () => {
           setIsConsolidatingLegacy(true);
           try {
               const legacyIds = legacyPayments.map(p => getPaymentId(p));
-              const closingId = `close-legacy-${Date.now()}`;
-              
-              const { data, error } = await supabase.rpc('consolidate_legacy_payments', {
+              const closingId = crypto.randomUUID();
+
+              const { data, error } = await supabase.rpc('perform_robust_closing', {
                   p_closing_id: closingId,
+                  p_cashier_ids: 'Historico Multiple',
                   p_admin_id: currentUser.id,
-                  p_total: totalAmount,
+                  p_system_total: totalAmount,
+                  p_actual_total: totalAmount,
+                  p_difference: 0,
+                  p_timestamp: Date.now(),
+                  p_notes: 'Limpieza Histórica Consolidada',
                   p_payment_ids: legacyIds
               });
 
@@ -938,7 +999,7 @@ const CashRegisterComponent: React.FC = () => {
           method: p.method,
           date: p.date,
           cashierId: p.cashier_id,
-          cashierName: p.cashier_name,
+          cashierName: getCashierName(p.cashier_id, p.cashier_name),
           orderId: p.order_id,
           orderModel: p.order_model,
           orderReadableId: p.order_readable_id
@@ -1225,7 +1286,7 @@ const CashRegisterComponent: React.FC = () => {
                                                 <div>
                                                     <p className="text-sm font-bold text-slate-800 mb-0.5">Orden #{displayId}</p>
                                                     <div className="flex items-center gap-2 text-xs font-medium text-slate-500">
-                                                        <span className="flex items-center gap-1"><User className="w-3 h-3"/> {p.cashier_name}</span>
+                                                        <span className="flex items-center gap-1"><User className="w-3 h-3"/> {getCashierName(p.cashier_id, p.cashier_name)}</span>
                                                         <span>•</span>
                                                         <span>{dateStr}</span>
                                                     </div>
@@ -1535,7 +1596,7 @@ const CashRegisterComponent: React.FC = () => {
                                 const searchNum = idMatch ? idMatch[1] : term;
 
                                 const idStr = getPaymentId(p).toLowerCase();
-                                const cashierName = p.cashier_name?.toLowerCase() || '';
+                                const cashierName = getCashierName(p.cashier_id, p.cashier_name).toLowerCase();
                                 const orderIdStr = p.order_id?.toLowerCase() || '';
                                 const readableIdStr = p.order_readable_id?.toString().toLowerCase() || '';
                                 
@@ -1622,7 +1683,7 @@ const CashRegisterComponent: React.FC = () => {
                                                                     {isExpense ? 'Gasto' : isRefund ? 'Devolución' : 'Cobro'} #{displayId}
                                                                 </p>
                                                                 <p className="text-[11px] text-slate-500 font-medium truncate">
-                                                                    {p.cashier_name} • {p.order_branch || 'T4'}
+                                                                    {getCashierName(p.cashier_id, p.cashier_name)} • {p.order_branch || 'T4'}
                                                                 </p>
                                                             </div>
                                                             <div className="flex items-center gap-4">
@@ -2480,7 +2541,7 @@ const CashRegisterComponent: React.FC = () => {
                                                                 {displayModel && <span className="text-xs font-bold text-slate-400 truncate max-w-[150px] bg-slate-100 px-2 py-0.5 rounded-md">{displayModel}</span>}
                                                             </div>
                                                             <div className="text-[10px] font-bold text-slate-500 flex items-center gap-1 mt-1 uppercase tracking-wider">
-                                                                <User className="w-3 h-3" /> {p.cashier_name || 'Sistema'}
+                                                                <User className="w-3 h-3" /> {getCashierName(p.cashier_id, p.cashier_name)}
                                                             </div>
                                                         </div>
                                                     </div>
@@ -2596,12 +2657,12 @@ const CashRegisterComponent: React.FC = () => {
                         <div className="flex gap-3 pt-2">
                             <button 
                                 onClick={() => {
+                                    handleViewTransaction(selectedPaymentDetails);
                                     setSelectedPaymentDetails(null);
-                                    navigate(`/orders/${selectedPaymentDetails.order_id}`);
                                 }}
                                 className="flex-1 py-4 bg-blue-500 text-white rounded-2xl font-black shadow-lg shadow-blue-500/30 hover:bg-blue-600 hover:shadow-blue-500/50 transition-all active:scale-95 flex items-center justify-center gap-2 text-sm uppercase tracking-wider"
                             >
-                                <ExternalLink className="w-4 h-4"/> Ver Orden Completa
+                                <ExternalLink className="w-4 h-4"/> Ver Orden / Factura
                             </button>
                         </div>
                     </div>
@@ -2717,12 +2778,12 @@ const CashRegisterComponent: React.FC = () => {
                             <div className="flex gap-3 pt-2">
                                 <button 
                                     onClick={() => {
+                                        handleViewTransaction(selectedTransaction);
                                         setSelectedTransaction(null);
-                                        navigate(`/orders/${selectedTransaction.order_id}`);
                                     }}
                                     className="flex-1 py-4 bg-blue-500 text-white rounded-2xl font-black shadow-lg shadow-blue-500/30 hover:bg-blue-600 hover:shadow-blue-500/50 transition-all active:scale-95 flex items-center justify-center gap-2 text-sm uppercase tracking-wider"
                                 >
-                                    <ExternalLink className="w-4 h-4"/> Ver Orden Completa
+                                    <ExternalLink className="w-4 h-4"/> Ver Orden / Factura
                                 </button>
                             </div>
                         )}

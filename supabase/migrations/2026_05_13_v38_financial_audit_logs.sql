@@ -1,123 +1,130 @@
--- Migration V38: Certificacion y Blindaje
--- 1. Crear tabla central de auditoría financiera
-CREATE TABLE IF NOT EXISTS public.financial_audit_logs (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    event_type TEXT NOT NULL, -- 'SALE_CREATED', 'CREDIT_CREATED', 'CAMBIAZO_CREATED', 'EXPENSE_CREATED', 'CASH_REGISTER_CLOSED', 'REFUND_PROCESSED', 'RECONCILIATION_WARNING'
-    description TEXT,
-    amount NUMERIC DEFAULT 0,
-    branch_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    details JSONB DEFAULT '{}'::jsonb,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
+-- Fix for v_sales_unified missing expenses on workshop
 
--- Habilitar RLS
-ALTER TABLE public.financial_audit_logs ENABLE ROW LEVEL SECURITY;
+CREATE OR REPLACE VIEW public.v_sales_unified AS
+-- A. Ventas desde el POS Rápido
+SELECT 
+    ps.id::text as source_id,
+    'POS' as source_type,
+    ps.created_at,
+    COALESCE(ps.branch_id, 'T4') as branch,
+    ps.seller_id::text as user_id,
+    ps.total as gross_amount,
+    COALESCE((SELECT sum(total_cost) FROM public.pos_sale_items WHERE sale_id = ps.id), 0) as cost_amount,
+    ps.total - COALESCE((SELECT sum(total_cost) FROM public.pos_sale_items WHERE sale_id = ps.id), 0) as net_profit,
+    'Venta POS' as description,
+    ps.status,
+    ps.metadata->>'received_via' as special_type,
+    false as is_refund,
+    NULL as order_id
+FROM 
+    public.pos_sales ps
+WHERE 
+    ps.status = 'completed'
 
--- Politicas
-DROP POLICY IF EXISTS "Enable read access for authenticated users on financial audit" ON public.financial_audit_logs;
-CREATE POLICY "Enable read access for authenticated users on financial audit" 
-ON public.financial_audit_logs FOR SELECT 
-TO authenticated 
-USING (true);
+UNION ALL
 
-DROP POLICY IF EXISTS "Enable insert access for authenticated users on financial audit" ON public.financial_audit_logs;
-CREATE POLICY "Enable insert access for authenticated users on financial audit" 
-ON public.financial_audit_logs FOR INSERT 
-TO authenticated 
-WITH CHECK (true);
+-- B. Pagos de Órdenes de Taller (Workshop Revenue)
+SELECT 
+    op.id::text as source_id,
+    'WORKSHOP' as source_type,
+    to_timestamp(op.created_at / 1000.0) as created_at,
+    COALESCE(o."currentBranch", 'T4') as branch,
+    op.cashier_id as user_id,
+    op.amount as gross_amount,
+    -- Estimar costo proporcional del ticket (incluye gastos externos del array + partsCost)
+    CASE 
+        WHEN COALESCE(o."finalPrice", 0) > 0 THEN 
+            (op.amount / o."finalPrice") * (
+                COALESCE(o."partsCost", 0) + 
+                COALESCE(
+                  (SELECT sum((e->>'amount')::numeric) 
+                   FROM jsonb_array_elements(
+                     CASE 
+                       WHEN jsonb_typeof(o.expenses) = 'array' THEN o.expenses 
+                       ELSE '[]'::jsonb 
+                     END
+                   ) AS e)
+                , 0)
+            )
+        ELSE 0
+    END as cost_amount,
+    op.amount - (CASE WHEN COALESCE(o."finalPrice", 0) > 0 THEN 
+        (op.amount / o."finalPrice") * (
+            COALESCE(o."partsCost", 0) + 
+            COALESCE(
+              (SELECT sum((e->>'amount')::numeric) 
+               FROM jsonb_array_elements(
+                 CASE 
+                   WHEN jsonb_typeof(o.expenses) = 'array' THEN o.expenses 
+                   ELSE '[]'::jsonb 
+                 END
+               ) AS e)
+            , 0)
+        )
+    ELSE 0 END) as net_profit,
+    'Pago Taller: ' || COALESCE(o."deviceModel", 'Equipo') || ' (#' || o.readable_id || ')' as description,
+    'completed' as status,
+    NULL as special_type,
+    false as is_refund,
+    o.id as order_id
+FROM 
+    public.order_payments op
+JOIN 
+    public.orders o ON op.order_id = o.id
+WHERE 
+    NOT op.is_refund
 
--- 2. Función genérica para registrar auditoría financiera
-CREATE OR REPLACE FUNCTION public.log_financial_audit(
-    p_event_type TEXT,
-    p_description TEXT,
-    p_amount NUMERIC,
-    p_branch_id TEXT,
-    p_user_id TEXT,
-    p_details JSONB DEFAULT '{}'::jsonb
-) RETURNS UUID AS $$
-DECLARE
-    v_id UUID;
-BEGIN
-    INSERT INTO public.financial_audit_logs (event_type, description, amount, branch_id, user_id, details)
-    VALUES (p_event_type, p_description, p_amount, p_branch_id, p_user_id, p_details)
-    RETURNING id INTO v_id;
-    
-    RETURN v_id;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+UNION ALL
 
--- 3. Trigger para ventas (Checkout / POS)
-CREATE OR REPLACE FUNCTION public.trg_audit_order_payment()
-RETURNS TRIGGER AS $$
-BEGIN
-    IF TG_OP = 'INSERT' THEN
-        -- Es un pago u orden en caja
-        -- En ventas unificadas consideramos order_payments y cash_movements
-        IF NEW.amount > 0 AND NOT COALESCE(NEW.is_refund, false) THEN
-             PERFORM public.log_financial_audit('SALE_PAID'::TEXT, ('Pago de orden/venta POS recibida: ' || COALESCE(NEW.method, 'CASH'))::TEXT, NEW.amount::NUMERIC, ''::TEXT, NEW."cashierId"::TEXT, jsonb_build_object('order_id', NEW.order_id, 'payment_id', NEW.id, 'method', NEW.method));
-        ELSIF NEW.amount < 0 OR NEW.is_refund THEN
-             PERFORM public.log_financial_audit('REFUND_PROCESSED'::TEXT, ('Reembolso procesado en orden: ' || COALESCE(NEW.method, 'CASH'))::TEXT, NEW.amount::NUMERIC, ''::TEXT, NEW."cashierId"::TEXT, jsonb_build_object('order_id', NEW.order_id, 'payment_id', NEW.id, 'method', NEW.method));
-        END IF;
-    END IF;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+-- C. Reembolsos (Refunds)
+SELECT 
+    op.id::text as source_id,
+    'WORKSHOP_REFUND' as source_type,
+    to_timestamp(op.created_at / 1000.0) as created_at,
+    COALESCE(o."currentBranch", 'T4') as branch,
+    op.cashier_id as user_id,
+    -abs(op.amount) as gross_amount, -- Es negativo para ventas
+    CASE 
+        WHEN COALESCE(o."finalPrice", 0) > 0 THEN 
+            -(op.amount / o."finalPrice") * (
+                COALESCE(o."partsCost", 0) + 
+                COALESCE(
+                  (SELECT sum((e->>'amount')::numeric) 
+                   FROM jsonb_array_elements(
+                     CASE 
+                       WHEN jsonb_typeof(o.expenses) = 'array' THEN o.expenses 
+                       ELSE '[]'::jsonb 
+                     END
+                   ) AS e)
+                , 0)
+            )
+        ELSE 0
+    END as cost_amount,
+    -abs(op.amount) - (CASE WHEN COALESCE(o."finalPrice", 0) > 0 THEN 
+        -(op.amount / o."finalPrice") * (
+            COALESCE(o."partsCost", 0) + 
+            COALESCE(
+              (SELECT sum((e->>'amount')::numeric) 
+               FROM jsonb_array_elements(
+                 CASE 
+                   WHEN jsonb_typeof(o.expenses) = 'array' THEN o.expenses 
+                   ELSE '[]'::jsonb 
+                 END
+               ) AS e)
+            , 0)
+        )
+    ELSE 0 END) as net_profit,
+    'Reembolso Taller: ' || COALESCE(o."deviceModel", 'Equipo') || ' (#' || o.readable_id || ')' as description,
+    'completed' as status,
+    NULL as special_type,
+    true as is_refund,
+    o.id as order_id
+FROM 
+    public.order_payments op
+JOIN 
+    public.orders o ON op.order_id = o.id
+WHERE 
+    op.is_refund;
 
-DROP TRIGGER IF EXISTS trigger_audit_order_payment ON public.order_payments;
--- Not attaching trigger directly to avoid recursive calls and overhead when we process many rows. Instead, we can add it to the RPCs or add explicit calls.
-
--- Dado que estamos limitados con triggers sin contexto (branch), es mejor usar un trigger a nivel cash_movements
-CREATE OR REPLACE FUNCTION public.trg_audit_cash_movement()
-RETURNS TRIGGER AS $$
-BEGIN
-    IF NEW.movement_type LIKE '%SALE%' THEN
-        PERFORM public.log_financial_audit('SALE_CREATED'::TEXT, ('Movimiento de Venta/Ingreso: ' || coalesce(NEW.description, ''))::TEXT, NEW.amount::NUMERIC, NEW.branch::TEXT, COALESCE(NEW.user_id, 'system')::TEXT, jsonb_build_object('movement_type', NEW.movement_type, 'id', NEW.id));
-    ELSIF NEW.movement_type LIKE '%EXPENSE%' OR NEW.movement_type = 'MANUAL_OUT' THEN
-        PERFORM public.log_financial_audit('EXPENSE_CREATED'::TEXT, ('Movimiento de Gasto/Salida: ' || coalesce(NEW.description, ''))::TEXT, NEW.amount::NUMERIC, NEW.branch::TEXT, COALESCE(NEW.user_id, 'system')::TEXT, jsonb_build_object('movement_type', NEW.movement_type, 'id', NEW.id));
-    ELSIF NEW.movement_type LIKE '%CAMBIAZO%' THEN
-        PERFORM public.log_financial_audit('CAMBIAZO_CREATED'::TEXT, ('Cambiazo procesado: ' || coalesce(NEW.description, ''))::TEXT, NEW.amount::NUMERIC, NEW.branch::TEXT, COALESCE(NEW.user_id, 'system')::TEXT, jsonb_build_object('movement_type', NEW.movement_type, 'id', NEW.id));
-    ELSIF NEW.amount < 0 AND (NEW.description ILIKE '%dev%' OR NEW.description ILIKE '%refund%') THEN
-        PERFORM public.log_financial_audit('REFUND_PROCESSED'::TEXT, ('Devolucion de efectivo: ' || coalesce(NEW.description, ''))::TEXT, NEW.amount::NUMERIC, NEW.branch::TEXT, COALESCE(NEW.user_id, 'system')::TEXT, jsonb_build_object('movement_type', NEW.movement_type, 'id', NEW.id));
-    END IF;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
-
-DROP TRIGGER IF EXISTS trigger_audit_cash_movement ON public.cash_movements;
-CREATE TRIGGER trigger_audit_cash_movement
-AFTER INSERT ON public.cash_movements
-FOR EACH ROW EXECUTE FUNCTION public.trg_audit_cash_movement();
-
--- 4. Trigger para creditos
-CREATE OR REPLACE FUNCTION public.trg_audit_client_credits()
-RETURNS TRIGGER AS $$
-BEGIN
-    IF TG_OP = 'INSERT' THEN
-        PERFORM public.log_financial_audit('CREDIT_CREATED'::TEXT, 'Credito (fiao) creado'::TEXT, NEW.amount::NUMERIC, NEW.branch_id::TEXT, NEW.created_by::TEXT, jsonb_build_object('client_id', NEW.client_id, 'id', NEW.id));
-    END IF;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
-
-DROP TRIGGER IF EXISTS trigger_audit_client_credits ON public.client_credits;
-CREATE TRIGGER trigger_audit_client_credits
-AFTER INSERT ON public.client_credits
-FOR EACH ROW EXECUTE FUNCTION public.trg_audit_client_credits();
-
--- 5. Trigger para Cierres de caja
-CREATE OR REPLACE FUNCTION public.trg_audit_cash_closings()
-RETURNS TRIGGER AS $$
-BEGIN
-    IF TG_OP = 'INSERT' THEN
-        PERFORM public.log_financial_audit('CASH_REGISTER_CLOSED'::TEXT, ('Cierre de caja completado (' || NEW.difference || ')')::TEXT, NEW."actualTotal"::NUMERIC, ''::TEXT, NEW."adminId"::TEXT, jsonb_build_object('expected', NEW."systemTotal", 'difference', NEW.difference, 'id', NEW.id, 'cashierId', NEW."cashierId"));
-    END IF;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
-
-DROP TRIGGER IF EXISTS trigger_audit_cash_registers ON public.cash_registers;
-DROP TRIGGER IF EXISTS trigger_audit_cash_closings ON public.cash_closings;
-CREATE TRIGGER trigger_audit_cash_closings
-AFTER INSERT ON public.cash_closings
-FOR EACH ROW EXECUTE FUNCTION public.trg_audit_cash_closings();
+GRANT SELECT ON public.v_sales_unified TO authenticated;
+GRANT SELECT ON public.v_sales_unified TO service_role;

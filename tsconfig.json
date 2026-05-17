@@ -27,5 +27,5 @@
     "noEmit": true
   },
   "include": ["."],
-  "exclude": ["node_modules", "dist", "scripts", "tests", "test_*.ts", "check_*.ts", "run_*.ts", "fix_*.ts"]
+  "exclude": ["node_modules", "dist", "scripts", "tests", "test_*.ts", "check_*.ts", "run_*.ts", "fix_*.ts", "app"]
 }

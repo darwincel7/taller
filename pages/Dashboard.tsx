@@ -143,18 +143,42 @@ const DashboardComponent: React.FC = () => {
     if (!salesDetails || salesDetails.length === 0) return {};
     const grouped: Record<string, { items: any[], total: number, totalVentas: number, totalGanancia: number }> = {};
     salesDetails.forEach((sale: any) => {
-      // Group by Area (Taller vs Inventario) and Branch
       const branch = sale.branch || 'OTRO';
-      const isInventory = sale.source_type?.startsWith('POS') || sale.source_type === 'INVENTORY';
-      const category = isInventory ? `Inventario (${branch})` : `Taller (${branch})`;
       
-      if (!grouped[category]) {
-        grouped[category] = { items: [], total: 0, totalGanancia: 0, totalVentas: 0 };
+      const addToGroup = (cat: string, itemData: any, gross: number, net: number) => {
+          if (!grouped[cat]) {
+            grouped[cat] = { items: [], total: 0, totalGanancia: 0, totalVentas: 0 };
+          }
+          grouped[cat].items.push(itemData);
+          grouped[cat].total += net;
+          grouped[cat].totalVentas += sale.is_refund ? -Math.abs(gross) : gross;
+          grouped[cat].totalGanancia += net;
+      };
+
+      if (sale.source_type?.startsWith('POS') && sale.items && sale.items.length > 0) {
+          sale.items.forEach((item: any) => {
+              const isOrder = item.metadata?.type === 'ORDER' || item.metadata?.type === 'SERVICE' || item.source_type === 'WORKSHOP' || (item.name || item.description || '').toLowerCase().includes('reparación') || (item.name || item.description || '').toLowerCase().includes('servicio');
+              const cat = isOrder ? `Taller (${branch})` : `Inventario (${branch})`;
+              const itemData = {
+                  ...sale, // Keep payment method, branch, date
+                  ...item, // Overwrite with item specific name, total_price, profit
+                  description: item.name,
+                  gross_amount: item.total_price,
+                  cost_amount: item.total_cost,
+                  net_profit: item.profit,
+                  is_item_exploded: true,
+                  parent_readable_id: sale.readable_id,
+                  receipt_total: sale.gross_amount || sale.amount || 0,
+                  receipt_items: sale.items || []
+              };
+              addToGroup(cat, itemData, Number(item.total_price) || 0, Number(item.profit) || 0);
+          });
+      } else {
+          // Normal workshop payment or legacy POS without items
+          const isInventory = sale.source_type?.startsWith('POS') || sale.source_type === 'INVENTORY';
+          const cat = isInventory ? `Inventario (${branch})` : `Taller (${branch})`;
+          addToGroup(cat, sale, Number(sale.gross_amount) || 0, Number(sale.net_profit) || 0);
       }
-      grouped[category].items.push(sale);
-      grouped[category].total += Number(sale.net_profit) || 0;
-      grouped[category].totalVentas += sale.is_refund ? -Math.abs(Number(sale.gross_amount) || 0) : (Number(sale.gross_amount) || 0);
-      grouped[category].totalGanancia += Number(sale.net_profit) || 0;
     });
     return grouped;
   }, [salesDetails]);
@@ -1055,12 +1079,7 @@ const DashboardComponent: React.FC = () => {
                                           <div 
                                               key={i} 
                                               onClick={() => {
-                                                  if (isWorkshop && navId) {
-                                                      setSelectedSalesPeriod(null);
-                                                      navigate(`/orders/${navId}`);
-                                                  } else {
-                                                      setSelectedTransaction(sale);
-                                                  }
+                                                  setSelectedTransaction(sale);
                                               }}
                                               className={`bg-white p-4 rounded-2xl border ${isRefund ? 'border-red-200' : 'border-slate-200'} shadow-sm transition-all flex items-center justify-between hover:shadow-md cursor-pointer group`}
                                           >
@@ -1509,10 +1528,25 @@ const DashboardComponent: React.FC = () => {
                              <Package className="w-6 h-6" />
                          </div>
                          <div>
-                             <h3 className="text-xl font-black text-slate-800">Detalles de Venta y Facturación</h3>
+                             <h3 className="text-xl font-black text-slate-800 flex items-center gap-4">
+                                 Detalles de Venta y Facturación
+                                 {(selectedTransaction.order_id || selectedTransaction.navigation_id) && (
+                                     <button
+                                         onClick={() => {
+                                             const navId = selectedTransaction.order_id || selectedTransaction.navigation_id;
+                                             setSelectedTransaction(null);
+                                             setSelectedSalesPeriod(null);
+                                             navigate(`/orders/${navId}`);
+                                         }}
+                                         className="bg-blue-100 hover:bg-blue-200 text-blue-700 px-3 py-1 text-sm rounded-lg transition-colors flex items-center gap-2"
+                                     >
+                                         Ver Orden Completa
+                                     </button>
+                                 )}
+                             </h3>
                              <p className="text-sm font-medium text-slate-500">
-                                 {selectedTransaction.order_type === 'PART_ONLY' ? 'Preventa / Mostrador' : 'Venta de Inventario'}
-                                 {selectedTransaction.readable_id ? ` • #${selectedTransaction.readable_id}` : ''}
+                                 {selectedTransaction.source_type ? (selectedTransaction.source_type.startsWith("POS") ? "Venta POS" : "Venta Taller") : (selectedTransaction.order_type === 'PART_ONLY' ? 'Preventa / Mostrador' : 'Venta de Inventario')}
+                                 {selectedTransaction.readable_id ? ` • #${selectedTransaction.readable_id}` : (selectedTransaction.parent_readable_id ? ` • De ticket #${selectedTransaction.parent_readable_id}` : '')}
                              </p>
                          </div>
                      </div>
@@ -1529,22 +1563,36 @@ const DashboardComponent: React.FC = () => {
                         <div className="flex justify-between items-center mb-4">
                             <div>
                                 <span className="text-sm font-bold text-slate-400 uppercase tracking-wider block">Monto Pagado</span>
-                                <span className="text-3xl font-black text-emerald-600">${selectedTransaction.amount?.toLocaleString()}</span>
+                                <span className="text-3xl font-black text-emerald-600">${Number(selectedTransaction.receipt_total || selectedTransaction.amount || selectedTransaction.gross_amount || 0).toLocaleString()}</span>
                             </div>
                             
                             {/* Cálculo de Rentabilidad Global */}
                             <div className="text-right">
                                 {(() => {
                                     const exps = selectedTransaction.order_expenses || [];
-                                    const costOfGoods = exps.reduce((acc: number, e: any) => acc + (e.partCost || 0), 0);
-                                    if (costOfGoods > 0) {
-                                        const profit = selectedTransaction.amount - costOfGoods;
-                                        const margin = (profit / selectedTransaction.amount) * 100;
+                                    let costOfGoods = exps.reduce((acc: number, e: any) => acc + (e.partCost || 0), 0);
+                                    let profit = 0;
+                                    let totalAmt = Number(selectedTransaction.receipt_total || selectedTransaction.amount || selectedTransaction.gross_amount || 0);
+
+                                    if (selectedTransaction.is_item_exploded && selectedTransaction.receipt_items) {
+                                        // Sum up the total costs and profits of all items in the receipt
+                                        costOfGoods = selectedTransaction.receipt_items.reduce((acc, curr) => acc + Number(curr.total_cost || curr.cost_amount || 0), 0);
+                                        profit = selectedTransaction.receipt_items.reduce((acc, curr) => acc + Number(curr.profit || curr.net_profit || 0), 0);
+                                    } else if (selectedTransaction.source_type || selectedTransaction.parent_readable_id) {
+                                        costOfGoods = Number(selectedTransaction.cost_amount || 0);
+                                        profit = Number(selectedTransaction.net_profit || selectedTransaction.profit || 0);
+                                    } else if (costOfGoods > 0) {
+                                        profit = totalAmt - costOfGoods;
+                                    }
+
+                                    if (profit !== 0 || costOfGoods > 0) {
+                                        const margin = (totalAmt > 0) ? (profit / totalAmt) * 100 : 0;
                                         return (
                                             <>
                                                 <span className="text-sm font-bold text-slate-400 uppercase tracking-wider block">Beneficio</span>
-                                                <span className="text-xl font-black text-blue-600">
-                                                    ${profit.toLocaleString()} <span className="text-sm text-slate-500 font-medium">({margin.toFixed(0)}%)</span>
+                                                <span className="text-xl font-black text-blue-600 flex flex-col items-end">
+                                                    ${profit.toLocaleString()} <span className="text-xs text-slate-500 font-medium whitespace-nowrap">({margin.toFixed(0)}% margen)</span>
+                                                    <span className="text-[10px] text-slate-400 mt-1 uppercase tracking-wider whitespace-nowrap">Costo: ${costOfGoods.toLocaleString()}</span>
                                                 </span>
                                             </>
                                         );
@@ -1557,7 +1605,7 @@ const DashboardComponent: React.FC = () => {
                             <div>
                                 <p className="text-xs font-bold text-slate-400 uppercase mb-1">Método de Pago</p>
                                 <p className="text-sm font-bold text-slate-800 bg-white px-3 py-1.5 rounded-lg border border-slate-200 inline-block uppercase">
-                                    {selectedTransaction.method || 'CASH'}
+                                    {selectedTransaction.method || selectedTransaction.payment_method || 'CASH'}
                                 </p>
                             </div>
                             <div>
@@ -1567,89 +1615,174 @@ const DashboardComponent: React.FC = () => {
                                 </p>
                             </div>
                             <div className="col-span-2 md:col-span-1">
-                                <p className="text-xs font-bold text-slate-400 uppercase mb-1">Facturado por</p>
+                                <p className="text-xs font-bold text-slate-400 uppercase mb-1">Cajero / Sistema</p>
                                 <div className="flex items-center gap-2 text-sm font-bold text-slate-800 bg-white px-3 py-2 rounded-lg border border-slate-200 w-fit">
-                                    <User className="w-4 h-4 text-slate-400" />
-                                    {selectedTransaction.cashier_name || 'Sistema'}
+                                    <User className="w-4 h-4 text-slate-400 flex-shrink-0" />
+                                    <span className="truncate max-w-[120px]">{selectedTransaction.cashier_name || (selectedTransaction.user_id ? selectedTransaction.user_id.substring(0,8) : 'Sistema')}</span>
                                 </div>
                             </div>
                         </div>
                      </div>
                      
-                     {/* Detalle (Artículos) */}
+                     {/* Detalle (Artículos o Resumen Taller) */}
                      <div>
-                         <h4 className="text-sm font-black text-slate-800 uppercase tracking-wider mb-3 flex items-center gap-2">
-                             <Tag className="w-4 h-4 text-slate-400" /> Relación de Artículos Vendidos
-                         </h4>
-                         
-                         {selectedTransaction.order_expenses && selectedTransaction.order_expenses.length > 0 ? (
-                             <div className="border border-slate-200 rounded-xl overflow-hidden divide-y divide-slate-100">
-                                 {selectedTransaction.order_expenses.map((exp: any, i: number) => {
-                                     // Lógica de Descuentos y Variaciones de Precio
-                                     // exp.price es el PVP original o el precio estándar.
-                                     // exp.cost es el monto FINAL cobrado por el artículo
-                                     // exp.partCost es el costo interno para el taller
-                                     
-                                     const pvp = exp.price || exp.cost || 0;
-                                     const charged = exp.cost || 0;
-                                     const internalCost = exp.partCost || 0;
-                                     const discount = pvp - charged;
-                                     const itemProfit = charged - internalCost;
-                                     
-                                     return (
-                                     <div key={i} className="p-4 bg-white hover:bg-slate-50 transition-colors">
-                                         <div className="flex justify-between items-start mb-2">
-                                             <div>
-                                                 <p className="font-bold text-slate-800 text-sm">{exp.description || 'Artículo'}</p>
-                                             </div>
-                                             <div className="text-right">
-                                                 <p className="font-black text-slate-700">${charged.toLocaleString()}</p>
-                                                 {discount > 0 && (
-                                                     <p className="text-xs font-bold text-red-500 line-through opacity-70">
-                                                         ${pvp.toLocaleString()}
-                                                     </p>
-                                                 )}
-                                             </div>
+                         {selectedTransaction.source_type === 'WORKSHOP' && selectedTransaction.order_data ? (
+                             <div className="bg-slate-50 border border-slate-200 rounded-xl overflow-hidden divide-y divide-slate-100">
+                                 <div className="p-4 bg-white">
+                                     <div className="flex justify-between items-start mb-3">
+                                         <div>
+                                             <h4 className="text-lg font-black text-slate-800">{selectedTransaction.order_data.deviceModel || 'Dispositivo'}</h4>
+                                             <p className="text-sm text-slate-500 font-medium">#{selectedTransaction.order_data.readable_id} • Falla: {selectedTransaction.order_data.deviceIssue || 'N/A'}</p>
                                          </div>
-                                         
-                                         {/* Metric Pills */}
-                                         <div className="flex items-center gap-2 mt-3 flex-wrap">
-                                             {internalCost > 0 ? (
-                                                 <>
-                                                     <span className="text-[10px] font-bold uppercase tracking-widest bg-slate-100/80 text-slate-600 px-2.5 py-1 rounded-md border border-slate-200 tooltip" title="Costo Interno (Compra)">
-                                                         Costo: ${internalCost.toLocaleString()}
-                                                     </span>
-                                                     <span className="text-[10px] font-bold uppercase tracking-widest bg-blue-50 text-blue-700 px-2.5 py-1 rounded-md border border-blue-200 tooltip">
-                                                         Ganancia: ${itemProfit.toLocaleString()}
-                                                     </span>
-                                                 </>
-                                             ) : (
-                                                 <span className="text-[10px] font-bold uppercase tracking-widest bg-slate-100 text-slate-400 px-2.5 py-1 rounded-md border border-slate-200">
-                                                     Sin costo registrado
-                                                 </span>
+                                         <span className="bg-blue-100 text-blue-700 px-3 py-1 font-bold text-xs uppercase tracking-wider rounded-lg">
+                                             {selectedTransaction.order_data.status || 'Taller'}
+                                         </span>
+                                     </div>
+                                     <div className="grid grid-cols-2 gap-4 mt-4 p-4 bg-slate-50 rounded-xl border border-slate-100">
+                                         <div>
+                                             <p className="text-xs font-bold text-slate-400 uppercase">Cliente</p>
+                                             <p className="font-semibold text-slate-700">{selectedTransaction.order_data.clientName || 'Sin Nombre'}</p>
+                                             {selectedTransaction.order_data.clientPhone && (
+                                                <p className="text-xs font-medium text-slate-500">{selectedTransaction.order_data.clientPhone}</p>
                                              )}
-                                             
-                                             {discount > 0 ? (
-                                                 <span className="text-[10px] font-bold uppercase tracking-widest bg-amber-50 text-amber-600 px-2.5 py-1 rounded-md border border-amber-200 tooltip">
-                                                     Descuento Aplicado: ${discount.toLocaleString()}
-                                                 </span>
-                                             ) : discount < 0 ? (
-                                                 <span className="text-[10px] font-bold uppercase tracking-widest bg-emerald-50 text-emerald-600 px-2.5 py-1 rounded-md border border-emerald-200 tooltip" title="Vendido por encima del estándar">
-                                                     Premium: +${Math.abs(discount).toLocaleString()}
-                                                 </span>
-                                             ) : null}
+                                         </div>
+                                         <div>
+                                             <p className="text-xs font-bold text-slate-400 uppercase">Técnico</p>
+                                             <p className="font-semibold text-slate-700 flex items-center gap-1">
+                                                 <User className="w-3.5 h-3.5 text-slate-400" />
+                                                 {selectedTransaction.order_data.assignedTo || 'Sin Asignar'}
+                                             </p>
                                          </div>
                                      </div>
-                                 )})}
+                                     
+                                     <div className="mt-4 border-t border-slate-100 pt-4">
+                                         <p className="text-xs font-bold text-slate-400 uppercase mb-3">Desglose Financiero de esta Orden</p>
+                                         <div className="space-y-2">
+                                             <div className="flex justify-between items-center text-sm">
+                                                 <span className="text-slate-600 font-medium">Precio Final a Cobrar</span>
+                                                 <span className="font-bold text-slate-800">${Number(selectedTransaction.order_data.finalPrice || 0).toLocaleString()}</span>
+                                             </div>
+                                             <div className="flex justify-between items-center text-sm">
+                                                 <span className="text-slate-600 font-medium">+ Costo Base de Partes</span>
+                                                 <span className="font-bold text-red-500">-${Number(selectedTransaction.order_data.partsCost || 0).toLocaleString()}</span>
+                                             </div>
+                                             {Array.isArray(selectedTransaction.order_data.expenses) && selectedTransaction.order_data.expenses.map((e: any, i: number) => (
+                                                <div key={i} className="flex justify-between items-center text-sm text-slate-500">
+                                                    <span>- {e.description || e.partName || 'Gasto'}</span>
+                                                    <span className="font-bold text-red-400">-${Number(e.amount || 0).toLocaleString()}</span>
+                                                </div>
+                                             ))}
+                                         </div>
+                                     </div>
+                                 </div>
                              </div>
                          ) : (
-                             <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm relative overflow-hidden">
-                                 <div className="absolute top-0 left-0 w-1 h-full bg-blue-500"></div>
-                                 <p className="font-mono text-sm whitespace-pre-wrap text-slate-700 leading-relaxed font-medium pl-2">
-                                     {selectedTransaction.description || 'Venta Libre / POS / Legacy'}
-                                 </p>
-                                 <p className="text-xs text-slate-400 mt-2 pl-2">Solo existe un concepto global para esta venta. No hay artículos desglosados en el registro clásico.</p>
-                             </div>
+                             <>
+                                 <h4 className="text-sm font-black text-slate-800 uppercase tracking-wider mb-3 flex items-center gap-2">
+                                     <Tag className="w-4 h-4 text-slate-400" /> Relación de Artículos Vendidos
+                                 </h4>
+                                 
+                                 {selectedTransaction.is_item_exploded && selectedTransaction.receipt_items ? (
+                                     <div className="border border-slate-200 rounded-xl overflow-hidden divide-y divide-slate-100">
+                                        {selectedTransaction.receipt_items.map((item: any, i: number) => (
+                                        <div key={i} className="p-4 bg-white hover:bg-slate-50 transition-colors">
+                                            <div className="flex justify-between items-start mb-2">
+                                                <div>
+                                                    <p className="font-bold text-slate-800 text-sm">{item.name || item.description || "Artículo / Reparación"}</p>
+                                                    <div className="flex gap-2 items-center mt-1">
+                                                        <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md">ID: {item.id?.substring(0,8) || "N/A"}</span>
+                                                        <span className="text-[10px] font-bold uppercase tracking-wider text-blue-500 bg-blue-50 px-2 py-0.5 rounded-md">CANT: {item.quantity || 1}</span>
+                                                    </div>
+                                                </div>
+                                                <div className="text-right shrink-0 ml-4">
+                                                    <p className="font-black text-slate-800">${Number(item.total_price || item.gross_amount || 0).toLocaleString()}</p>
+                                                    <p className="text-xs text-slate-400 font-medium">Costo: ${Number(item.total_cost || item.cost_amount || 0).toLocaleString()}</p>
+                                                </div>
+                                            </div>
+                                            <div className="mt-3 flex justify-between items-center text-xs border-t border-slate-100 pt-3">
+                                                <div className="flex gap-4">
+                                                    <span className="text-slate-500"><strong className="text-slate-700">Tipo:</strong> {item.metadata?.type || selectedTransaction.source_type || "N/A"}</span>
+                                                    {(item.metadata?.worker_id || item.metadata?.technician_id) && (
+                                                        <span className="text-slate-500 flex items-center gap-1"><User className="w-3 h-3"/> {item.metadata?.worker_id || item.metadata?.technician_id}</span>
+                                                    )}
+                                                </div>
+                                                <span className="font-bold text-emerald-600 bg-emerald-50 px-2 py-1 rounded-md">
+                                                    +${Number(item.profit || item.net_profit || 0).toLocaleString()} Ganancia
+                                                </span>
+                                            </div>
+                                        </div>
+                                        ))}
+                                     </div>
+                                 ) : selectedTransaction.order_expenses && selectedTransaction.order_expenses.length > 0 ? (
+                                     <div className="border border-slate-200 rounded-xl overflow-hidden divide-y divide-slate-100">
+                                         {selectedTransaction.order_expenses.map((exp: any, i: number) => {
+                                             // Lógica de Descuentos y Variaciones de Precio
+                                             // exp.price es el PVP original o el precio estándar.
+                                             // exp.cost es el monto FINAL cobrado por el artículo
+                                             // exp.partCost es el costo interno para el taller
+                                             
+                                             const pvp = exp.price || exp.cost || 0;
+                                             const charged = exp.cost || 0;
+                                             const internalCost = exp.partCost || 0;
+                                             const discount = pvp - charged;
+                                             const itemProfit = charged - internalCost;
+                                             
+                                             return (
+                                             <div key={i} className="p-4 bg-white hover:bg-slate-50 transition-colors">
+                                                 <div className="flex justify-between items-start mb-2">
+                                                     <div>
+                                                         <p className="font-bold text-slate-800 text-sm">{exp.description || 'Artículo'}</p>
+                                                     </div>
+                                                     <div className="text-right">
+                                                         <p className="font-black text-slate-700">${charged.toLocaleString()}</p>
+                                                         {discount > 0 && (
+                                                             <p className="text-xs font-bold text-red-500 line-through opacity-70">
+                                                                 ${pvp.toLocaleString()}
+                                                             </p>
+                                                         )}
+                                                     </div>
+                                                 </div>
+                                                 
+                                                 {/* Metric Pills */}
+                                                 <div className="flex items-center gap-2 mt-3 flex-wrap">
+                                                     {internalCost > 0 ? (
+                                                         <>
+                                                             <span className="text-[10px] font-bold uppercase tracking-widest bg-slate-100/80 text-slate-600 px-2.5 py-1 rounded-md border border-slate-200 tooltip" title="Costo Interno (Compra)">
+                                                                 Costo: ${internalCost.toLocaleString()}
+                                                             </span>
+                                                             <span className="text-[10px] font-bold uppercase tracking-widest bg-blue-50 text-blue-700 px-2.5 py-1 rounded-md border border-blue-200 tooltip">
+                                                                 Ganancia: ${itemProfit.toLocaleString()}
+                                                             </span>
+                                                         </>
+                                                     ) : (
+                                                         <span className="text-[10px] font-bold uppercase tracking-widest bg-slate-100 text-slate-400 px-2.5 py-1 rounded-md border border-slate-200">
+                                                             Sin costo registrado
+                                                         </span>
+                                                     )}
+                                                     
+                                                     {discount > 0 ? (
+                                                         <span className="text-[10px] font-bold uppercase tracking-widest bg-amber-50 text-amber-600 px-2.5 py-1 rounded-md border border-amber-200 tooltip">
+                                                             Descuento Aplicado: ${discount.toLocaleString()}
+                                                         </span>
+                                                     ) : discount < 0 ? (
+                                                         <span className="text-[10px] font-bold uppercase tracking-widest bg-emerald-50 text-emerald-600 px-2.5 py-1 rounded-md border border-emerald-200 tooltip" title="Vendido por encima del estándar">
+                                                             Premium: +${Math.abs(discount).toLocaleString()}
+                                                         </span>
+                                                     ) : null}
+                                                 </div>
+                                             </div>
+                                         )})}
+                                     </div>
+                                 ) : (
+                                     <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm relative overflow-hidden">
+                                         <div className="absolute top-0 left-0 w-1 h-full bg-blue-500"></div>
+                                         <p className="font-mono text-sm whitespace-pre-wrap text-slate-700 leading-relaxed font-medium pl-2">
+                                             {selectedTransaction.description || 'Venta Libre / POS / Legacy'}
+                                         </p>
+                                         <p className="text-xs text-slate-400 mt-2 pl-2">Solo existe un concepto global para esta venta. No hay artículos desglosados en el registro clásico.</p>
+                                     </div>
+                                 )}
+                             </>
                          )}
                      </div>
                      

@@ -1,0 +1,774 @@
+0:import React, { useState, useEffect } from 'react';
+1:import { useNavigate } from 'react-router-dom';
+2:import { useInventory } from '../../contexts/InventoryContext';
+3:import { useAuth } from '../../contexts/AuthContext';
+4:import { parseInventoryCategory, UserRole } from '../../types';
+5:import { X, Smartphone, Download, Tag, DollarSign, Edit2, Trash2, History, AlertTriangle, UploadCloud, CheckCircle2, ShieldCheck, Wrench, Loader2, Camera, QrCode, BellRing, Plus, Package } from 'lucide-react';
+6:import { toast } from 'sonner';
+7:import { supabase, getCleanStorageUrl } from '../../services/supabase';
+8:import { CameraCapture } from '../../components/CameraCapture';
+9:import { QRCodeSVG } from 'qrcode.react';
+10:
+11:export const StoreItemDetailsInline = ({ itemId, onClose, onAddRequest }: { itemId: string, onClose: () => void, onAddRequest?: (productId: string) => void }) => {
+12:  const navigate = useNavigate();
+13:  const { inventory, deleteInventoryPart, updateInventoryPart } = useInventory();
+14:  const { currentUser } = useAuth();
+15:  const [showHistory, setShowHistory] = useState(false);
+16:  const [isUploading, setIsUploading] = useState(false);
+17:  const [showCamera, setShowCamera] = useState(false);
+18:  const [showQR, setShowQR] = useState(false);
+19:  const [sessionId] = useState(() => `sess_${Math.random().toString(36).substr(2, 9)}`);
+20:
+21:  const itemFallback = inventory.find(p => p.id === itemId);
+22:  const catFallback = itemFallback ? (parseInventoryCategory(itemFallback.category) as any) : {};
+23:
+24:  const [activePhoto, setActivePhoto] = useState<'CURRENT' | 'INITIAL'>('CURRENT');
+25:  const [isEditing, setIsEditing] = useState(false);
+26:  
+27:  const [selectedParentId, setSelectedParentId] = useState<string>(catFallback.parentId || '');
+28:  const [editImei, setEditImei] = useState<string>(catFallback.imei || '');
+29:  const [editPrice, setEditPrice] = useState<string>(itemFallback?.price?.toString() || '0');
+30:  const [editName, setEditName] = useState<string>(itemFallback?.name || '');
+31:
+32:  // Keep state in sync if itemId changes
+33:  useEffect(() => {
+34:    setActivePhoto('CURRENT');
+35:    setIsEditing(false);
+36:    setShowHistory(false);
+37:    if (itemFallback) {
+38:        setSelectedParentId(catFallback.parentId || '');
+39:        setEditImei(catFallback.imei || '');
+40:        setEditPrice(itemFallback.price?.toString() || '0');
+41:        
+42:        // Strip legacy (IMEI: ...) appends from old items
+43:        let cleanName = itemFallback.name || '';
+44:        const imeiIndex = cleanName.indexOf('(IMEI:');
+45:        const imeiIndex2 = cleanName.indexOf('(Imei:');
+46:        const sNIndex = cleanName.indexOf('(S/N:');
+47:        
+48:        let minIndex = -1;
+49:        if (imeiIndex !== -1) minIndex = imeiIndex;
+50:        if (imeiIndex2 !== -1 && (minIndex === -1 || imeiIndex2 < minIndex)) minIndex = imeiIndex2;
+51:        if (sNIndex !== -1 && (minIndex === -1 || sNIndex < minIndex)) minIndex = sNIndex;
+52:        
+53:        if (minIndex !== -1) cleanName = cleanName.substring(0, minIndex).trim();
+54:
+55:        setEditName(cleanName);
+56:    }
+57:  }, [itemId, itemFallback]);
+58:
+59:  // QR Upload Listener
+60:  useEffect(() => {
+61:    if (!showQR) return;
+62:    
+63:    console.log("Listening for upload on session:", sessionId);
+64:    const channel = supabase.channel(`upload_${sessionId}`)
+65:        .on('broadcast', { event: 'upload_complete' }, (payload) => {
+66:            console.log("Received upload broadcast!", payload);
+67:            if (payload.payload?.url) {
+68:                handleAcceptDevice(payload.payload.url);
+69:                setShowQR(false);
+70:            }
+71:        })
+72:        .subscribe();
+73:
+74:    return () => {
+75:        supabase.removeChannel(channel);
+76:    };
+77:  }, [showQR, sessionId]);
+78:  
+79:  const item = itemFallback;
+80:  if (!item) return null;
+81:  
+82:  const itemCat = catFallback;
+83:  const isProduct = itemCat.type === 'STORE_PRODUCT';
+84:
+85:  if (isProduct) {
+86:     return (
+87:        <div className="flex flex-col w-full h-full p-6 relative bg-white">
+88:            <div className="flex justify-between items-start mb-6 border-b border-slate-100 pb-4 shrink-0">
+89:                <div>
+90:                   <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest bg-slate-50 px-2 py-0.5 rounded border border-slate-200 mb-2 inline-block shadow-sm">Matriz de Modelo</span>
+91:                   <h2 className="text-xl font-black text-slate-800 leading-tight mt-1">{item.name}</h2>
+92:                </div>
+93:                <button onClick={onClose} className="p-2 bg-slate-50 hover:bg-slate-100 rounded-xl transition-colors">
+94:                    <X className="w-5 h-5 text-slate-400" />
+95:                </button>
+96:            </div>
+97:            
+98:            <div className="flex-1 flex flex-col items-center justify-center text-center px-4">
+99:                <div className="w-24 h-24 rounded-full bg-slate-50 border border-slate-200 flex items-center justify-center mb-6 relative shadow-inner">
+100:                    <div className="absolute inset-0 bg-indigo-500/5 rounded-full blur-xl"></div>
+101:                    <Package className="w-10 h-10 text-indigo-400/50 relative z-10" />
+102:                </div>
+103:                <h3 className="text-slate-800 font-bold text-lg mb-2">Modelo sin unidades registradas</h3>
+104:                <p className="text-slate-500 font-medium max-w-[250px] mb-8 text-sm leading-relaxed">
+105:                   Este modelo actualmente no tiene unidades registradas ni stock disponible en la tienda.
+106:                </p>
+107:            </div>
+108:            
+109:            <div className="flex gap-3 mt-auto shrink-0 border-t border-slate-100 pt-5">
+110:                <button 
+111:                    onClick={(e) => { 
+112:                        e.stopPropagation(); 
+113:                        if (confirm("¿Estás seguro de que deseas eliminar este modelo?")) {
+114:                            deleteInventoryPart(item.id);
+115:                            toast.success('Modelo eliminado exitosamente');
+116:                            onClose();
+117:                        }
+118:                    }} 
+119:                    className="flex-1 bg-rose-50 hover:bg-rose-100 text-rose-600 py-3.5 rounded-2xl font-bold flex items-center justify-center gap-2 transition-colors border border-rose-200"
+120:                >
+121:                    <Trash2 className="w-4 h-4" /> Eliminar Modelo
+122:                </button>
+123:                {onAddRequest && (
+124:                    <button 
+125:                        onClick={() => onAddRequest(item.id)}
+126:                        className="flex-[1.5] bg-indigo-600 hover:bg-indigo-700 text-white py-3.5 rounded-2xl font-black shadow-lg shadow-indigo-500/25 flex items-center justify-center gap-2 transition-colors border border-indigo-500"
+127:                    >
+128:                        <Plus className="w-5 h-5" /> Ingresar Unidades
+129:                    </button>
+130:                )}
+131:            </div>
+132:        </div>
+133:     );
+134:  }
+135:
+136:  const product = inventory.find(p => p.id === itemCat.parentId);
+137:  
+138:  const purchases = inventory.filter(p => parseInventoryCategory(p.category).type === 'STORE_PURCHASE');
+139:  const purchase = purchases.find(p => p.id === itemCat.purchaseId);
+140:  const purchaseCat = purchase ? parseInventoryCategory(purchase.category) as any : null;
+141:
+142:  const providers = inventory.filter(p => {
+143:    const c = parseInventoryCategory(p.category) as any;
+144:    return c.type === 'STORE_ATTRIBUTE' && c.subType === 'PROVIDER';
+145:  });
+146:
+147:  const providerId = itemCat.providerId || purchaseCat?.providerId;
+148:  const provider = providers.find(p => p.id === providerId);
+149:
+150:  const isAvailable = item.stock > 0;
+151:  const isPendingAcceptance = itemCat.status === 'PENDING_ACCEPTANCE';
+152:
+153:  // Calculate Days in Shop Window
+154:  const acceptanceLog = (itemCat.history || []).find((h: any) => h.action === 'ACEPTACIÓN DESDE TALLER' || h.action === 'CREACIÓN LOTE' || h.action === 'RECEPCIÓN');
+155:  const getFormattedTimeInStock = () => {
+156:    if (!acceptanceLog) return null;
+157:    const diffTime = Math.abs(new Date().getTime() - new Date(acceptanceLog.date).getTime());
+158:    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+159:    
+160:    if (diffDays < 30) {
+161:      return `${diffDays} DÍA${diffDays !== 1 ? 'S' : ''}`;
+162:    }
+163:    
+164:    const diffMonths = Math.floor(diffDays / 30);
+165:    const remainingDays = diffDays % 30;
+166:    
+167:    if (diffMonths < 12) {
+168:      if (remainingDays === 0) return `${diffMonths} MES${diffMonths !== 1 ? 'ES' : ''}`;
+169:      return `${diffMonths} MES${diffMonths !== 1 ? 'ES' : ''} Y ${remainingDays} DÍA${remainingDays !== 1 ? 'S' : ''}`;
+170:    }
+171:    
+172:    const diffYears = Math.floor(diffMonths / 12);
+173:    const remainingMonths = diffMonths % 12;
+174:    
+175:    if (remainingMonths === 0) return `${diffYears} AÑO${diffYears !== 1 ? 'S' : ''}`;
+176:    return `${diffYears} AÑO${diffYears !== 1 ? 'S' : ''} Y ${remainingMonths} MES${remainingMonths !== 1 ? 'ES' : ''}`;
+177:  };
+178:  
+179:  const formattedTimeInStock = getFormattedTimeInStock();
+180:  const daysInWindow = acceptanceLog 
+181:    ? Math.floor((new Date().getTime() - new Date(acceptanceLog.date).getTime()) / (1000 * 60 * 60 * 24))
+182:    : null;
+183:
+184:  const storeProducts = inventory.filter(p => {
+185:     const c = parseInventoryCategory(p.category) as any;
+186:     return c.type === 'STORE_PRODUCT';
+187:  }).sort((a, b) => a.name.localeCompare(b.name));
+188:  
+189:  const canViewCost = currentUser?.role === UserRole.ADMIN || currentUser?.permissions?.canViewInventoryCost;
+190:  const canManageInv = currentUser?.role === UserRole.ADMIN || currentUser?.permissions?.canManageInventory;
+191:
+192:  const handleActionClick = (actionName: string, actualAction: () => void) => {
+193:      if (!canManageInv) {
+194:          toast.error(`Acceso denegado: No tienes permisos para ${actionName}.`, {
+195:              style: { background: '#ef4444', color: 'white', border: 'none' },
+196:              icon: <AlertTriangle className="w-5 h-5 text-white" />
+197:          });
+198:          return;
+199:      }
+200:      actualAction();
+201:  };
+202:
+203:   const [isAccepting, setIsAccepting] = useState(false);
+204:
+205:   const handleAcceptDevice = async (newImageUrl?: string) => {
+206:      try {
+207:          setIsAccepting(true);
+208:          const targetImageUrl = newImageUrl || itemCat.imageUrl || itemCat.oldImageUrl;
+209:          const newHistory = [
+210:              ...(itemCat.history || []),
+211:              {
+212:                  action: 'ACEPTACIÓN DESDE TALLER',
+213:                  date: new Date().toISOString(),
+214:                  user: currentUser!!.name,
+215:                  details: `Equipo aceptado. Relocalizado en producto.`,
+216:                  imageUrl: targetImageUrl
+217:              }
+218:          ];
+219:
+220:          await updateInventoryPart(item.id, {
+221:              name: editName.trim() || item.name,
+222:              price: parseFloat(editPrice) || item.price,
+223:              category: JSON.stringify({
+224:                  ...itemCat,
+225:                  parentId: selectedParentId,
+226:                  imei: editImei,
+227:                  status: 'AVAILABLE',
+228:                  imageUrl: targetImageUrl, // New photo priority
+229:                  oldImageUrl: itemCat.oldImageUrl || itemCat.imageUrl, // keep original
+230:                  history: newHistory
+231:              })
+232:          });
+233:          
+234:          if (selectedParentId !== itemCat.parentId) {
+235:              // Delete placeholder product if empty
+236:              const otherItemsForOld = inventory.filter(i => {
+237:                 const c = parseInventoryCategory(i.category) as any;
+238:                 return c.parentId === itemCat.parentId && i.id !== item.id;
+239:              });
+240:              if (otherItemsForOld.length === 0) {
+241:                 await deleteInventoryPart(itemCat.parentId);
+242:              }
+243:          }
+244:          
+245:          toast.success("Equipo aceptado y listo para la venta");
+246:          onClose();
+247:      } catch (err) {
+248:          toast.error("Error al aceptar equipo");
+249:      } finally {
+250:          setIsAccepting(false);
+251:      }
+252:   };
+253:
+254:   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+255:      if (!e.target.files?.length) return;
+256:      const file = e.target.files[0];
+257:      setIsUploading(true);
+258:      try {
+259:        const ext = file.name.split('.').pop();
+260:        const fileName = `accepted_${Date.now()}_${Math.random().toString(36).substring(7)}.${ext}`;
+261:        const { error } = await supabase.storage.from('receipts').upload(fileName, file, { cacheControl: '3600' });
+262:        if (error) throw error;
+263:        const { data } = supabase.storage.from('receipts').getPublicUrl(fileName);
+264:        await handleAcceptDevice(getCleanStorageUrl(data.publicUrl));
+265:      } catch (err: any) {
+266:        toast.error('Error al subir imagen: ' + err.message);
+267:      } finally {
+268:        setIsUploading(false);
+269:      }
+270:    };
+271:
+272:   const handleUpdateImage = async (e: React.ChangeEvent<HTMLInputElement>) => {
+273:      if (!e.target.files?.length) return;
+274:      const file = e.target.files[0];
+275:      setIsUploading(true);
+276:      try {
+277:        const ext = file.name.split('.').pop();
+278:        const fileName = `item_${item.id}_${Date.now()}_${Math.random().toString(36).substring(7)}.${ext}`;
+279:        const { error } = await supabase.storage.from('receipts').upload(fileName, file, { cacheControl: '3600' });
+280:        if (error) throw error;
+281:        const { data } = supabase.storage.from('receipts').getPublicUrl(fileName);
+282:        
+283:        await updateInventoryPart(item.id, {
+284:            ...item,
+285:            category: JSON.stringify({
+286:                ...itemCat,
+287:                imageUrl: getCleanStorageUrl(data.publicUrl)
+288:            })
+289:        });
+290:        toast.success('Imagen actualizada correctamente');
+291:      } catch (err: any) {
+292:        toast.error('Error al subir imagen: ' + err.message);
+293:      } finally {
+294:        setIsUploading(false);
+295:      }
+296:    };
+297:
+298:  const handleSaveEdit = async () => {
+299:      try {
+300:          await updateInventoryPart(item.id, {
+301:              name: editName.trim() || item.name,
+302:              price: parseFloat(editPrice) || item.price,
+303:              category: JSON.stringify({
+304:                  ...itemCat,
+305:                  parentId: selectedParentId,
+306:                  imei: editImei
+307:              })
+308:          });
+309:          setIsEditing(false);
+310:          toast.success("Artículo guardado correctamente");
+311:      } catch (err) {
+312:          toast.error("Error al guardar artículo");
+313:      }
+314:  };
+315:
+316:  const handleDelete = async () => {
+317:      if (confirm('¿Estás seguro de que deseas eliminar esta unidad? ¡Esta acción no se puede deshacer!')) {
+318:          try {
+319:              await deleteInventoryPart(item.id);
+320:              if (purchase) {
+321:                  const pCat = parseInventoryCategory(purchase.category) as any;
+322:                  await updateInventoryPart(purchase.id, {
+323:                      ...purchase,
+324:                      category: JSON.stringify({
+325:                          ...pCat,
+326:                          usedAmount: Math.max(0, (pCat.usedAmount || 0) - (item.cost * (item.stock || 1)))
+327:                      })
+328:                  });
+329:              }
+330:              toast.success("Unidad eliminada");
+331:              onClose();
+332:          } catch (e) {
+333:              toast.error("Error al eliminar");
+334:          }
+335:      }
+336:  };
+337:
+338:  const historyLogs = itemCat.history || [];
+339:
+340:  return (
+341:    <div className="flex flex-col relative w-full h-full flex-1 min-h-0 p-4 bg-white">
+342:        {showHistory ? (
+343:           <div className="flex flex-col h-full min-h-0">
+344:               <div className="flex gap-2 items-center justify-between mb-3 border-b border-slate-100 pb-2">
+345:                   <h3 className="text-slate-800 font-bold text-sm tracking-tight flex items-center gap-2">
+346:                       <History className="w-4 h-4 text-indigo-500"/> Historial de Unidad
+347:                   </h3>
+348:                   <button onClick={() => setShowHistory(false)} className="p-1 hover:bg-slate-100 rounded-lg text-slate-400 transition-colors">
+349:                     <X className="w-5 h-5"/>
+350:                   </button>
+351:               </div>
+352:               <div className="flex-1 overflow-y-auto space-y-4 pr-1">
+353:                   {historyLogs.length === 0 ? (
+354:                       <p className="text-slate-400 text-xs text-center py-4">No hay registros</p>
+355:                   ) : (
+356:                       historyLogs.slice().reverse().map((log: any, idx: number) => (
+357:                           <div key={idx} className="relative pl-4 border-l-2 border-indigo-200">
+358:                               <div className="absolute w-2 h-2 rounded-full bg-indigo-500 -left-[5px] top-1.5" />
+359:                               <p className="text-[10px] text-indigo-600 font-mono mb-0.5">{new Date(log.date).toLocaleString()} • {log.user}</p>
+360:                               <p className="text-xs text-slate-800 font-medium">{log.action}</p>
+361:                               {log.details && <p className="text-[10px] text-slate-500 mt-1">{log.details}</p>}
+362:                           </div>
+363:                       ))
+364:                   )}
+365:               </div>
+366:           </div>
+367:        ) : (
+368:           <>
+369:                 <div className="flex gap-2 items-start justify-between mb-3 border-b border-slate-100 pb-2 shrink-0">
+370:                  <div className="flex flex-col gap-1">
+371:                     <div className="flex items-center gap-2">
+372:                        <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-md ${isAvailable ? (isPendingAcceptance ? 'bg-amber-500 text-white animate-pulse shadow-lg shadow-amber-500/20' : (itemCat.status === 'IN_TRANSIT' ? 'bg-amber-100 text-amber-700' : 'bg-emerald-50 text-emerald-600')) : 'bg-slate-100 text-slate-600'}`}>
+373:                          {isAvailable ? (isPendingAcceptance ? 'Pendiente Aceptación' : (itemCat.status === 'IN_TRANSIT' ? 'En Tránsito' : 'Disponible')) : 'Vendido / No Disp.'}
+374:                        </span>
+375:                        {formattedTimeInStock !== null && isAvailable && !isPendingAcceptance && (
+376:                           <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md flex items-center gap-1 ${(daysInWindow ?? 0) > 30 ? 'bg-rose-500 text-white animate-bounce' : 'bg-indigo-50 text-indigo-600'}`}>
+377:                              {formattedTimeInStock} EN TIENDA
+378:                           </span>
+379:                        )}
+380:                     </div>
+381:                     {isPendingAcceptance && (
+382:                       <span className="text-[9px] font-black text-amber-500 uppercase tracking-tighter">Requiere validación física</span>
+383:                     )}
+384:                  </div>
+385:                  <div className="flex gap-1">
+386:                      <button onClick={() => setShowHistory(true)} className="p-1 hover:bg-slate-100 rounded-lg text-slate-500 transition-colors" title="Ver Historial">
+387:                        <History className="w-5 h-5"/>
+388:                      </button>
+389:                      <button onClick={onClose} className="p-1 hover:bg-slate-100 rounded-lg text-slate-400 transition-colors">
+390:                        <X className="w-5 h-5"/>
+391:                      </button>
+392:                  </div>
+393:               </div>
+394:
+395:               {(itemCat.imageUrl || itemCat.oldImageUrl) ? (
+396:                  <div className="w-full mb-4 shrink-0">
+397:                     <div className="w-full h-40 bg-slate-50 border border-slate-200 rounded-xl overflow-hidden relative group">
+398:                        {isUploading && (
+399:                          <div className="absolute inset-0 bg-white/80 z-20 flex flex-col items-center justify-center backdrop-blur-sm">
+400:                            <Loader2 className="w-8 h-8 text-indigo-500 animate-spin mb-2" />
+401:                            <span className="text-xs font-bold text-slate-700">Subiendo...</span>
+402:                          </div>
+403:                        )}
+404:                        <img 
+405:                           src={activePhoto === 'CURRENT' ? itemCat.imageUrl : itemCat.oldImageUrl} 
+406:                           className="w-full h-full object-contain transition-transform duration-500" 
+407:                           alt="Unidad"
+408:                        />
+409:                        
+410:                        {itemCat.oldImageUrl && itemCat.imageUrl && itemCat.oldImageUrl !== itemCat.imageUrl && (
+411:                           <div className="absolute bottom-2 left-2 flex gap-1 bg-white/80 border border-slate-200 p-1 rounded-lg backdrop-blur-sm z-10">
+412:                              <button 
+413:                                 onClick={() => setActivePhoto('INITIAL')} 
+414:                                 className={`px-2 py-1 text-[9px] font-black rounded-md transition-all ${activePhoto === 'INITIAL' ? 'bg-indigo-600 text-white' : 'text-slate-500 hover:text-slate-900'}`}
+415:                              >
+416:                                 INICIAL
+417:                              </button>
+418:                              <button 
+419:                                 onClick={() => setActivePhoto('CURRENT')} 
+420:                                 className={`px-2 py-1 text-[9px] font-black rounded-md transition-all ${activePhoto === 'CURRENT' ? 'bg-indigo-600 text-white' : 'text-slate-500 hover:text-slate-900'}`}
+421:                              >
+422:                                 RESTAURADO
+423:                              </button>
+424:                           </div>
+425:                        )}
+426:
+427:                        <div className="absolute top-2 right-2 flex flex-col gap-2 z-10">
+428:                           <a 
+429:                              href={activePhoto === 'CURRENT' ? itemCat.imageUrl : itemCat.oldImageUrl} 
+430:                              target="_blank" 
+431:                              rel="noopener noreferrer" 
+432:                              className="bg-white/80 border border-slate-200 p-1.5 rounded-lg text-slate-700 hover:bg-slate-100 transition-colors"
+433:                           >
+434:                              <Download className="w-4 h-4"/>
+435:                           </a>
+436:                           {canManageInv && (
+437:                              <label className="bg-white/80 border border-slate-200 p-1.5 rounded-lg text-slate-700 hover:bg-emerald-500 hover:text-white transition-colors cursor-pointer" title="Actualizar Imagen">
+438:                                 <UploadCloud className="w-4 h-4"/>
+439:                                 <input type="file" className="hidden" accept="image/*" onChange={handleUpdateImage} disabled={isUploading} />
+440:                              </label>
+441:                           )}
+442:                           {activePhoto === 'INITIAL' && (
+443:                              <div className="bg-amber-500 text-white text-[8px] font-black px-1.5 py-1 rounded-md shadow-lg shadow-amber-500/20 mt-1">
+444:                                 ESTADO RECIBIDO
+445:                              </div>
+446:                           )}
+447:                        </div>
+448:                     </div>
+449:                  </div>
+450:               ) : (
+451:                  <div className="w-full mb-4 shrink-0">
+452:                     <div className="w-full h-40 bg-slate-50 rounded-xl overflow-hidden relative flex flex-col items-center justify-center border border-dashed border-slate-300">
+453:                        {isUploading && (
+454:                          <div className="absolute inset-0 bg-white/80 z-20 flex flex-col items-center justify-center backdrop-blur-sm">
+455:                            <Loader2 className="w-8 h-8 text-indigo-500 animate-spin mb-2" />
+456:                            <span className="text-xs font-bold text-slate-700">Subiendo...</span>
+457:                          </div>
+458:                        )}
+459:                        <Smartphone className="w-12 h-12 text-slate-300 mb-2" />
+460:                        <span className="text-xs text-slate-500 font-medium">Sin imagen</span>
+461:                        {canManageInv && (
+462:                           <label className="mt-3 bg-indigo-50 text-indigo-600 hover:bg-indigo-500 hover:text-white px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer transition-colors flex items-center gap-1">
+463:                              <UploadCloud className="w-3.5 h-3.5"/> Subir Foto
+464:                              <input type="file" className="hidden" accept="image/*" onChange={handleUpdateImage} disabled={isUploading} />
+465:                           </label>
+466:                        )}
+467:                     </div>
+468:                  </div>
+469:               )}
+470:
+471:               <div className="space-y-3 flex-1 overflow-y-auto min-h-0 pr-1">
+472:                   {canManageInv && product && (
+473:                       <div className="flex items-center gap-2 p-3 bg-slate-50 rounded-xl border border-slate-200">
+474:                            <button 
+475:                               onClick={(e) => {
+476:                                 e.stopPropagation();
+477:                                 const currentMin = product.min_stock ?? 2;
+478:                                 const val = prompt(`Mínimo de stock para el modelo ${product.name} (Actual: ${currentMin}):\nSugerencia: Cambie este número para ajustar cuándo recibirá alertas.`, currentMin.toString());
+479:                                 if (val !== null && !isNaN(parseInt(val))) {
+480:                                    updateInventoryPart(product.id, { min_stock: parseInt(val) });
+481:                                    toast.success("Alerta de stock mínimo actualizada para el modelo");
+482:                                 }
+483:                               }}
+484:                               className="flex-1 bg-rose-50 text-rose-600 py-2 rounded-lg text-[10px] font-bold uppercase tracking-tight flex items-center justify-center gap-1.5 hover:bg-rose-100 transition-all border border-rose-200"
+485:                               title="Configurar Alerta de Stock"
+486:                            >
+487:                              <BellRing className="w-3.5 h-3.5" /> Alerta (Mín: {product.min_stock ?? 2})
+488:                            </button>
+489:                            
+490:                            <button 
+491:                               onClick={(e) => {
+492:                                 e.stopPropagation();
+493:                                 if (onAddRequest) onAddRequest(product.id);
+494:                               }}
+495:                               className="flex-1 bg-indigo-50 text-indigo-600 py-2 rounded-lg text-[10px] font-bold uppercase tracking-tight flex items-center justify-center gap-1.5 hover:bg-indigo-100 transition-all border border-indigo-200"
+496:                               title="Añadir más unidades de este modelo"
+497:                            >
+498:                              <Plus className="w-3.5 h-3.5" /> Lote / Unidad
+499:                            </button>
+500:                       </div>
+501:                   )}
+502:
+503:                   <div className={`grid ${canViewCost ? 'grid-cols-2' : 'grid-cols-1'} gap-2`}>
+504:                      <div className="bg-emerald-50 border border-emerald-200 p-2.5 rounded-xl">
+505:                         <p className="text-[9px] font-bold text-emerald-600 uppercase mb-0.5">Precio de Venta</p>
+506:                         <p className="text-lg font-black text-emerald-700">${item.price.toLocaleString()}</p>
+507:                      </div>
+508:                      {canViewCost && (
+509:                          <div className="bg-slate-50 border border-slate-200 p-2.5 rounded-xl">
+510:                             <p className="text-[9px] font-bold text-slate-500 uppercase mb-0.5">Costo / Origen</p>
+511:                             <p className="text-lg font-bold text-slate-800">${item.cost.toLocaleString()}</p>
+512:                          </div>
+513:                      )}
+514:                   </div>
+515:
+516:                   {itemCat.imei && (
+517:                     <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-200">
+518:                        <p className="text-[9px] font-bold text-slate-500 uppercase flex justify-between">
+519:                           IMEI/Serial 
+520:                           <button onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(itemCat.imei); toast.success('Copiado'); }} className="text-indigo-500 hover:text-indigo-600">Copiar</button>
+521:                        </p>
+522:                        <p className="font-mono text-xs text-slate-800 font-bold mt-0.5 break-all">{itemCat.imei}</p>
+523:                     </div>
+524:                   )}
+525:
+526:                   {(purchase && canViewCost) && (
+527:                     <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-200">
+528:                        <p className="text-[9px] font-bold text-slate-500 uppercase mb-0.5">Fondo / Compra</p>
+529:                        <p className="font-bold text-slate-800 text-xs truncate" title={purchase.name}>{purchase.name}</p>
+530:                        {provider && (
+531:                          <p className="text-[10px] text-slate-500 mt-1 flex items-center gap-1">
+532:                            <Tag className="w-3 h-3" />
+533:                            Prov: {provider.name}
+534:                          </p>
+535:                        )}
+536:                     </div>
+537:                   )}
+538:
+539:                   {itemCat.workshopOrderId && (
+540:                     <button 
+541:                       onClick={(e) => { e.stopPropagation(); navigate(`/orders/${itemCat.workshopOrderId}`); }}
+542:                       className="w-full bg-slate-100/10 border border-white/10 p-2.5 rounded-xl text-left hover:bg-white/5 transition-all"
+543:                     >
+544:                        <p className="text-[9px] font-bold text-indigo-300 uppercase flex items-center gap-1 mb-1">
+545:                           Historial de Taller <Wrench className="w-3 h-3"/>
+546:                        </p>
+547:                        <p className="text-[10px] text-white font-medium">Este equipo tiene reparaciones registradas. Clic para ver detalles.</p>
+548:                     </button>
+549:                   )}
+550:               </div>
+551:
+552:               {isPendingAcceptance ? (
+553:                    <div className="mt-4 pt-3 border-t border-slate-100 flex flex-col gap-3 shrink-0">
+554:                       <div className="bg-amber-50 border border-amber-200 p-3 rounded-xl text-[10px] text-amber-700">
+555:                          Este equipo viene de taller y el costo ya incluye reparaciones (${item.cost}). Revise los datos y acepte.
+556:                       </div>
+557:                       
+558:                       <div className="flex flex-col gap-2">
+559:                           <label className="text-[10px] text-slate-600 font-bold uppercase tracking-wider">¿A qué grupo de catálogo pertenece?</label>
+560:                           <p className="text-[9px] text-slate-400 -mt-1 leading-tight mb-1">
+561:                             Selecciona el modelo correcto. Se usarán la <b>Marca</b> y <b>Categoría</b> del grupo que elijas. Si el modelo no existe, ciérrame, usa el botón azul <b>+ Nuevo Modelo / Artículo</b> arriba, crea sólo la matriz con stock 0 y vuelve aquí para seleccionarlo.
+562:                           </p>
+563:                           <select 
+564:                               value={selectedParentId} 
+565:                               onChange={(e) => setSelectedParentId(e.target.value)}
+566:                               className="w-full bg-white border border-slate-200 text-slate-800 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none font-medium"
+567:                           >
+568:                               {storeProducts.map(sp => (
+569:                                   <option key={sp.id} value={sp.id}>{sp.name}</option>
+570:                               ))}
+571:                           </select>
+572:                       </div>
+573:
+574:                       <div className="flex flex-col gap-1">
+575:                           <label className="text-[10px] text-slate-600 font-bold uppercase">Nombre del Artículo (Facturación)</label>
+576:                           <input 
+577:                               type="text" 
+578:                               value={editName} 
+579:                               onChange={(e) => setEditName(e.target.value)}
+580:                               className="w-full bg-white border border-slate-200 text-slate-800 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-indigo-500"
+581:                           />
+582:                       </div>
+583:                       <div className="grid grid-cols-2 gap-2">
+584:                           <div className="flex flex-col gap-1">
+585:                               <label className="text-[10px] text-slate-600 font-bold uppercase">IMEI / Sériál</label>
+586:                               <input 
+587:                                   type="text" 
+588:                                   value={editImei} 
+589:                                   onChange={(e) => setEditImei(e.target.value)}
+590:                                   className="w-full bg-white border border-slate-200 text-slate-800 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-indigo-500"
+591:                               />
+592:                           </div>
+593:                           <div className="flex flex-col gap-1">
+594:                               <label className="text-[10px] text-slate-600 font-bold uppercase">Precio Venta</label>
+595:                               <input 
+596:                                   type="number" 
+597:                                   value={editPrice} 
+598:                                   onChange={(e) => setEditPrice(e.target.value)}
+599:                                   className="w-full bg-white border border-slate-200 text-slate-800 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-indigo-500"
+600:                               />
+601:                           </div>
+602:                       </div>
+603:                       
+604:                       <div className="flex flex-col gap-2">
+605:                           <div className="flex gap-2">
+606:                               <button 
+607:                                   onClick={() => setShowCamera(true)}
+608:                                   className="flex-1 bg-slate-50 text-slate-600 py-3 rounded-xl font-black uppercase text-[10px] flex items-center justify-center gap-1.5 shadow-sm hover:bg-slate-100 transition-all cursor-pointer border border-slate-200"
+609:                               >
+610:                                   <Camera className="w-4 h-4"/> USAR CÁMARA
+611:                               </button>
+612:                               <button 
+613:                                   onClick={() => setShowQR(true)}
+614:                                   className="flex-1 bg-slate-50 text-slate-600 py-3 rounded-xl font-black uppercase text-[10px] flex items-center justify-center gap-1.5 shadow-sm hover:bg-slate-100 transition-all cursor-pointer border border-slate-200"
+615:                               >
+616:                                   <QrCode className="w-4 h-4"/> ESCANEAR QR
+617:                               </button>
+618:                           </div>
+619:                           <div className="flex gap-2">
+620:                               <label className={`flex-1 bg-indigo-50 text-indigo-600 py-3 rounded-xl font-black uppercase text-[10px] flex items-center justify-center gap-1.5 shadow-sm hover:bg-indigo-100 transition-all cursor-pointer border border-indigo-100 ${isUploading ? 'opacity-50 pointer-events-none' : ''}`}>
+621:                                  {isUploading ? (
+622:                                      <div className="flex items-center gap-2">
+623:                                          <div className="w-3 h-3 border-2 border-indigo-600/30 border-t-indigo-600 rounded-full animate-spin" />
+624:                                          SUBIENDO...
+625:                                      </div>
+626:                                  ) : (
+627:                                      <>
+628:                                          <UploadCloud className="w-4 h-4"/>
+629:                                          SUBIR FOTO (ARCHIVO)
+630:                                      </>
+631:                                  )}
+632:                                  <input type="file" className="hidden" accept="image/*" onChange={handleImageUpload} disabled={isUploading} />
+633:                               </label>
+634:                               <button 
+635:                                   onClick={() => handleAcceptDevice()} 
+636:                                   className={`px-6 bg-indigo-600 text-white rounded-xl font-black text-[10px] uppercase transition-all shadow-lg shadow-indigo-600/30 active:scale-95 flex items-center justify-center gap-2 ${!(itemCat.imageUrl || itemCat.oldImageUrl) || isAccepting ? 'opacity-50 cursor-not-allowed' : 'hover:bg-indigo-700'}`}
+637:                                   disabled={!(itemCat.imageUrl || itemCat.oldImageUrl) || isAccepting}
+638:                               >
+639:                                   {isAccepting ? (
+640:                                       <><Loader2 className="w-4 h-4 animate-spin"/> ACEPTANDO...</>
+641:                                   ) : !!(itemCat.imageUrl || itemCat.oldImageUrl) ? (
+642:                                       'ACEPTAR (MANTENER FOTO)'
+643:                                   ) : (
+644:                                       'FOTO REQUERIDA PARA ACEPTAR'
+645:                                   )}
+646:                               </button>
+647:                           </div>
+648:                       </div>
+649:                       
+650:                       <div className="mt-4 pt-3 border-t border-amber-200">
+651:                           <button 
+652:                                onClick={(e) => { e.stopPropagation(); handleActionClick('rechazar (eliminar) este equipo en espera', handleDelete); }}
+653:                                className="w-full flex items-center justify-center gap-1.5 py-2.5 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-xl text-[10px] font-black uppercase transition-all border border-rose-100"
+654:                           >
+655:                               <Trash2 className="w-4 h-4" />
+656:                               RECHAZAR Y ELIMINAR DEL INVENTARIO
+657:                           </button>
+658:                           <p className="text-center text-[9px] text-slate-400 font-medium mt-1">Si este equipo no debió ser ingresado, presiona aquí para borrarlo permanentemente.</p>
+659:                       </div>
+660:                    </div>
+661:                ) : (
+662:                    isEditing ? (
+663:                       <div className="mt-4 pt-4 border-t border-slate-100 flex flex-col gap-3">
+664:                           <div className="flex flex-col gap-1">
+665:                               <label className="text-[10px] text-slate-600 font-bold uppercase tracking-wider">¿A qué grupo pertenece?</label>
+666:                               <select 
+667:                                   value={selectedParentId} 
+668:                                   onChange={(e) => setSelectedParentId(e.target.value)}
+669:                                   className="w-full bg-white border border-slate-200 text-slate-800 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none font-medium"
+670:                               >
+671:                                   {storeProducts.map(sp => (
+672:                                       <option key={sp.id} value={sp.id}>{sp.name}</option>
+673:                                   ))}
+674:                               </select>
+675:                           </div>
+676:                           <div className="flex flex-col gap-1">
+677:                               <label className="text-[10px] text-slate-600 font-bold uppercase">Nombre del Artículo</label>
+678:                               <input 
+679:                                   type="text" 
+680:                                   value={editName} 
+681:                                   onChange={(e) => setEditName(e.target.value)}
+682:                                   className="w-full bg-white border border-slate-200 text-slate-800 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-indigo-500"
+683:                               />
+684:                           </div>
+685:                           <div className="grid grid-cols-2 gap-2">
+686:                               <div className="flex flex-col gap-1">
+687:                                   <label className="text-[10px] text-slate-600 font-bold uppercase">IMEI / Sériál</label>
+688:                                   <input 
+689:                                       type="text" 
+690:                                       value={editImei} 
+691:                                       onChange={(e) => setEditImei(e.target.value)}
+692:                                       className="w-full bg-white border border-slate-200 text-slate-800 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-indigo-500"
+693:                                   />
+694:                               </div>
+695:                               <div className="flex flex-col gap-1">
+696:                                   <label className="text-[10px] text-slate-600 font-bold uppercase">Precio Venta</label>
+697:                                   <input 
+698:                                       type="number" 
+699:                                       value={editPrice} 
+700:                                       onChange={(e) => setEditPrice(e.target.value)}
+701:                                       className="w-full bg-white border border-slate-200 text-slate-800 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-indigo-500"
+702:                                   />
+703:                               </div>
+704:                           </div>
+705:                           <div className="flex gap-2 shrink-0 mt-2">
+706:                               <button onClick={() => setIsEditing(false)} className="flex-1 text-slate-500 hover:bg-slate-50 py-2.5 rounded-xl text-xs font-bold transition-colors flex items-center justify-center gap-1.5 border border-slate-200"><X className="w-4 h-4"/> Cancelar</button>
+707:                               <button onClick={handleSaveEdit} className="flex-1 bg-indigo-600 text-white py-2.5 rounded-xl text-xs font-black shadow-sm transition-colors flex items-center justify-center gap-1.5 hover:bg-indigo-700"><CheckCircle2 className="w-4 h-4"/> Guardar</button>
+708:                           </div>
+709:                       </div>
+710:                    ) : (
+711:                        <div className="mt-4 pt-3 border-t border-slate-100 flex gap-2 shrink-0">
+712:                           <button onClick={(e) => { e.stopPropagation(); handleActionClick('eliminar este artículo', handleDelete); }} className="flex-1 text-rose-500 hover:bg-rose-50 border border-slate-100 hover:border-rose-100 py-2.5 rounded-xl text-xs font-bold transition-colors flex items-center justify-center gap-1.5"><Trash2 className="w-4 h-4"/> Eliminar</button>
+713:                           <button onClick={(e) => { e.stopPropagation(); handleActionClick('editar este artículo', () => setIsEditing(true)); }} className="flex-[1.5] bg-indigo-50 border border-indigo-100 text-indigo-600 py-2.5 rounded-xl text-xs font-black hover:bg-indigo-100 shadow-sm transition-colors flex items-center justify-center gap-1.5"><Edit2 className="w-4 h-4"/> Editar</button>
+714:                        </div>
+715:                    )
+716:                )}
+717:           </>
+718:        )}
+719:
+720:        {showCamera && (
+721:            <CameraCapture 
+722:                onCapture={(img) => {
+723:                    handleAcceptDevice(img);
+724:                    setShowCamera(false);
+725:                }} 
+726:                onClose={() => setShowCamera(false)} 
+727:            />
+728:        )}
+729:        
+730:        {showQR && (
+731:            <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[999] flex items-center justify-center p-4" onClick={() => setShowQR(false)}>
+732:                <div className="bg-slate-900 border border-slate-700 rounded-3xl p-6 shadow-2xl max-w-sm w-full animate-in zoom-in-95 fade-in duration-200" onClick={e => e.stopPropagation()}>
+733:                    <div className="flex justify-between items-center mb-6">
+734:                        <div className="flex items-center gap-3">
+735:                            <div className="w-10 h-10 bg-indigo-500/20 rounded-xl flex items-center justify-center">
+736:                                <QrCode className="w-5 h-5 text-indigo-400" />
+737:                            </div>
+738:                            <div>
+739:                                <h3 className="font-black text-white leading-tight">Escanear QR</h3>
+740:                                <p className="text-xs text-slate-400 font-medium">Subir foto del equipo</p>
+741:                            </div>
+742:                        </div>
+743:                        <button onClick={() => setShowQR(false)} className="text-slate-400 hover:text-white bg-slate-800 hover:bg-slate-700 p-2 rounded-full transition-colors">
+744:                            <X className="w-4 h-4" />
+745:                        </button>
+746:                    </div>
+747:                    
+748:                    <div className="bg-white p-4 rounded-2xl flex items-center justify-center mb-6 shadow-indigo-500/10 shadow-xl w-fit mx-auto">
+749:                        <QRCodeSVG value={`${window.location.origin}/#/mobile-upload/${sessionId}?type=device`} size={200} level="H" includeMargin={true} className="rounded-xl" />
+750:                    </div>
+751:                    
+752:                    <div className="flex items-center gap-3 mb-6 bg-indigo-500/10 border border-indigo-500/20 p-4 rounded-2xl">
+753:                        <div className="w-8 h-8 rounded-full bg-indigo-500/20 flex items-center justify-center shrink-0">
+754:                            <Loader2 className="w-4 h-4 text-indigo-400 animate-spin" />
+755:                        </div>
+756:                        <p className="text-xs font-medium text-indigo-200 leading-relaxed">
+757:                            Esperando recepción de imagen... La ventana se cerrará automáticamente al finalizar.
+758:                        </p>
+759:                    </div>
+760:
+761:                    <button
+762:                        onClick={() => setShowQR(false)}
+763:                        className="w-full bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold py-3 rounded-xl transition-colors text-sm"
+764:                    >
+765:                        Cancelar
+766:                    </button>
+767:                </div>
+768:            </div>
+769:        )}
+770:    </div>
+771:  );
+772:};
+773:

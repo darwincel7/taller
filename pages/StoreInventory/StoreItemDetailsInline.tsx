@@ -339,34 +339,7 @@ export const StoreItemDetailsInline = ({ itemId, onClose, onAddRequest }: { item
   const historyLogs = itemCat.history || [];
 
   return (
-    <div className="flex flex-col relative w-full h-full flex-1 min-h-0 p-4 bg-white">
-        {showHistory ? (
-           <div className="flex flex-col h-full min-h-0">
-               <div className="flex gap-2 items-center justify-between mb-3 border-b border-slate-100 pb-2">
-                   <h3 className="text-slate-800 font-bold text-sm tracking-tight flex items-center gap-2">
-                       <History className="w-4 h-4 text-indigo-500"/> Historial de Unidad
-                   </h3>
-                   <button onClick={() => setShowHistory(false)} className="p-1 hover:bg-slate-100 rounded-lg text-slate-400 transition-colors">
-                     <X className="w-5 h-5"/>
-                   </button>
-               </div>
-               <div className="flex-1 overflow-y-auto space-y-4 pr-1">
-                   {historyLogs.length === 0 ? (
-                       <p className="text-slate-400 text-xs text-center py-4">No hay registros</p>
-                   ) : (
-                       historyLogs.slice().reverse().map((log: any, idx: number) => (
-                           <div key={idx} className="relative pl-4 border-l-2 border-indigo-200">
-                               <div className="absolute w-2 h-2 rounded-full bg-indigo-500 -left-[5px] top-1.5" />
-                               <p className="text-[10px] text-indigo-600 font-mono mb-0.5">{new Date(log.date).toLocaleString()} • {log.user}</p>
-                               <p className="text-xs text-slate-800 font-medium">{log.action}</p>
-                               {log.details && <p className="text-[10px] text-slate-500 mt-1">{log.details}</p>}
-                           </div>
-                       ))
-                   )}
-               </div>
-           </div>
-        ) : (
-           <>
+    <div className="flex flex-col relative w-full h-full p-4 bg-white overflow-y-auto hidden-scrollbar">
                  <div className="flex gap-2 items-start justify-between mb-3 border-b border-slate-100 pb-2 shrink-0">
                   <div className="flex flex-col gap-1">
                      <div className="flex items-center gap-2">
@@ -384,9 +357,6 @@ export const StoreItemDetailsInline = ({ itemId, onClose, onAddRequest }: { item
                      )}
                   </div>
                   <div className="flex gap-1">
-                      <button onClick={() => setShowHistory(true)} className="p-1 hover:bg-slate-100 rounded-lg text-slate-500 transition-colors" title="Ver Historial">
-                        <History className="w-5 h-5"/>
-                      </button>
                       <button onClick={onClose} className="p-1 hover:bg-slate-100 rounded-lg text-slate-400 transition-colors">
                         <X className="w-5 h-5"/>
                       </button>
@@ -469,7 +439,7 @@ export const StoreItemDetailsInline = ({ itemId, onClose, onAddRequest }: { item
                   </div>
                )}
 
-               <div className="space-y-3 flex-1 overflow-y-auto min-h-0 pr-1">
+               <div className="space-y-3 shrink-0">
                    {canManageInv && product && (
                        <div className="flex items-center gap-2 p-3 bg-slate-50 rounded-xl border border-slate-200">
                             <button 
@@ -540,12 +510,12 @@ export const StoreItemDetailsInline = ({ itemId, onClose, onAddRequest }: { item
                    {itemCat.workshopOrderId && (
                      <button 
                        onClick={(e) => { e.stopPropagation(); navigate(`/orders/${itemCat.workshopOrderId}`); }}
-                       className="w-full bg-slate-100/10 border border-white/10 p-2.5 rounded-xl text-left hover:bg-white/5 transition-all"
+                       className="w-full bg-indigo-50 border border-indigo-200 p-3 rounded-xl text-left hover:bg-indigo-100 transition-all shadow-sm"
                      >
-                        <p className="text-[9px] font-bold text-indigo-300 uppercase flex items-center gap-1 mb-1">
-                           Historial de Taller <Wrench className="w-3 h-3"/>
+                        <p className="text-[10px] font-black text-indigo-700 uppercase flex items-center gap-1.5 mb-1">
+                           <Wrench className="w-3.5 h-3.5"/> Ver Orden de Taller
                         </p>
-                        <p className="text-[10px] text-white font-medium">Este equipo tiene reparaciones registradas. Clic para ver detalles.</p>
+                        <p className="text-[10px] text-indigo-900/80 font-bold leading-tight">Este equipo tiene el historial completo de sus reparaciones en su orden de taller. Revisa la cotización aquí.</p>
                      </button>
                    )}
                </div>
@@ -715,8 +685,28 @@ export const StoreItemDetailsInline = ({ itemId, onClose, onAddRequest }: { item
                         </div>
                     )
                 )}
-           </>
-        )}
+           {/* History Block (always at the bottom) */}
+           <div className="mt-6 pt-4 border-t-2 border-slate-100 flex flex-col shrink-0">
+               <div className="flex gap-2 items-center justify-between mb-3 pb-2">
+                   <h3 className="text-slate-800 font-black text-sm tracking-tight flex items-center gap-2 uppercase">
+                       <History className="w-4 h-4 text-indigo-500"/> Historial de Taller
+                   </h3>
+               </div>
+               <div className="space-y-4">
+                   {historyLogs.length === 0 ? (
+                       <p className="text-slate-400 text-xs text-center py-4 bg-slate-50 rounded-xl border border-dashed border-slate-200">No hay registros</p>
+                   ) : (
+                       historyLogs.slice().reverse().map((log: any, idx: number) => (
+                           <div key={idx} className="relative pl-4 border-l-2 border-indigo-200">
+                               <div className="absolute w-2 h-2 rounded-full bg-indigo-500 -left-[5px] top-1.5" />
+                               <p className="text-[10px] text-indigo-600 font-mono mb-0.5 font-bold">{new Date(log.date).toLocaleString()} • {log.user}</p>
+                               <p className="text-xs text-slate-800 font-black">{log.action}</p>
+                               {log.details && <p className="text-[11px] text-slate-500 mt-1 font-medium">{log.details}</p>}
+                           </div>
+                       ))
+                   )}
+               </div>
+           </div>
 
         {showCamera && (
             <CameraCapture 

@@ -11,6 +11,7 @@ interface InventoryContextType {
   updateInventoryPart: (id: string, updates: Partial<InventoryPart>) => Promise<void>;
   adjustStock: (id: string, quantity: number, type: 'IN' | 'OUT' | 'ADJUSTMENT', reason: string) => Promise<boolean>;
   deleteInventoryPart: (id: string) => Promise<void>;
+  deleteMultipleInventoryParts: (ids: string[]) => Promise<void>;
   fetchWiki: () => Promise<void>;
   addWikiArticle: (article: Partial<WikiArticle>) => Promise<void>;
   consumePart: (id: string, quantity: number, orderId?: string, orderDetails?: string) => Promise<boolean>; 
@@ -27,7 +28,8 @@ export const InventoryProvider: React.FC<{ children: ReactNode }> = ({ children 
     // Hide archived items by default
     const { data } = await supabase.from('inventory_parts')
       .select('*')
-      .order('name');
+      .limit(10000)
+      .order('created_at', { ascending: false });
     
     if (data) {
         setInventory(data.filter((item: any) => !item.deleted_at && item.status !== 'archived') as InventoryPart[]);
@@ -192,22 +194,68 @@ export const InventoryProvider: React.FC<{ children: ReactNode }> = ({ children 
   const adjustStock = async (id: string, quantity: number, type: 'IN' | 'OUT' | 'ADJUSTMENT', reason: string): Promise<boolean> => {
       if (!supabase) return false;
       const { data: { user } } = await supabase.auth.getUser();
+      const userName = user?.user_metadata?.name || user?.email || 'Sistema';
       
-      const { data, error } = await supabase.rpc('adjust_inventory_stock', {
-          p_item_id: id,
-          p_quantity: quantity,
-          p_movement_type: type,
-          p_reason: reason,
-          p_user_id: user?.id
-      });
+      try {
+          // 1. Fetch current item state
+          const { data: item, error: fetchError } = await supabase
+              .from('inventory_parts')
+              .select('stock, cost')
+              .eq('id', id)
+              .single();
+              
+          if (fetchError || !item) {
+              console.error("Item not found for stock adjustment");
+              return false;
+          }
 
-      if (error) {
-          console.error("Error adjusting stock:", error);
+          // 2. Calculate new stock
+          const delta = type === 'OUT' ? -quantity : quantity;
+          const newStock = item.stock + delta;
+
+          // 3. Update stock directly in parts table
+          const { error: updateError } = await supabase
+              .from('inventory_parts')
+              .update({ stock: newStock, updated_at: new Date().toISOString() })
+              .eq('id', id);
+
+          if (updateError) {
+              console.error("Error updating stock directly:", updateError);
+              return false;
+          }
+
+          // 4. Create movement record
+          const { error: movementError } = await supabase
+              .from('inventory_movements')
+              .insert([{
+                  item_id: id,
+                  movement_type: type,
+                  quantity: quantity,
+                  before_stock: item.stock,
+                  after_stock: newStock,
+                  unit_cost: item.cost,
+                  reason: reason,
+                  created_by: user?.id || 'system'
+              }]);
+
+          if (movementError) {
+              console.warn("Stock updated but could not write movement log:", movementError);
+          }
+          
+          await supabase.from('audit_logs').insert([{
+              action: 'INVENTORY_STOCK_ADJUSTED',
+              details: `[INV_ID: ${id}] Ajuste de Stock (${type}): ${quantity} unidades. Razón: ${reason}. Anterior: ${item.stock}, Nuevo: ${newStock}`,
+              user_id: user?.id,
+              user_name: userName,
+              created_at: Date.now()
+          }]);
+
+          fetchInventory();
+          return true;
+      } catch (err) {
+          console.error("Exception during stock adjust:", err);
           return false;
       }
-      
-      fetchInventory();
-      return !!data;
   };
 
   const deleteInventoryPart = async (id: string) => {
@@ -231,6 +279,30 @@ export const InventoryProvider: React.FC<{ children: ReactNode }> = ({ children 
           await supabase.from('audit_logs').insert([{
               action: 'INVENTORY_DELETED',
               details: `[INV_ID: ${id}] Archivado (Soft-Delete): El artículo ${name} fue movido a archivo.`,
+              user_id: user?.id,
+              user_name: userName,
+              created_at: Date.now()
+          }]);
+      });
+  };
+
+  const deleteMultipleInventoryParts = async (ids: string[]) => {
+      if (!supabase || ids.length === 0) return;
+
+      // Optimistic update
+      setInventory(prev => prev.filter(p => !ids.includes(p.id)));
+
+      const { data: { user } } = await supabase.auth.getUser();
+      const userName = user?.user_metadata?.name || user?.email || 'Sistema';
+
+      supabase.from('inventory_parts').update({
+          deleted_at: new Date().toISOString(),
+          deleted_by: user?.id,
+          status: 'archived'
+      }).in('id', ids).then(async () => {
+          await supabase.from('audit_logs').insert([{
+              action: 'INVENTORY_BULK_DELETED',
+              details: `Archivado masivo (Soft-Delete): ${ids.length} artículos fueron movidos a archivo.`,
               user_id: user?.id,
               user_name: userName,
               created_at: Date.now()
@@ -271,7 +343,7 @@ export const InventoryProvider: React.FC<{ children: ReactNode }> = ({ children 
   return (
     <InventoryContext.Provider value={{ 
         inventory, wikiArticles, 
-        fetchInventory, addInventoryPart, updateInventoryPart, adjustStock, deleteInventoryPart,
+        fetchInventory, addInventoryPart, updateInventoryPart, adjustStock, deleteInventoryPart, deleteMultipleInventoryParts,
         fetchWiki, addWikiArticle, consumePart
     }}>
       {children}

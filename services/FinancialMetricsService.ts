@@ -375,14 +375,23 @@ export const financialMetricsService = {
           monthlyData[monthKey] = { income: 0, expenses: 0, purchases: 0 };
         }
 
-        // Cash flow is only is_cash
-        if (val.is_cash && val.source_table === 'cash_movements') {
-           const type = val.event_type;
-           if (type.includes('_IN') || type === 'INITIAL_CASH') {
-              monthlyData[monthKey].income += Number(val.amount) || 0;
-           } else if (type.includes('_OUT')) {
-              monthlyData[monthKey].expenses += Math.abs(Number(val.amount) || 0);
-           }
+        const amt = Number(val.amount) || 0;
+        
+        // Income
+        if (val.is_revenue) {
+           monthlyData[monthKey].income += amt;
+        } else if (val.source_table === 'cash_movements' && val.event_type?.includes('_IN')) {
+           // Also include cash injections if needed, but primarily revenue
+           monthlyData[monthKey].income += amt;
+        }
+
+        // Expenses and Purchases
+        if (val.is_expense) {
+            monthlyData[monthKey].expenses += Math.abs(amt);
+        } else if (val.is_cogs) {
+            monthlyData[monthKey].purchases += Math.abs(amt);
+        } else if (val.source_table === 'cash_movements' && val.event_type?.includes('_OUT')) {
+            monthlyData[monthKey].expenses += Math.abs(amt);
         }
       });
     } else {

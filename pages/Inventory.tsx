@@ -1,4 +1,15 @@
 import React, { useState, useEffect } from 'react';
+
+// ============================================================================
+// 🛑 ATENCIÓN IA Y DESARROLLADORES 🛑
+// ESTE ARCHIVO ES ESTRICTAMENTE EL INVENTARIO DE **PARTES Y REPUESTOS**
+// (Baterías, Pantallas, Insumos, etc.) Tabla: inventory_parts.
+//
+// 🚫 NO ES EL INVENTARIO DE ARTÍCULOS PROPIOS / EQUIPOS / CAMBIAZO.
+// Ese inventario de artículos se maneja en:
+// 👉 pages/StoreStock.tsx (StoreInventory) / routes: /store-inventory
+// ============================================================================
+
 import { useInventory } from '../contexts/InventoryContext';
 import { useAuth } from '../contexts/AuthContext';
 import { InventoryPart, UserRole, parseInventoryCategory } from '../types';
@@ -35,6 +46,10 @@ export const Inventory: React.FC = () => {
   const [adjustQty, setAdjustQty] = useState(0);
   const [adjustType, setAdjustType] = useState<'IN' | 'OUT' | 'ADJUSTMENT'>('ADJUSTMENT');
   const [adjustReason, setAdjustReason] = useState('');
+
+  // Bulk Selection State
+  const [selectedPartIds, setSelectedPartIds] = useState<string[]>([]);
+  const { deleteMultipleInventoryParts } = useInventory();
 
   useEffect(() => { fetchInventory(); }, []);
 
@@ -172,8 +187,36 @@ export const Inventory: React.FC = () => {
       }
   };
 
+  const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
+      if (e.target.checked) {
+          setSelectedPartIds(filteredInventory.map(p => p.id));
+      } else {
+          setSelectedPartIds([]);
+      }
+  };
+
+  const handleSelectPart = (e: React.ChangeEvent<HTMLInputElement>, id: string) => {
+      e.stopPropagation();
+      if (e.target.checked) {
+          setSelectedPartIds(prev => [...prev, id]);
+      } else {
+          setSelectedPartIds(prev => prev.filter(pId => pId !== id));
+      }
+  };
+
+  const handleBulkDelete = async () => {
+      if (selectedPartIds.length === 0) return;
+      if (window.confirm(`¿Estás seguro de que quieres archivar/eliminar ${selectedPartIds.length} artículo(s)?`)) {
+          await deleteMultipleInventoryParts(selectedPartIds);
+          setSelectedPartIds([]);
+          setDetailsModalOpen(false);
+          setSelectedPart(null);
+      }
+  };
+
   // STRICT PERMISSION: Only ADMIN can edit inventory
   const isAdmin = currentUser?.role === UserRole.ADMIN;
+  const canEdit = isAdmin;
   const canViewFinancials = currentUser?.role === UserRole.ADMIN || currentUser?.role === UserRole.SUB_ADMIN || currentUser?.permissions?.canViewAccounting;
 
   const filteredInventory = inventory.filter(part => {
@@ -395,10 +438,31 @@ export const Inventory: React.FC = () => {
 
         <div className="flex flex-col lg:flex-row gap-6 relative">
             <div className={`bg-white rounded-3xl shadow-sm border border-slate-200/80 overflow-hidden ring-1 ring-slate-900/5 transition-all duration-300 ${detailsModalOpen ? 'lg:w-[60%]' : 'w-full'}`}>
+                {selectedPartIds.length > 0 && canEdit && (
+                    <div className="bg-indigo-50 border-b border-indigo-100 p-4 flex items-center justify-between">
+                        <span className="font-bold text-indigo-800 text-sm">{selectedPartIds.length} artículo(s) seleccionado(s)</span>
+                        <button 
+                            onClick={handleBulkDelete}
+                            className="bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded-xl text-xs flex items-center gap-2 transition-colors shadow-sm"
+                        >
+                            <Trash2 className="w-4 h-4" /> Eliminar Seleccionados
+                        </button>
+                    </div>
+                )}
                 <div className="overflow-x-auto">
                     <table className="w-full text-sm text-left whitespace-nowrap">
                     <thead className="bg-slate-50/80 border-b border-slate-200/80">
                         <tr>
+                            {canEdit && (
+                                <th className="px-6 py-5 w-10">
+                                    <input 
+                                        type="checkbox" 
+                                        className="w-4 h-4 text-indigo-600 rounded border-slate-300 focus:ring-indigo-500"
+                                        checked={selectedPartIds.length === filteredInventory.length && filteredInventory.length > 0}
+                                        onChange={handleSelectAll}
+                                    />
+                                </th>
+                            )}
                             <th className="px-6 py-5 text-xs font-black text-slate-500 uppercase tracking-widest">Código / SKU</th>
                             <th className="px-6 py-5 text-xs font-black text-slate-500 uppercase tracking-widest">Tipo</th>
                             <th className="px-6 py-5 text-xs font-black text-slate-500 uppercase tracking-widest">Nombre</th>
@@ -416,9 +480,19 @@ export const Inventory: React.FC = () => {
                             return (
                             <tr 
                                 key={part.id} 
-                                className="hover:bg-indigo-50/40 cursor-pointer transition-colors group"
+                                className={`hover:bg-indigo-50/40 cursor-pointer transition-colors group ${selectedPartIds.includes(part.id) ? 'bg-indigo-50/30' : ''}`}
                                 onClick={() => viewDetails(part)}
                             >
+                                {canEdit && (
+                                    <td className="px-6 py-4" onClick={(e) => e.stopPropagation()}>
+                                        <input 
+                                            type="checkbox" 
+                                            className="w-4 h-4 text-indigo-600 rounded border-slate-300 focus:ring-indigo-500"
+                                            checked={selectedPartIds.includes(part.id)}
+                                            onChange={(e) => handleSelectPart(e, part.id)}
+                                        />
+                                    </td>
+                                )}
                                 <td className="px-6 py-4">
                                     <span className="font-mono font-bold text-xs bg-slate-100 text-slate-600 px-2.5 py-1 rounded-md border border-slate-200 group-hover:border-indigo-200 transition-colors shadow-sm">
                                         #{readableId}
@@ -480,7 +554,7 @@ export const Inventory: React.FC = () => {
                         )})}
                         {filteredInventory.length === 0 && (
                             <tr>
-                                <td colSpan={canViewFinancials ? 7 : 6} className="p-16">
+                                <td colSpan={(canViewFinancials ? 7 : 6) + (canEdit ? 1 : 0)} className="p-16">
                                     <div className="flex flex-col items-center justify-center text-center">
                                         <div className="w-16 h-16 bg-slate-50 border border-slate-100 rounded-2xl flex items-center justify-center mb-4">
                                             <Search className="w-8 h-8 text-slate-300" />

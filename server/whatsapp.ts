@@ -1311,7 +1311,10 @@ export async function sendWhatsAppMessage(phone: string, text: string, image?: s
                     }, 45000);
 
                     try {
-                        sock!.sendMessage(jid, payload)
+                        if (!sock) {
+                            throw new Error('Socket disconnected during send preparation');
+                        }
+                        sock.sendMessage(jid, payload)
                           .then((res: any) => {
                               if (!isDone) {
                                   isDone = true;
@@ -1367,7 +1370,9 @@ export async function sendWhatsAppMessage(phone: string, text: string, image?: s
             }
             
             // Stop typing indicator
-            await sock.sendPresenceUpdate('paused', jid);
+            if (sock) {
+                await sock.sendPresenceUpdate('paused', jid).catch((e: any) => console.log('Failed to pause presence:', e));
+            }
             
             const messageId = result?.key?.id || `local-${Date.now()}`;
             const messageType = media ? 'media' : image ? 'image' : 'text';

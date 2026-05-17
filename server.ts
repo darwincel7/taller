@@ -62,6 +62,8 @@ function validateEnv() {
   }
 }
 
+import { createClient } from '@supabase/supabase-js';
+
 async function startServer() {
   validateEnv();
   const app = express();
@@ -289,6 +291,135 @@ async function startServer() {
       res.json({ success: true, data: data || [] });
     } catch (error: any) {
       res.status(500).json({ success: false, error: error.message });
+    }
+  });
+
+  // @ts-ignore
+  app.post('/api/rpc/exec-sql', async (req, res) => {
+    try {
+        let inputUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+        if (!inputUrl || inputUrl.trim() === '') {
+            inputUrl = "https://ruwcektpadeqovwtdixd.supabase.co";
+        } else {
+            inputUrl = inputUrl.trim();
+        }
+        if (!inputUrl.startsWith('http')) {
+            if (!inputUrl.includes('.')) {
+                inputUrl = `https://${inputUrl}.supabase.co`;
+            } else {
+                inputUrl = "https://" + inputUrl;
+            }
+        }
+        const supabaseUrl = inputUrl;
+        let supabaseRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY;
+        if (!supabaseRoleKey) {
+            return res.status(500).json({ error: 'Missing SUPABASE_SERVICE_ROLE_KEY.' });
+        }
+        // @ts-ignore
+        const supabaseAdmin = createClient(supabaseUrl, supabaseRoleKey);
+
+        const { sql } = req.body;
+        console.log("Executing SQL");
+        
+        let result: any;
+        // We will call python/psql via shell or use the existing "exec_sql" RPC if it exists.
+        if (error) {
+             const { data: data2, error: error2 } = await supabaseAdmin.rpc("exec_sql", { sql: sql });
+             if (error2) throw error2;
+             result = data2;
+        } else {
+             result = data;
+        }
+        
+        res.json({ success: true, result });
+    } catch (e: any) {
+        console.error("SQL Exec Error:", e);
+        res.status(500).json({ error: e.message });
+    }
+  });
+
+  // @ts-ignore
+  app.post('/api/rpc/fix-purchases-dates', async (req, res) => {
+    try {
+        let inputUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+        if (!inputUrl || inputUrl.trim() === '') {
+            inputUrl = "https://ruwcektpadeqovwtdixd.supabase.co";
+        } else {
+            inputUrl = inputUrl.trim();
+        }
+        if (!inputUrl.startsWith('http')) {
+            if (!inputUrl.includes('.')) {
+                inputUrl = `https://${inputUrl}.supabase.co`;
+            } else {
+                inputUrl = "https://" + inputUrl;
+            }
+        }
+        const supabaseUrl = inputUrl;
+        let supabaseRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY;
+        if (!supabaseRoleKey) {
+            return res.status(500).json({ error: 'Missing SUPABASE_SERVICE_ROLE_KEY.' });
+        }
+        // @ts-ignore
+        const supabaseAdmin = createClient(supabaseUrl, supabaseRoleKey);
+
+        const { data: activeInventory, error } = await supabaseAdmin.from('inventory_parts').select('*');
+        if (error || !activeInventory) return res.status(500).json({ error });
+
+        const purchases = activeInventory.filter((p: any) => {
+          try {
+            const cat = JSON.parse(p.category || '{}');
+            return cat.type === 'STORE_PURCHASE';
+          } catch { return false; }
+        });
+
+        const { data: categories } = await supabaseAdmin.from('accounting_categories').select('*');
+        let catId = categories?.find((c: any) => c.name.toLowerCase().includes('inventario') || c.name.toLowerCase().includes('mercancía'))?.id;
+
+        const { data: transactions } = await supabaseAdmin.from('accounting_transactions').select('*');
+
+        let added = 0;
+        let updated = 0;
+
+        for (const purchase of purchases) {
+          const desc = `Compra Tienda: ${purchase.name}`;
+          const desc2 = `Compra: ${purchase.name}`;
+          
+          let pDate = purchase.created_at ? new Date(purchase.created_at) : new Date();
+          const tDate = pDate.toISOString().split('T')[0];
+          const exists = transactions?.find((t: any) => t.description === desc || t.description === desc2 || t.description.includes(purchase.name));
+          
+          if (!exists) {
+            if (catId) {
+              const { error: insertErr } = await supabaseAdmin.from('accounting_transactions').insert({
+                    amount: -Math.abs(purchase.cost), 
+                    description: desc,
+                    transaction_date: tDate,
+                    created_at: pDate.toISOString(),
+                    created_by: purchase.created_by || 'system',
+                    status: 'COMPLETED',
+                    category_id: catId,
+                    expense_destination: 'STORE',
+                    source: 'STORE',
+                    branch: purchase.branch || 'T4',
+                    method: 'CASH'
+              });
+              if (!insertErr) added++;
+            }
+          } else {
+            // Update its transaction_date to line up with inventory created_at
+            if (exists.transaction_date !== tDate) {
+              const { error: updateErr } = await supabaseAdmin.from('accounting_transactions').update({ 
+                    transaction_date: tDate, 
+                    created_at: pDate.toISOString() 
+              }).eq('id', exists.id);
+              if (!updateErr) updated++;
+            }
+          }
+        }
+
+        res.json({ success: true, added, updated });
+    } catch (e: any) {
+        res.status(500).json({ error: e.message });
     }
   });
 

@@ -226,7 +226,7 @@ const LayoutComponent: React.FC<LayoutProps> = ({ children }) => {
 
           <Link to="/store-inventory" className={getNavLinkClass('/store-inventory')}>
             <Smartphone className="w-4 h-4" />
-            INVENTARIO
+            INVENTARIO ARTÍCULOS
           </Link>
 
           <div className="pt-3 pb-1 text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest pl-2">Finanzas</div>
@@ -294,7 +294,7 @@ const LayoutComponent: React.FC<LayoutProps> = ({ children }) => {
 
           <Link to="/inventory" className={getNavLinkClass('/inventory')}>
             <Package className="w-4 h-4" />
-            PARTES
+            INVENTARIO PIEZAS
           </Link>
           <Link to="/parts" className={getNavLinkClass('/parts')}>
             <ShoppingBag className="w-4 h-4" />

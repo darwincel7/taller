@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { fetchWithAuth } from '../lib/fetchWithAuth';
 import { supabase } from '../services/supabase';
 import { Send, User, MessageCircle, Clock, CheckCircle2, AlertCircle, Link as LinkIcon, Search, Image as ImageIcon, File, Mic, Phone, Instagram, Facebook, HelpCircle, Bot, Check, CheckCheck } from 'lucide-react';
-import { format, isToday } from 'date-fns';
+import { format, isToday, isYesterday, isThisWeek } from 'date-fns';
+import { es } from 'date-fns/locale';
 
 type Channel = 'whatsapp' | 'instagram' | 'facebook' | 'tiktok';
 
@@ -18,14 +19,49 @@ const ChannelIcon = ({ channel, className }: { channel: Channel, className?: str
 const formatMessageDate = (dateString: string | null | undefined) => {
   if (!dateString) return '';
   try {
-    const date = new Date(dateString);
-    if (isToday(date)) {
-      return format(date, 'HH:mm');
+    const parsedDate = new Date(dateString);
+    if (isNaN(parsedDate.getTime())) return '';
+    
+    const now = new Date();
+    const date = parsedDate > now ? now : parsedDate;
+
+    if (isToday(date)) return format(date, 'h:mm a').toLowerCase();
+    if (isYesterday(date)) return 'Ayer';
+    if (isThisWeek(date, { weekStartsOn: 1 })) {
+      const weekday = format(date, 'EEEE', { locale: es });
+      return weekday.charAt(0).toUpperCase() + weekday.slice(1);
     }
-    return format(date, 'd/M/yy');
-  } catch (e) {
-    return '';
-  }
+    return format(date, 'dd/MM/yyyy');
+  } catch (e) { return ''; }
+};
+
+const formatMessageTime = (dateString: string | null | undefined) => {
+  if (!dateString) return '';
+  try {
+    const parsedDate = new Date(dateString);
+    if (isNaN(parsedDate.getTime())) return '';
+    const now = new Date();
+    const date = parsedDate > now ? now : parsedDate;
+    return format(date, 'h:mm a').toLowerCase();
+  } catch (e) { return ''; }
+};
+
+const getDividerDate = (dateString: string | null | undefined) => {
+  if (!dateString) return '';
+  try {
+    const parsedDate = new Date(dateString);
+    if (isNaN(parsedDate.getTime())) return '';
+    const now = new Date();
+    const date = parsedDate > now ? now : parsedDate;
+
+    if (isToday(date)) return 'Hoy';
+    if (isYesterday(date)) return 'Ayer';
+    if (isThisWeek(date, { weekStartsOn: 1 })) {
+      const weekday = format(date, 'EEEE', { locale: es });
+      return weekday.charAt(0).toUpperCase() + weekday.slice(1);
+    }
+    return format(date, 'dd/MM/yyyy');
+  } catch (e) { return ''; }
 };
 
 export const OmnicanalInbox: React.FC = () => {
@@ -153,6 +189,18 @@ export const OmnicanalInbox: React.FC = () => {
                           (filterAssignment === 'unassigned' && !c.assigned_to);
 
     return searchMatch && channelMatch && statusMatch && priorityMatch && assignmentMatch;
+  }).sort((a, b) => {
+    const now = Date.now();
+    const getSafeTime = (dateStr: string) => {
+      if (!dateStr) return 0;
+      const t = new Date(dateStr).getTime();
+      return isNaN(t) ? 0 : (t > now ? now : t);
+    };
+    const timeA = Math.max(getSafeTime(a.last_message_at), getSafeTime(a.created_at));
+    const timeB = Math.max(getSafeTime(b.last_message_at), getSafeTime(b.created_at));
+    // If times are exactly same (e.g. capped at now), preserve relative order or sort by ID as fallback
+    if (timeA === timeB) return a.id.localeCompare(b.id);
+    return timeB - timeA;
   });
   const fetchMessages = async (convId: string) => {
     try {
@@ -671,36 +719,66 @@ export const OmnicanalInbox: React.FC = () => {
                   </div>
                 </div>
               )}
-              {messages.map(msg => {
+              {messages.map((msg, idx) => {
                 const isOutbound = msg.direction === 'outbound' || msg.direction === 'system';
+                let showDivider = false;
+                let dividerText = '';
+                
+                const safeCurrentDate = msg.created_at ? new Date(msg.created_at) : new Date();
+                
+                if (idx === 0) {
+                  showDivider = true;
+                  dividerText = getDividerDate(msg.created_at);
+                } else {
+                  const prevMsg = messages[idx - 1];
+                  const safePrevDate = prevMsg.created_at ? new Date(prevMsg.created_at) : new Date();
+                  
+                  if (!isNaN(safePrevDate.getTime()) && !isNaN(safeCurrentDate.getTime())) {
+                    const prevDateStr = format(safePrevDate, 'yyyy-MM-dd');
+                    const currDateStr = format(safeCurrentDate, 'yyyy-MM-dd');
+                    if (prevDateStr !== currDateStr) {
+                      showDivider = true;
+                      dividerText = getDividerDate(msg.created_at);
+                    }
+                  }
+                }
+
                 return (
-                  <div key={msg.id} className={`flex ${isOutbound ? 'justify-end' : 'justify-start'}`}>
-                    <div className={`max-w-[75%] rounded-2xl p-3 ${isOutbound ? 'bg-indigo-100 text-indigo-900 rounded-tr-sm' : 'bg-white shadow-sm border border-slate-200 text-slate-800 rounded-tl-sm'}`}>
-                      {msg.channel !== activeConv.active_channel && msg.direction === 'inbound' && (
-                         <div className="text-[10px] text-slate-400 mb-1 flex items-center gap-1 font-bold">
-                           <ChannelIcon channel={msg.channel} className="w-3 h-3" /> 
-                           Desde {msg.channel}
-                         </div>
-                      )}
-                      
-                      {msg.media_url ? (
-                        msg.message_type === 'image' ? (
-                           <img src={msg.media_url} alt="Media" className="rounded-lg mb-2 max-w-sm"/>
-                        ) : msg.message_type === 'audio' ? (
-                           <audio src={msg.media_url} controls className="mb-2 w-48" />
-                        ) : msg.message_type === 'video' ? (
-                           <video src={msg.media_url} controls className="mb-2 max-w-sm rounded-lg" />
-                        ) : (
-                           <a href={msg.media_url} target="_blank" rel="noreferrer" className="text-sm font-bold underline mb-1 block">📎 Documento</a>
-                        )
-                      ) : null}
-                      
-                      <p className="whitespace-pre-wrap text-sm">{msg.text}</p>
-                      
-                      <div className="flex items-center justify-end gap-1 mt-1">
-                        <span className="text-[10px] opacity-70">
-                          {formatMessageDate(msg.created_at || new Date().toISOString())}
+                  <React.Fragment key={msg.id}>
+                    {showDivider && (
+                      <div className="flex justify-center my-4">
+                        <span className="bg-white/80 backdrop-blur-sm border border-slate-200 text-slate-500 text-[11px] font-bold px-3 py-1 rounded-full shadow-sm">
+                          {dividerText}
                         </span>
+                      </div>
+                    )}
+                    <div className={`flex ${isOutbound ? 'justify-end' : 'justify-start'}`}>
+                      <div className={`max-w-[75%] rounded-2xl p-3 ${isOutbound ? 'bg-indigo-100 text-indigo-900 rounded-tr-sm' : 'bg-white shadow-sm border border-slate-200 text-slate-800 rounded-tl-sm'}`}>
+                        {msg.channel !== activeConv.active_channel && msg.direction === 'inbound' && (
+                           <div className="text-[10px] text-slate-400 mb-1 flex items-center gap-1 font-bold">
+                             <ChannelIcon channel={msg.channel} className="w-3 h-3" /> 
+                             Desde {msg.channel}
+                           </div>
+                        )}
+                        
+                        {msg.media_url ? (
+                          msg.message_type === 'image' ? (
+                             <img src={msg.media_url} alt="Media" className="rounded-lg mb-2 max-w-sm"/>
+                          ) : msg.message_type === 'audio' ? (
+                             <audio src={msg.media_url} controls className="mb-2 w-48" />
+                          ) : msg.message_type === 'video' ? (
+                             <video src={msg.media_url} controls className="mb-2 max-w-sm rounded-lg" />
+                          ) : (
+                             <a href={msg.media_url} target="_blank" rel="noreferrer" className="text-sm font-bold underline mb-1 block">📎 Documento</a>
+                          )
+                        ) : null}
+                        
+                        <p className="whitespace-pre-wrap text-sm">{msg.text}</p>
+                        
+                        <div className="flex items-center justify-end gap-1 mt-1">
+                          <span className="text-[10px] opacity-70">
+                            {formatMessageTime(msg.created_at || new Date().toISOString())}
+                          </span>
                         {isOutbound && (
                            <div className="flex items-center ml-1">
                              {msg.status === 'sending' && <Clock className="w-3 h-3 text-slate-400" />}
@@ -724,6 +802,7 @@ export const OmnicanalInbox: React.FC = () => {
                       </div>
                     </div>
                   </div>
+                </React.Fragment>
                 );
               })}
               <div ref={messagesEndRef} />

@@ -27,6 +27,7 @@ export const StoreCatalogTab = () => {
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [activeItemId, setActiveItemId] = useState<string | null>(null);
   const [isCategoryDropdownOpen, setIsCategoryDropdownOpen] = useState(false);
+  const [showAllPending, setShowAllPending] = useState(false);
   const [visibleCount, setVisibleCount] = useState(40);
   const [selectedItems, setSelectedItems] = useState<string[]>([]);
   const [isDeletingBulk, setIsDeletingBulk] = useState(false);
@@ -243,37 +244,8 @@ export const StoreCatalogTab = () => {
     }
   }, [searchTerm, filteredProducts, items]);
 
-  const pendingAcceptanceItems = useMemo(() => items.filter(i => (parseInventoryCategory(i.category) as any).status === 'PENDING_ACCEPTANCE'), [items]);
-
   return (
     <div className="flex flex-col gap-8">
-      {pendingAcceptanceItems.length > 0 && (
-        <div className="bg-amber-500/10 border border-amber-500/30 p-4 rounded-3xl flex flex-col md:flex-row items-center justify-between gap-4 animate-in fade-in slide-in-from-top-4 duration-500">
-          <div className="flex items-center gap-4">
-            <div className="w-12 h-12 bg-amber-500 rounded-2xl flex items-center justify-center shadow-lg shadow-amber-500/20">
-              <AlertTriangle className="w-6 h-6 text-white" />
-            </div>
-            <div>
-              <h3 className="text-amber-900 font-black uppercase text-sm tracking-tight">Equipos en espera de validación</h3>
-              <p className="text-amber-700 text-xs font-bold">Hay {pendingAcceptanceItems.length} equipos transferidos que precisan revisión, foto, y ser enlazados a su modelo del catálogo.</p>
-            </div>
-          </div>
-          <div className="flex gap-2 w-full md:w-auto">
-            {pendingAcceptanceItems.slice(0, 3).map(item => (
-              <button 
-                key={item.id} 
-                onClick={() => setActiveItemId(item.id)}
-                className="flex-1 md:flex-none px-3 py-2 bg-white border border-amber-200 rounded-xl text-xs font-black text-amber-600 hover:bg-amber-50 transition-all shadow-sm truncate max-w-[150px]"
-              >
-                {item.name.split(' (')[0]}
-              </button>
-            ))}
-            {pendingAcceptanceItems.length > 3 && (
-              <span className="text-xs font-bold text-amber-500 self-center">+{pendingAcceptanceItems.length - 3} más</span>
-            )}
-          </div>
-        </div>
-      )}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-2 gap-4 w-full">
          <div className="flex items-center gap-3 relative z-20 flex-1 w-full min-w-0">
            <h2 className="text-2xl font-black text-slate-800 hidden lg:block shrink-0">Catálogo</h2>

@@ -22,7 +22,7 @@ export const CashProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   
   const performCashClosing = async (cashierIds: string, systemTotal: number, actualTotal: number, adminId: string, paymentIds: string[]) => {
       if (!supabase) return;
-      const closingId = `close-${Date.now()}`;
+      const closingId = crypto.randomUUID();
       const timestamp = Date.now();
       const difference = actualTotal - systemTotal;
       

@@ -418,6 +418,7 @@ export interface InventoryPart {
   image_url?: string;
   status?: 'active' | 'archived' | 'sold';
   deleted_at?: string;
+  created_at?: string;
 }
 
 export interface POSSale {

@@ -1,5 +1,4 @@
-import fs from 'fs';
-import * as dotenv from 'dotenv';
+import dotenv from "dotenv";
 dotenv.config();
 
-console.log(Object.keys(process.env));
+console.log("Has Service Key:", !!process.env.SUPABASE_SERVICE_ROLE_KEY);

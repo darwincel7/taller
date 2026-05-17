@@ -1,11 +1,23 @@
 
 import React, { useMemo, useState, useEffect } from 'react';
+
+// ============================================================================
+// 🛑 ATENCIÓN IA Y DESARROLLADORES 🛑
+// ESTE ARCHIVO ES EL INVENTARIO PRINCIPAL DE **ARTÍCULOS / EQUIPOS**
+// (Equipos propios, Cambiazos, para la venta, etc.) Tabla principal: orders (is_owned_by_store)
+//
+// 🚫 NO ES EL INVENTARIO DE PARTES O REPUESTOS.
+// Las refacciones / partes se manejan en:
+// 👉 pages/Inventory.tsx / routes: /inventory
+// ============================================================================
+
 import { useAuth } from '../contexts/AuthContext';
 import { OrderType, OrderStatus, UserRole, RepairOrder } from '../types';
-import { ShoppingBag, DollarSign, Package, TrendingUp, Search, PlusCircle, Calendar, Hash, ArrowUpCircle, ArrowDownCircle, ArrowDownAZ, ArrowUpAZ, History, AlertCircle, Loader2, Smartphone, ClipboardCheck, CheckCircle2, XCircle, LogOut, Printer, RefreshCcw } from 'lucide-react';
+import { ShoppingBag, DollarSign, Package, TrendingUp, Search, PlusCircle, Calendar, Hash, ArrowUpCircle, ArrowDownCircle, ArrowDownAZ, ArrowUpAZ, History, AlertCircle, Loader2, Smartphone, ClipboardCheck, CheckCircle2, XCircle, LogOut, Printer, RefreshCcw, Clock } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { supabase } from '../services/supabase';
+import { StoreAuditHistoryModal } from '../components/modals/StoreAuditHistoryModal';
 
 // --- INTELLIGENT NORMALIZER ---
 const normalizeForSearch = (s: string) => {
@@ -28,7 +40,9 @@ const StoreStockComponent: React.FC = () => {
   
   // Audit Mode State with localStorage persistence
   const [isAuditMode, setIsAuditMode] = useState(false);
-  const [auditStatus, setAuditStatus] = useState<Record<string, 'FOUND' | 'MISSING' | 'LEFT' | 'UNMARKED'>>(() => {
+  const [showHistory, setShowHistory] = useState(false);
+  const [currentAuditId, setCurrentAuditId] = useState<string | null>(null);
+  const [auditStatus, setAuditStatus] = useState<Record<string, 'FOUND' | 'MISSING' | 'LEFT' | 'PENDING' | 'UNMARKED'>>(() => {
     const saved = localStorage.getItem(AUDIT_STORAGE_KEY);
     return saved ? JSON.parse(saved) : {};
   });
@@ -36,7 +50,64 @@ const StoreStockComponent: React.FC = () => {
   // Save to localStorage whenever auditStatus changes
   useEffect(() => {
     localStorage.setItem(AUDIT_STORAGE_KEY, JSON.stringify(auditStatus));
+    
+    // Auto-save to DB if we are an existing active audit
+    if (currentAuditId && isAuditMode) {
+      saveAuditToDB();
+    }
   }, [auditStatus]);
+
+  const saveAuditToDB = async (forceClose: boolean = false) => {
+      const foundItems = sortedItems.filter(i => auditStatus[i.id] === 'FOUND');
+      const missingItems = sortedItems.filter(i => auditStatus[i.id] === 'MISSING');
+      const leftItems = sortedItems.filter(i => auditStatus[i.id] === 'LEFT');
+      const pendingItems = sortedItems.filter(i => auditStatus[i.id] === 'PENDING');
+      
+      const hasMarks = Object.keys(auditStatus).some(k => auditStatus[k] !== 'UNMARKED');
+      
+      if (hasMarks || currentAuditId) {
+          const payload = {
+              branch_id: currentUser?.branch || 'default_branch',
+              auditor_id: currentUser?.id || 'unknown',
+              auditor_name: currentUser?.name || 'Sistema',
+              total_items: sortedItems.length,
+              found_items: foundItems.length,
+              missing_items: missingItems.length,
+              left_items: leftItems.length,
+              pending_items: pendingItems.length,
+              items_state: auditStatus,
+              updated_at: new Date().toISOString()
+          };
+
+          try {
+              if (currentAuditId) {
+                  const { error } = await supabase.from('store_audits').update(payload).eq('id', currentAuditId);
+                  if (error) throw error;
+              } else {
+                  const { data, error } = await supabase.from('store_audits').insert([payload]).select().single();
+                  if (error) throw error;
+                  if (data) {
+                      setCurrentAuditId(data.id);
+                  }
+              }
+              if (forceClose) {
+                  alert("¡Auditoría guardada con éxito!");
+              }
+          } catch (e: any) {
+              console.error("Error al guardar la auditoría:", e);
+              if (forceClose) {
+                alert("Error al guardar la auditoría: " + (e.message || "Asegúrate de haber ejecutado el script SQL proveído para crear la tabla 'store_audits'."));
+              }
+              // Don't close if it failed
+              return;
+          }
+      }
+
+      if (forceClose) {
+          setIsAuditMode(false);
+          setCurrentAuditId(null);
+      }
+  };
 
   const clearAudit = () => {
     if (window.confirm("¿Estás seguro de que deseas reiniciar la auditoría? Se borrarán todas las marcas actuales.")) {
@@ -123,6 +194,7 @@ const StoreStockComponent: React.FC = () => {
       const foundItems = sortedItems.filter(i => auditStatus[i.id] === 'FOUND');
       const missingItems = sortedItems.filter(i => auditStatus[i.id] === 'MISSING');
       const leftItems = sortedItems.filter(i => auditStatus[i.id] === 'LEFT');
+      const pendingItems = sortedItems.filter(i => auditStatus[i.id] === 'PENDING');
       const unmarkedItems = sortedItems.filter(i => !auditStatus[i.id] || auditStatus[i.id] === 'UNMARKED');
 
       const dateValue = new Date().toLocaleString('es-ES', { dateStyle: 'long', timeStyle: 'short' });
@@ -164,14 +236,15 @@ const StoreStockComponent: React.FC = () => {
             .meta-info strong { color: #64748b; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
             .meta-info span { font-weight: bold; color: #0f172a; font-size: 15px; }
 
-            .summary-cards { display: flex; gap: 15px; margin-bottom: 40px; }
-            .card { flex: 1; padding: 15px; border-radius: 8px; border: 1px solid #e2e8f0; text-align: center; }
+            .summary-cards { display: flex; gap: 10px; margin-bottom: 25px; }
+            .card { flex: 1; padding: 8px; border-radius: 6px; border: 1px solid #e2e8f0; text-align: center; }
             .card.total { background: #f1f5f9; border-color: #cbd5e1; }
             .card.found { background: #f0fdf4; border-color: #bbf7d0; }
             .card.missing { background: #fef2f2; border-color: #fecaca; }
-            .card-title { font-size: 11px; text-transform: uppercase; font-weight: bold; color: #64748b; margin-bottom: 5px; }
-            .card-value { font-size: 24px; font-weight: 900; color: #0f172a; }
-            .card-sub { font-size: 12px; color: #64748b; margin-top: 5px; }
+            .card.pending { background: #fff7ed; border-color: #fed7aa; }
+            .card-title { font-size: 8px; text-transform: uppercase; font-weight: bold; color: #64748b; margin-bottom: 3px; }
+            .card-value { font-size: 14px; font-weight: 900; color: #0f172a; }
+            .card-sub { font-size: 8px; color: #64748b; margin-top: 3px; }
 
             .section-title { font-size: 18px; font-weight: bold; color: #0f172a; border-bottom: 2px solid #e2e8f0; padding-bottom: 8px; margin-top: 40px; margin-bottom: 15px; display: flex; justify-content: space-between; align-items: flex-end; }
             .section-title span.count { font-size: 14px; color: #64748b; font-weight: normal; }
@@ -190,6 +263,7 @@ const StoreStockComponent: React.FC = () => {
             .text-red { color: #dc2626 !important; }
             .text-green { color: #16a34a !important; }
             .text-blue { color: #2563eb !important; }
+            .text-orange { color: #ea580c !important; }
             .text-gray { color: #64748b !important; }
           </style>
         </head>
@@ -224,6 +298,11 @@ const StoreStockComponent: React.FC = () => {
             <div class="card">
                 <div class="card-title text-blue">Salidos / Vendidos</div>
                 <div class="card-value text-blue">${leftItems.length}</div>
+                <div class="card-sub">Equipos</div>
+            </div>
+            <div class="card pending">
+                <div class="card-title text-orange">Pendiente / Otro Taller</div>
+                <div class="card-value text-orange">${pendingItems.length}</div>
                 <div class="card-sub">Equipos</div>
             </div>
           </div>
@@ -291,6 +370,27 @@ const StoreStockComponent: React.FC = () => {
           </table>
           ` : ''}
 
+          ${pendingItems.length > 0 ? `
+          <div class="section-title" style="color: #ea580c;">
+            Equipos Pendientes / Otro Taller
+            <span class="count">${pendingItems.length} equipos</span>
+          </div>
+          <table>
+            <thead>
+                <tr>
+                    <th width="10%">ID</th>
+                    <th width="40%">Modelo</th>
+                    <th width="20%">IMEI</th>
+                    <th width="15%" style="text-align: right;">Inversión</th>
+                    <th width="15%" style="text-align: right;">Precio Venta</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${renderTableRows(pendingItems)}
+            </tbody>
+          </table>
+          ` : ''}
+
           ${unmarkedItems.length > 0 ? `
           <div class="section-title text-gray">
             Equipos Sin Marcar (Pendientes de Revisión)
@@ -352,7 +452,7 @@ const StoreStockComponent: React.FC = () => {
       <div className="flex flex-col md:flex-row justify-between items-center mb-8 gap-4">
         <div className="flex items-center gap-3">
           <div className="bg-gradient-to-r from-red-600 to-red-800 text-white p-3 rounded-xl shadow-lg shadow-red-200"><ShoppingBag className="w-8 h-8" /></div>
-          <div><h1 className="text-3xl font-bold text-red-700 tracking-tight">EQUIPOS RECIBIDOS</h1><p className="text-slate-500 font-medium">Inventario de equipos propios.</p></div>
+          <div><h1 className="text-3xl font-bold text-red-700 tracking-tight">INVENTARIO DE ARTÍCULOS</h1><p className="text-slate-500 font-medium">Gestión de artículos y equipos propios.</p></div>
         </div>
         <div className="flex gap-3 w-full md:w-auto flex-wrap">
             <div className="relative flex-1 md:w-64">
@@ -360,7 +460,19 @@ const StoreStockComponent: React.FC = () => {
                 <input placeholder="Buscar modelo, ID..." className="w-full pl-9 pr-4 py-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-red-100 outline-none shadow-sm" value={searchTerm} onChange={e => setSearchTerm(e.target.value)}/>
             </div>
             <button 
-                onClick={() => setIsAuditMode(!isAuditMode)} 
+                onClick={() => setShowHistory(true)}
+                className="px-6 py-3 rounded-xl font-bold flex items-center gap-2 shadow-md transition whitespace-nowrap bg-indigo-50 text-indigo-600 border border-indigo-100 hover:bg-indigo-100"
+            >
+                <History className="w-5 h-5" /> Historial
+            </button>
+            <button 
+                onClick={() => {
+                    if (isAuditMode) {
+                        saveAuditToDB(true);
+                    } else {
+                        setIsAuditMode(true);
+                    }
+                }} 
                 className={`px-6 py-3 rounded-xl font-bold flex items-center gap-2 shadow-md transition whitespace-nowrap ${isAuditMode ? 'bg-slate-800 text-white' : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'}`}
             >
                 <ClipboardCheck className="w-5 h-5" /> {isAuditMode ? 'Cerrar Auditoría' : 'Auditar'}
@@ -415,6 +527,7 @@ const StoreStockComponent: React.FC = () => {
                  const isFound = status === 'FOUND';
                  const isMissing = status === 'MISSING';
                  const isLeft = status === 'LEFT';
+                 const isPending = status === 'PENDING';
                  
                  return (
                 <div key={item.id} onClick={() => !isAuditMode && navigate(`/orders/${item.id}`)} className={`bg-white rounded-2xl shadow-sm border overflow-hidden transition-all group flex flex-col relative ${isAuditMode ? 'cursor-default border-slate-300' : 'cursor-pointer hover:shadow-xl hover:-translate-y-1 border-slate-200'}`}>
@@ -439,6 +552,12 @@ const StoreStockComponent: React.FC = () => {
                                    className={`w-full py-1.5 rounded-lg font-bold flex items-center justify-center gap-2 transition-colors text-xs shadow-md ${isLeft ? 'bg-blue-500 text-white' : 'bg-white/90 backdrop-blur text-slate-700 hover:bg-white'}`}
                                >
                                    <LogOut className="w-4 h-4" /> Salido / Vendido
+                               </button>
+                               <button 
+                                   onClick={(e) => { e.stopPropagation(); setAuditStatus(prev => ({...prev, [item.id]: isPending ? 'UNMARKED' : 'PENDING'})); }}
+                                   className={`w-full py-1.5 rounded-lg font-bold flex items-center justify-center gap-2 transition-colors text-xs shadow-md ${isPending ? 'bg-orange-500 text-white' : 'bg-white/90 backdrop-blur text-slate-700 hover:bg-white'}`}
+                               >
+                                   <Clock className="w-4 h-4" /> Pendiente / Otro Taller
                                </button>
                            </div>
                        </div>
@@ -474,6 +593,8 @@ const StoreStockComponent: React.FC = () => {
                  <span className="text-red-400 flex items-center gap-1"><XCircle className="w-4 h-4"/> {Object.values(auditStatus).filter(s => s === 'MISSING').length}</span>
                  <span className="text-slate-500">|</span>
                  <span className="text-blue-400 flex items-center gap-1"><LogOut className="w-4 h-4"/> {Object.values(auditStatus).filter(s => s === 'LEFT').length}</span>
+                 <span className="text-slate-500">|</span>
+                 <span className="text-orange-400 flex items-center gap-1"><Clock className="w-4 h-4"/> {Object.values(auditStatus).filter(s => s === 'PENDING').length}</span>
               </div>
            </div>
            <div className="flex gap-3 w-full sm:w-auto">
@@ -491,13 +612,25 @@ const StoreStockComponent: React.FC = () => {
                 <Printer className="w-5 h-5"/> Imprimir Reporte
               </button>
               <button 
-                onClick={() => setIsAuditMode(false)} 
+                onClick={() => saveAuditToDB(true)} 
                 className="flex-1 sm:flex-none bg-slate-700 hover:bg-slate-600 px-6 py-3 rounded-xl font-bold transition-colors"
               >
-                Salir
+                Guardar y Salir
               </button>
            </div>
         </div>
+      )}
+
+      {showHistory && (
+          <StoreAuditHistoryModal 
+              onClose={() => setShowHistory(false)}
+              onEditAudit={(states, id) => {
+                  setAuditStatus(states as any);
+                  setCurrentAuditId(id);
+                  setIsAuditMode(true);
+                  setShowHistory(false);
+              }}
+          />
       )}
     </div>
   );

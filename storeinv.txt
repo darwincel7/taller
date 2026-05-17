@@ -7,28 +7,19 @@ import { StoreDashboard } from './StoreInventory/StoreDashboard';
 import { StoreTransfersTab } from './StoreInventory/StoreTransfersTab';
 import { StoreAuditTab } from './StoreInventory/StoreAuditTab';
 import { StorePhysicalAuditTab } from './StoreInventory/StorePhysicalAuditTab';
-import { StorePendingValidationsTab } from './StoreInventory/StorePendingValidationsTab';
 import { useAuth } from '../contexts/AuthContext';
-import { useInventory } from '../contexts/InventoryContext';
-import { parseInventoryCategory } from '../types';
 import { toast } from 'sonner';
 
 import { UserRole } from '../types';
 
 export const StoreInventory = () => {
-  const [activeTab, setActiveTab] = useState<'CATALOG' | 'PURCHASES' | 'SETTINGS' | 'TRANSFERS' | 'AUDIT' | 'PHYSICAL_AUDIT' | 'PENDING_VALIDATIONS'>('CATALOG');
+  const [activeTab, setActiveTab] = useState<'CATALOG' | 'PURCHASES' | 'SETTINGS' | 'TRANSFERS' | 'AUDIT' | 'PHYSICAL_AUDIT'>('CATALOG');
   const { currentUser } = useAuth();
-  const { inventory } = useInventory();
-  
-  const pendingCount = inventory.filter(p => {
-      const parsed = parseInventoryCategory(p.category) as any;
-      return parsed.type === 'STORE_ITEM' && parsed.status === 'PENDING_ACCEPTANCE' && (parsed.branch || 'T4') === (currentUser?.branch || 'T4');
-  }).length;
   
   const canViewCost = currentUser?.role === UserRole.ADMIN || currentUser?.permissions?.canViewInventoryCost;
   const canManageInv = currentUser?.role === UserRole.ADMIN || currentUser?.permissions?.canManageInventory;
 
-  const handleTabClick = (tab: 'CATALOG' | 'PURCHASES' | 'SETTINGS' | 'TRANSFERS' | 'AUDIT' | 'PHYSICAL_AUDIT' | 'PENDING_VALIDATIONS') => {
+  const handleTabClick = (tab: 'CATALOG' | 'PURCHASES' | 'SETTINGS' | 'TRANSFERS' | 'AUDIT' | 'PHYSICAL_AUDIT') => {
       if ((tab === 'PURCHASES' || tab === 'AUDIT') && !canViewCost) {
           toast.error('Acceso denegado: No tienes permisos para ver compras/costos.', {
               style: { background: '#ef4444', color: 'white', border: 'none' },
@@ -64,18 +55,6 @@ export const StoreInventory = () => {
               className={`px-5 py-2.5 rounded-xl font-bold transition-all flex items-center gap-2 ${activeTab === 'CATALOG' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:bg-slate-200'}`}
             >
               <Package className="w-5 h-5 shrink-0" /> Artículos y Unidades
-            </button>
-            <button 
-              onClick={() => handleTabClick('PENDING_VALIDATIONS')} 
-              className={`px-5 py-2.5 rounded-xl font-bold transition-all flex items-center gap-2 relative ${activeTab === 'PENDING_VALIDATIONS' ? 'bg-white text-amber-600 shadow-sm ring-1 ring-amber-500/20' : 'text-slate-500 hover:bg-slate-200'}`}
-            >
-              <AlertTriangle className={`w-5 h-5 shrink-0 ${activeTab === 'PENDING_VALIDATIONS' ? 'text-amber-500' : ''}`} />
-              En Espera
-              {pendingCount > 0 && (
-                 <span className="absolute -top-1.5 -right-1.5 bg-red-500 text-white text-[10px] font-black w-5 h-5 flex items-center justify-center rounded-full shadow-sm shadow-red-500/30">
-                   {pendingCount}
-                 </span>
-              )}
             </button>
             {canManageInv && (
               <button 
@@ -118,7 +97,6 @@ export const StoreInventory = () => {
           </div>
 
           {activeTab === 'CATALOG' && <StoreCatalogTab />}
-          {activeTab === 'PENDING_VALIDATIONS' && <StorePendingValidationsTab />}
           {activeTab === 'TRANSFERS' && <StoreTransfersTab />}
           {activeTab === 'PURCHASES' && <StorePurchasesTab />}
           {activeTab === 'AUDIT' && <StoreAuditTab />}
@@ -127,3 +105,4 @@ export const StoreInventory = () => {
     </div>
   );
 };
+

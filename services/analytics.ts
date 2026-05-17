@@ -63,8 +63,7 @@ export const fetchGlobalPayments = async (
 
         if (!data) return [];
 
-        // Mapear el resultado de la RPC al formato FlatPayment esperado por el resto de la app
-        return (data as any[]).map(p => ({
+        let formatted = (data as any[]).map(p => ({
             payment_id: p.id,
             id: p.id,
             order_id: p.order_id,
@@ -86,6 +85,27 @@ export const fetchGlobalPayments = async (
             source_type: p.source_type,
             is_legacy: p.is_legacy
         }));
+
+        const missingPosIds = formatted.filter(p => p.source_type === 'CASH_LEDGER' && p.order_readable_id === 0).map(p => p.order_id);
+        if (missingPosIds.length > 0) {
+            const BATCH_SIZE = 50;
+            const posData = [];
+            for (let i = 0; i < missingPosIds.length; i += BATCH_SIZE) {
+                const batch = missingPosIds.slice(i, i + BATCH_SIZE);
+                const { data: posBatch } = await supabase.from('pos_sales').select('id, readable_id').in('id', batch);
+                if (posBatch) posData.push(...posBatch);
+            }
+            if (posData && posData.length > 0) {
+                const posMap = new Map(posData.map(p => [p.id, p.readable_id]));
+                formatted = formatted.map(p => {
+                    if (p.source_type === 'CASH_LEDGER' && posMap.has(p.order_id)) {
+                        return { ...p, order_readable_id: posMap.get(p.order_id) || 0 };
+                    }
+                    return p;
+                });
+            }
+        }
+        return formatted;
     } catch (e) {
         console.warn("Exception fetching payments:", e);
         return [];
@@ -186,8 +206,107 @@ export const fetchSalesDetails = async (period: 'DAY' | 'WEEK' | 'MONTH' | 'ALL'
 
     // Filter out refunds since they are negative anyway and usually we show positive sales.
     // The previous logic filtered out is_refund. v_sales_unified has is_refund bool.
-    return (data || [])
-        .filter((s: any) => !s.is_refund);
+    let sales = (data || []).filter((s: any) => !s.is_refund);
+
+    // Fetch items for those that are POS
+    const posSaleIds = sales.filter((s: any) => s.source_type?.startsWith('POS')).map((s: any) => s.source_id);
+    let itemsMap = new Map();
+    if (posSaleIds.length > 0) {
+        const { data: items } = await supabase
+            .from('pos_sale_items')
+            .select('*')
+            .in('sale_id', posSaleIds);
+        if (items) {
+           items.forEach((item: any) => {
+               if(!itemsMap.has(item.sale_id)) itemsMap.set(item.sale_id, []);
+               itemsMap.get(item.sale_id).push(item);
+           });
+        }
+    }
+
+    // Fetch orders for WORKSHOP sales to get real expenses and items
+    const workshopSaleIds = sales.filter((s: any) => s.source_type === 'WORKSHOP').map((s: any) => s.source_id);
+    let orderPaymentMap = new Map();
+    if (workshopSaleIds.length > 0) {
+        const { data: payments } = await supabase
+            .from('order_payments')
+            .select(`
+                id,
+                order_id,
+                orders (
+                    id,
+                    readable_id,
+                    "deviceModel",
+                    "deviceIssue",
+                    "finalPrice",
+                    "partsCost",
+                    expenses,
+                    "clientName",
+                    "clientPhone",
+                    "assignedTo",
+                    "currentBranch",
+                    status
+                )
+            `)
+            .in('id', workshopSaleIds);
+            
+        if (payments) {
+            payments.forEach((p: any) => orderPaymentMap.set(p.id, p));
+        }
+    }
+
+    sales = sales.map((sale: any) => {
+        if (sale.source_type?.startsWith('POS')) {
+            sale.items = itemsMap.get(sale.source_id) || [];
+        } else if (sale.source_type === 'WORKSHOP') {
+            sale.items = [];
+            const p = orderPaymentMap.get(sale.source_id);
+            if (p && p.orders) {
+                const o = p.orders;
+                sale.order_id = o.id;
+                sale.readable_id = o.readable_id;
+                
+                // Recalculate profit robustly
+                const expenses = Array.isArray(o.expenses) ? o.expenses : [];
+                let totalCostAmount = Number(o.partsCost || 0);
+
+                // Check for fallback cost fields in expenses
+                expenses.forEach((e: any) => {
+                    const cost = Number(e.amount || e.cost || e.partCost || 0);
+                    totalCostAmount += cost;
+                });
+
+                // The revenue part (Service/Repair fee) is the difference from finalPrice and total items cost (if we consider partsCost a separate item)
+                let repPrice = Number(o.finalPrice || 0);
+                let actualGross = Number(sale.gross_amount || 0);
+
+                let costProportion = 0;
+                if (repPrice > 0) {
+                    // Si hay abonos parciales, proporcionalizamos
+                    // Pero si el pago es mayor o igual al repPrice, tomamos todo el costo
+                    costProportion = actualGross >= repPrice ? totalCostAmount : (actualGross / repPrice) * totalCostAmount;
+                } else {
+                    // Si por algún motivo finalPrice es 0, asumiremos todo el costo al primer pago
+                    costProportion = totalCostAmount;
+                }
+                
+                sale.cost_amount = costProportion;
+                sale.net_profit = actualGross - costProportion;
+                
+                // Construct a virtual receipt for Workshop mini-view
+                sale.is_item_exploded = false;
+                sale.order_data = o; // Pass original order data for custom view
+                sale.receipt_total = actualGross;
+                sale.receipt_items = []; // Cleared out since we don't use it anymore
+                sale.description = `Taller: ${o.deviceModel} (#${o.readable_id})`;
+            }
+        } else {
+            sale.items = [];
+        }
+        return sale;
+    });
+
+    return sales;
 };
 
 export const fetchFlowDetails = async (period: 'DAY' | 'WEEK' | 'MONTH') => {
